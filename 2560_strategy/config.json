@@ -1,0 +1,19 @@
+{
+  "strategy": {
+    "price_limit": 30.0,
+    "ma25_trend_days": 5,
+    "vol_ratio": 1.0,
+    "select_count": 5,
+    "exclude_st": true,
+    "exclude_kechuang": true
+  },
+  "schedule": {
+    "morning_time": "10:30",
+    "afternoon_time": "14:30",
+    "timezone": "Asia/Shanghai"
+  },
+  "output": {
+    "file_path": "data/daily_selection.json",
+    "print_to_console": true
+  }
+}
