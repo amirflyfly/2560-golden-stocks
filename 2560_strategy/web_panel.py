@@ -20,6 +20,11 @@ REVIEW_STATUS_OPTIONS = ['未复盘', '值得复讲', '逻辑一般', '不建议
 RESULT_GRADE_OPTIONS = ['S', 'A', 'B', 'C', '待定']
 DEAL_STATUS_OPTIONS = ['未成交', '已咨询', '已成交', '待跟进']
 SPREAD_OPTIONS = ['否', '是']
+EXPORT_COLUMNS = [
+    'id', 'pick_date', 'code', 'name', 'pick_price', 'signal', 'source', 'source_channel',
+    'reason_tag', 'review_status', 'result_grade', 'inquiry_count', 'deal_status',
+    'secondary_spread', 'content_title', 'content_ref', 'note', 'archived', 'created_at'
+]
 
 
 def ensure_secret():
@@ -202,6 +207,20 @@ def bar_html(rows, label_key='name', value_key='cnt', color='#4f46e5', empty_tex
     return ''.join(items)
 
 
+def line_table_html(rows, empty_text='暂无数据', color='#4f46e5'):
+    if not rows:
+        return f'<div class="muted">{esc(empty_text)}</div>'
+    maxv = max([float(r.get('cnt', 0) or 0) for r in rows]) or 1
+    html_rows = []
+    for r in rows:
+        val = float(r.get('cnt', 0) or 0)
+        width = max(8, int(val / maxv * 100))
+        label_text = esc(r.get('name'))
+        display = str(int(round(val))) if abs(val - round(val)) < 1e-9 else f'{val:.1f}'
+        html_rows.append(f"<div class='line-row'><div class='line-date'>{label_text}</div><div class='line-track'><div class='line-fill' style='width:{width}%;background:{color}'></div></div><div class='line-value'>{display}</div></div>")
+    return ''.join(html_rows)
+
+
 def filter_where(params):
     wheres = []
     args = []
@@ -260,6 +279,9 @@ def get_flash(params):
         'batch_unarchived': '已批量恢复所选记录',
         'batch_deleted': '已批量删除所选记录',
         'batch_reviewed': '已批量更新复盘状态',
+        'batch_grade': '已批量更新结果评级',
+        'batch_deal': '已批量更新成交状态',
+        'batch_spread': '已批量更新二次传播状态',
         'imported': '已完成批量导入',
     }
     for key, text in mapping.items():
@@ -271,7 +293,7 @@ def get_flash(params):
 def bulk_import_from_csv(csv_text):
     csv_text = (csv_text or '').strip()
     if not csv_text:
-        return 0
+        return []
     reader = csv.DictReader(io.StringIO(csv_text))
     imported_ids = []
     for row in reader:
@@ -282,23 +304,11 @@ def bulk_import_from_csv(csv_text):
             (pick_date, code, name, pick_price, signal, source, source_channel, reason_tag, note, review_status, review_comment, content_title, content_ref, archived, result_grade, inquiry_count, deal_status, secondary_spread)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)''',
             (
-                (row.get('pick_date') or '').strip(),
-                (row.get('code') or '').strip(),
-                (row.get('name') or '').strip(),
-                num(row.get('pick_price')),
-                (row.get('signal') or '').strip(),
-                'csv-import',
-                (row.get('source_channel') or 'csv').strip(),
-                (row.get('reason_tag') or '').strip(),
-                (row.get('note') or '').strip(),
-                (row.get('review_status') or '未复盘').strip(),
-                (row.get('review_comment') or row.get('note') or '').strip(),
-                (row.get('content_title') or '').strip(),
-                (row.get('content_ref') or '').strip(),
-                (row.get('result_grade') or '待定').strip(),
-                int_num(row.get('inquiry_count')),
-                (row.get('deal_status') or '未成交').strip(),
-                (row.get('secondary_spread') or '否').strip(),
+                (row.get('pick_date') or '').strip(), (row.get('code') or '').strip(), (row.get('name') or '').strip(), num(row.get('pick_price')),
+                (row.get('signal') or '').strip(), 'csv-import', (row.get('source_channel') or 'csv').strip(), (row.get('reason_tag') or '').strip(),
+                (row.get('note') or '').strip(), (row.get('review_status') or '未复盘').strip(), (row.get('review_comment') or row.get('note') or '').strip(),
+                (row.get('content_title') or '').strip(), (row.get('content_ref') or '').strip(), (row.get('result_grade') or '待定').strip(),
+                int_num(row.get('inquiry_count')), (row.get('deal_status') or '未成交').strip(), (row.get('secondary_spread') or '否').strip(),
             )
         )
         new_row = q1('SELECT id FROM picks ORDER BY id DESC LIMIT 1')
@@ -307,48 +317,45 @@ def bulk_import_from_csv(csv_text):
     return imported_ids
 
 
+def rows_to_csv(rows):
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=EXPORT_COLUMNS)
+    writer.writeheader()
+    for row in rows:
+        writer.writerow({k: row.get(k, '') for k in EXPORT_COLUMNS})
+    return output.getvalue()
+
+
 def render_dashboard(params=None):
     params = params or {}
     flash = get_flash(params)
 
     overview = q1(
-        '''SELECT
-            COUNT(*) AS total,
-            SUM(CASE WHEN COALESCE(archived,0)=0 THEN 1 ELSE 0 END) AS active_total,
-            SUM(CASE WHEN COALESCE(archived,0)=1 THEN 1 ELSE 0 END) AS archived_total,
-            COUNT(DISTINCT COALESCE(NULLIF(source_channel,''),'system')) AS channel_total,
-            COUNT(DISTINCT COALESCE(NULLIF(reason_tag,''),'未标注')) AS tag_total,
-            COUNT(DISTINCT COALESCE(NULLIF(review_status,''),'未复盘')) AS status_total,
-            SUM(CASE WHEN COALESCE(NULLIF(review_status,''),'未复盘')='值得复讲' THEN 1 ELSE 0 END) AS worthy_total,
-            SUM(CASE WHEN COALESCE(NULLIF(deal_status,''),'未成交')='已成交' THEN 1 ELSE 0 END) AS deal_total,
-            SUM(CASE WHEN COALESCE(NULLIF(secondary_spread,''),'否')='是' THEN 1 ELSE 0 END) AS spread_total
-        FROM picks'''
+        '''SELECT COUNT(*) AS total,
+                  SUM(CASE WHEN COALESCE(archived,0)=0 THEN 1 ELSE 0 END) AS active_total,
+                  SUM(CASE WHEN COALESCE(NULLIF(deal_status,''),'未成交')='已成交' THEN 1 ELSE 0 END) AS deal_total,
+                  SUM(CASE WHEN COALESCE(NULLIF(secondary_spread,''),'否')='是' THEN 1 ELSE 0 END) AS spread_total,
+                  SUM(CASE WHEN COALESCE(NULLIF(review_status,''),'未复盘')='值得复讲' THEN 1 ELSE 0 END) AS worthy_total
+           FROM picks'''
     ) or {}
 
     kpi = q1(
-        '''SELECT
-            SUM(CASE WHEN date(pick_date) >= date('now','weekday 1','-7 days') THEN 1 ELSE 0 END) AS week_new,
-            SUM(CASE WHEN date(pick_date) >= date('now','-6 day') THEN 1 ELSE 0 END) AS last7_new,
-            SUM(CASE WHEN date(pick_date) >= date('now','-29 day') THEN 1 ELSE 0 END) AS last30_new,
-            ROUND(100.0 * SUM(CASE WHEN COALESCE(NULLIF(review_status,''),'未复盘')='值得复讲' THEN 1 ELSE 0 END) / NULLIF(COUNT(*),0), 1) AS worthy_rate,
-            ROUND(100.0 * SUM(CASE WHEN COALESCE(NULLIF(review_status,''),'未复盘')='未复盘' THEN 1 ELSE 0 END) / NULLIF(COUNT(*),0), 1) AS unreviewed_rate,
-            ROUND(AVG(COALESCE(inquiry_count,0)), 1) AS avg_inquiry
-        FROM picks
-        WHERE COALESCE(archived,0)=0'''
+        '''SELECT SUM(CASE WHEN date(pick_date) >= date('now','weekday 1','-7 days') THEN 1 ELSE 0 END) AS week_new,
+                  SUM(CASE WHEN date(pick_date) >= date('now','-6 day') THEN 1 ELSE 0 END) AS last7_new,
+                  SUM(CASE WHEN date(pick_date) >= date('now','-29 day') THEN 1 ELSE 0 END) AS last30_new,
+                  ROUND(100.0 * SUM(CASE WHEN COALESCE(NULLIF(review_status,''),'未复盘')='值得复讲' THEN 1 ELSE 0 END) / NULLIF(COUNT(*),0), 1) AS worthy_rate,
+                  ROUND(AVG(COALESCE(inquiry_count,0)), 1) AS avg_inquiry
+           FROM picks WHERE COALESCE(archived,0)=0'''
     ) or {}
 
     by_channel = q("SELECT COALESCE(NULLIF(source_channel,''),'system') AS name, COUNT(*) AS cnt FROM picks WHERE COALESCE(archived,0)=0 GROUP BY name ORDER BY cnt DESC")
     by_tag = q("SELECT COALESCE(NULLIF(reason_tag,''),'未标注') AS name, COUNT(*) AS cnt FROM picks WHERE COALESCE(archived,0)=0 GROUP BY name ORDER BY cnt DESC")
     by_status = q("SELECT COALESCE(NULLIF(review_status,''),'未复盘') AS name, COUNT(*) AS cnt FROM picks WHERE COALESCE(archived,0)=0 GROUP BY name ORDER BY cnt DESC")
-    by_content = q("SELECT COALESCE(NULLIF(content_title,''),'未绑定内容') AS name, COUNT(*) AS cnt FROM picks WHERE COALESCE(archived,0)=0 GROUP BY name ORDER BY cnt DESC LIMIT 10")
-    worthy_tags = q("SELECT COALESCE(NULLIF(reason_tag,''),'未标注') AS name, COUNT(*) AS cnt FROM picks WHERE COALESCE(archived,0)=0 AND COALESCE(NULLIF(review_status,''),'未复盘')='值得复讲' GROUP BY name ORDER BY cnt DESC LIMIT 10")
-    trend_30d = q("SELECT pick_date AS name, COUNT(*) AS cnt FROM picks WHERE COALESCE(archived,0)=0 AND date(pick_date) >= date('now','-29 day') GROUP BY pick_date ORDER BY pick_date ASC")
-    channel_win = q("SELECT COALESCE(NULLIF(source_channel,''),'system') AS name, ROUND(100.0 * SUM(CASE WHEN COALESCE(NULLIF(review_status,''),'未复盘')='值得复讲' THEN 1 ELSE 0 END) / COUNT(*), 1) AS cnt FROM picks WHERE COALESCE(archived,0)=0 GROUP BY name HAVING COUNT(*) >= 1 ORDER BY cnt DESC, COUNT(*) DESC LIMIT 10")
-    tag_win = q("SELECT COALESCE(NULLIF(reason_tag,''),'未标注') AS name, ROUND(100.0 * SUM(CASE WHEN COALESCE(NULLIF(review_status,''),'未复盘')='值得复讲' THEN 1 ELSE 0 END) / COUNT(*), 1) AS cnt FROM picks WHERE COALESCE(archived,0)=0 GROUP BY name HAVING COUNT(*) >= 1 ORDER BY cnt DESC, COUNT(*) DESC LIMIT 10")
-    channel_price = q("SELECT COALESCE(NULLIF(source_channel,''),'system') AS name, ROUND(AVG(COALESCE(pick_price,0)), 2) AS cnt FROM picks WHERE COALESCE(archived,0)=0 GROUP BY name HAVING COUNT(*) >= 1 ORDER BY cnt DESC LIMIT 10")
     by_grade = q("SELECT COALESCE(NULLIF(result_grade,''),'待定') AS name, COUNT(*) AS cnt FROM picks WHERE COALESCE(archived,0)=0 GROUP BY name ORDER BY cnt DESC")
     by_deal = q("SELECT COALESCE(NULLIF(deal_status,''),'未成交') AS name, COUNT(*) AS cnt FROM picks WHERE COALESCE(archived,0)=0 GROUP BY name ORDER BY cnt DESC")
-    inquiry_top_tag = q("SELECT COALESCE(NULLIF(reason_tag,''),'未标注') AS name, ROUND(AVG(COALESCE(inquiry_count,0)), 1) AS cnt FROM picks WHERE COALESCE(archived,0)=0 GROUP BY name HAVING COUNT(*) >= 1 ORDER BY cnt DESC LIMIT 10")
+    trend_30d = q("SELECT pick_date AS name, COUNT(*) AS cnt FROM picks WHERE COALESCE(archived,0)=0 AND date(pick_date) >= date('now','-29 day') GROUP BY pick_date ORDER BY pick_date ASC")
+    worthy_trend = q("SELECT pick_date AS name, SUM(CASE WHEN COALESCE(NULLIF(review_status,''),'未复盘')='值得复讲' THEN 1 ELSE 0 END) AS cnt FROM picks WHERE COALESCE(archived,0)=0 AND date(pick_date) >= date('now','-29 day') GROUP BY pick_date ORDER BY pick_date ASC")
+    deal_trend = q("SELECT pick_date AS name, SUM(CASE WHEN COALESCE(NULLIF(deal_status,''),'未成交')='已成交' THEN 1 ELSE 0 END) AS cnt FROM picks WHERE COALESCE(archived,0)=0 AND date(pick_date) >= date('now','-29 day') GROUP BY pick_date ORDER BY pick_date ASC")
     recent_logs = q("SELECT action, target_ids, detail, created_at FROM operation_logs ORDER BY id DESC LIMIT 15")
 
     where, args = filter_where(params)
@@ -357,8 +364,7 @@ def render_dashboard(params=None):
                    COALESCE(archived,0) AS archived, COALESCE(result_grade,'待定') AS result_grade,
                    COALESCE(inquiry_count,0) AS inquiry_count, COALESCE(deal_status,'未成交') AS deal_status,
                    COALESCE(secondary_spread,'否') AS secondary_spread
-            FROM picks {where}
-            ORDER BY pick_date DESC, id DESC LIMIT 120''',
+            FROM picks {where} ORDER BY pick_date DESC, id DESC LIMIT 120''',
         args,
     )
     filter_count = q1(f"SELECT COUNT(*) AS cnt FROM picks {where}", args)['cnt']
@@ -370,39 +376,11 @@ def render_dashboard(params=None):
     deal_opts = ''.join([f"<option value='{esc(v)}' {'selected' if (params.get('deal_status',[''])[0] == v) else ''}>{esc(v)}</option>" for v in DEAL_STATUS_OPTIONS])
 
     latest_rows = ''.join([
-        f"<tr>"
-        f"<td><input type='checkbox' name='ids' value='{r['id']}'></td>"
-        f"<td>{esc(r['pick_date'])}</td>"
-        f"<td>{esc(r['name'])}</td>"
-        f"<td>{esc(r['code'])}</td>"
-        f"<td>{esc(r['pick_price'])}</td>"
-        f"<td>{esc(r['source_channel'])}</td>"
-        f"<td>{esc(r['reason_tag'])}</td>"
-        f"<td>{esc(r['review_status'])}</td>"
-        f"<td>{esc(r['result_grade'])}</td>"
-        f"<td>{esc(r['deal_status'])}</td>"
-        f"<td>{esc(r['inquiry_count'])}</td>"
-        f"<td>{esc(r['secondary_spread'])}</td>"
-        f"<td><span class='badge {'badge-archived' if r['archived'] else 'badge-active'}'>{'已归档' if r['archived'] else '使用中'}</span></td>"
-        f"<td>"
-        f"<a class='txtbtn' href='/edit?id={r['id']}'>编辑</a>"
-        f"<form method='post' action='/{'unarchive' if r['archived'] else 'archive'}' class='inline-form'>"
-        f"<input type='hidden' name='id' value='{r['id']}'>"
-        f"<button type='submit' class='linkbtn'>{'恢复' if r['archived'] else '归档'}</button>"
-        f"</form>"
-        f"<form method='post' action='/delete' class='inline-form' onsubmit=\"return confirm('确认删除这条记录？删除后不可恢复。')\">"
-        f"<input type='hidden' name='id' value='{r['id']}'>"
-        f"<button type='submit' class='linkbtn danger'>删除</button>"
-        f"</form>"
-        f"</td>"
-        f"</tr>"
+        f"<tr><td><input type='checkbox' name='ids' value='{r['id']}'></td><td>{esc(r['pick_date'])}</td><td>{esc(r['name'])}</td><td>{esc(r['code'])}</td><td>{esc(r['pick_price'])}</td><td>{esc(r['source_channel'])}</td><td>{esc(r['reason_tag'])}</td><td>{esc(r['review_status'])}</td><td>{esc(r['result_grade'])}</td><td>{esc(r['deal_status'])}</td><td>{esc(r['inquiry_count'])}</td><td>{esc(r['secondary_spread'])}</td><td><span class='badge {'badge-archived' if r['archived'] else 'badge-active'}'>{'已归档' if r['archived'] else '使用中'}</span></td><td><a class='txtbtn' href='/edit?id={r['id']}'>编辑</a><form method='post' action='/{'unarchive' if r['archived'] else 'archive'}' class='inline-form'><input type='hidden' name='id' value='{r['id']}'><button type='submit' class='linkbtn'>{'恢复' if r['archived'] else '归档'}</button></form><form method='post' action='/delete' class='inline-form' onsubmit=\"return confirm('确认删除这条记录？删除后不可恢复。')\"><input type='hidden' name='id' value='{r['id']}'><button type='submit' class='linkbtn danger'>删除</button></form></td></tr>"
         for r in latest
     ]) or '<tr><td colspan="14">暂无数据</td></tr>'
 
-    log_rows = ''.join([
-        f"<tr><td>{esc(r['created_at'])}</td><td>{esc(r['action'])}</td><td>{esc(r['target_ids'])}</td><td>{esc(r['detail'])}</td></tr>"
-        for r in recent_logs
-    ]) or '<tr><td colspan="4">暂无日志</td></tr>'
+    log_rows = ''.join([f"<tr><td>{esc(r['created_at'])}</td><td>{esc(r['action'])}</td><td>{esc(r['target_ids'])}</td><td>{esc(r['detail'])}</td></tr>" for r in recent_logs]) or '<tr><td colspan="4">暂无日志</td></tr>'
 
     flash_html = f'<div class="flash">{esc(flash)}</div>' if flash else ''
     keyword = esc((params.get('keyword', [''])[0] or '').strip())
@@ -410,336 +388,106 @@ def render_dashboard(params=None):
     date_to = esc((params.get('date_to', [''])[0] or '').strip())
     archive_mode = (params.get('archive', ['active'])[0] or 'active').strip()
     filter_query = build_query_string(params)
-    export_href = '/export' + (f'?{filter_query}' if filter_query else '')
+    export_json_href = '/export' + (f'?{filter_query}' if filter_query else '')
+    export_csv_href = '/export.csv' + (f'?{filter_query}' if filter_query else '')
 
     csv_template = 'pick_date,code,name,pick_price,signal,source_channel,reason_tag,review_status,result_grade,inquiry_count,deal_status,secondary_spread,content_title,content_ref,note\n2026-03-09,600519,贵州茅台,1688,强势趋势,douyin,趋势突破,值得复讲,A,12,已咨询,是,爆款复盘01,vid-001,样例备注'
 
-    return f'''<!doctype html>
-<html lang="zh-CN"><head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>宣传票复盘系统 v3.7</title>
-<style>
-body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f6f7fb;color:#1f2937;margin:0;padding:24px}}
-.wrap{{max-width:1520px;margin:0 auto}}
-.grid{{display:grid;grid-template-columns:repeat(5,1fr);gap:16px}}
-.grid2{{display:grid;grid-template-columns:repeat(2,1fr);gap:16px}}
-.grid3{{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}}
-.card{{background:#fff;border-radius:16px;padding:18px;box-shadow:0 6px 20px rgba(0,0,0,.06)}}
-h1,h2{{margin:0 0 12px}} .muted{{color:#6b7280;font-size:14px}} .num{{font-size:32px;font-weight:700}}
-table{{width:100%;border-collapse:collapse}} th,td{{padding:10px;border-bottom:1px solid #eee;text-align:left;font-size:14px;vertical-align:top;white-space:nowrap}} th{{background:#fafafa}}
-.section{{margin-top:20px}} input,select,textarea{{width:100%;padding:10px;border:1px solid #d1d5db;border-radius:10px;box-sizing:border-box}} textarea{{min-height:90px}} .bigtextarea{{min-height:180px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}} .formgrid{{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}} .formgrid3{{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}} button{{background:#111827;color:#fff;border:0;border-radius:10px;padding:10px 16px;cursor:pointer}} .hint{{font-size:13px;color:#6b7280}} a.btn{{display:inline-block;background:#111827;color:#fff;text-decoration:none;padding:10px 16px;border-radius:10px;margin-right:8px}}
-.bar-row{{display:grid;grid-template-columns:140px 1fr 62px;gap:10px;align-items:center;margin:8px 0}} .bar-track{{height:12px;background:#eef2ff;border-radius:999px;overflow:hidden}} .bar-fill{{height:100%;border-radius:999px}} .bar-label,.bar-value{{font-size:13px}} .flash{{background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0;padding:10px 12px;border-radius:12px;margin-top:16px}}
-.inline-form{{display:inline}} .linkbtn{{background:none;color:#2563eb;padding:0 6px;border:none;border-radius:0}} .linkbtn.danger{{color:#dc2626}} .txtbtn{{color:#2563eb;text-decoration:none;padding-right:6px}} .badge{{display:inline-block;padding:4px 8px;border-radius:999px;font-size:12px}} .badge-active{{background:#dcfce7;color:#166534}} .badge-archived{{background:#f3f4f6;color:#4b5563}}
-.topline{{display:flex;justify-content:space-between;align-items:flex-end;gap:12px;flex-wrap:wrap}} .bulkbar{{display:flex;gap:8px;flex-wrap:wrap;align-items:center}} .bulkbar select{{width:auto;min-width:150px}} .smallbtn{{padding:8px 12px;border-radius:10px}} .tablewrap{{overflow:auto}} .subtle{{font-size:12px;color:#6b7280}}
-@media (max-width: 980px){{.grid,.grid2,.grid3,.formgrid,.formgrid3{{grid-template-columns:1fr}} body{{padding:16px}} .wrap{{max-width:100%}}}}
-</style>
-<script>
-function toggleAll(source){{ document.querySelectorAll('input[name="ids"]').forEach(cb => cb.checked = source.checked); }}
-function ensureSelected(form){{ const checked = form.querySelectorAll('input[name="ids"]:checked'); if (!checked.length) {{ alert('请先勾选至少一条记录'); return false; }} return true; }}
-</script>
-</head><body><div class="wrap">
-<div class="topline">
-<div>
-<h1>宣传票复盘系统 v3.7</h1>
-<div class="muted">更新时间：{datetime.now().strftime('%Y-%m-%d %H:%M')} · 已启用密码保护 · 本地端口 {PORT}</div>
-</div>
-<div class="muted">本次新增：复盘字段升级 / 批量 CSV 导入</div>
-</div>
-{flash_html}
-<div class="grid section">
-<div class="card"><div class="muted">累计记录</div><div class="num">{overview.get('total', 0)}</div></div>
-<div class="card"><div class="muted">使用中</div><div class="num">{overview.get('active_total', 0) or 0}</div></div>
-<div class="card"><div class="muted">已成交数</div><div class="num">{int(overview.get('deal_total') or 0)}</div></div>
-<div class="card"><div class="muted">二次传播数</div><div class="num">{int(overview.get('spread_total') or 0)}</div></div>
-<div class="card"><div class="muted">值得复讲总数</div><div class="num">{int(overview.get('worthy_total') or 0)}</div></div>
-</div>
-<div class="grid3 section">
-<div class="card"><div class="muted">本周新增</div><div class="num">{int(kpi.get('week_new') or 0)}</div></div>
-<div class="card"><div class="muted">近7天新增</div><div class="num">{int(kpi.get('last7_new') or 0)}</div></div>
-<div class="card"><div class="muted">值得复讲率</div><div class="num">{kpi.get('worthy_rate') or 0}%</div></div>
-</div>
-<div class="grid3 section">
-<div class="card"><div class="muted">近30天新增</div><div class="num">{int(kpi.get('last30_new') or 0)}</div></div>
-<div class="card"><div class="muted">未复盘占比</div><div class="num">{kpi.get('unreviewed_rate') or 0}%</div></div>
-<div class="card"><div class="muted">平均咨询数</div><div class="num">{kpi.get('avg_inquiry') or 0}</div></div>
-</div>
-<div class="grid3 section">
-<div class="card"><h2>结果评级分布</h2>{bar_html(by_grade, color='#0f766e')}</div>
-<div class="card"><h2>成交状态分布</h2>{bar_html(by_deal, color='#ca8a04')}</div>
-<div class="card"><h2>标签平均咨询数 Top10</h2>{bar_html(inquiry_top_tag, color='#2563eb')}</div>
-</div>
-<div class="grid2 section">
-<div class="card"><h2>渠道分布图</h2>{bar_html(by_channel, color='#4f46e5')}</div>
-<div class="card"><h2>内容联动 Top10 图</h2>{bar_html(by_content, color='#059669')}</div>
-</div>
-<div class="grid3 section">
-<div class="card"><h2>标签分布图</h2>{bar_html(by_tag, color='#dc2626')}</div>
-<div class="card"><h2>人工复盘状态图</h2>{bar_html(by_status, color='#d97706')}</div>
-<div class="card"><h2>值得复讲标签 Top10</h2>{bar_html(worthy_tags, color='#0ea5e9', empty_text='暂无值得复讲数据')}</div>
-</div>
-<div class="grid3 section">
-<div class="card"><h2>渠道命中率 Top10</h2><div class="subtle">按“值得复讲”占比计算</div>{bar_html(channel_win, color='#7c3aed', empty_text='暂无数据', suffix='%')}</div>
-<div class="card"><h2>标签命中率 Top10</h2><div class="subtle">看哪些标签更容易沉淀优质内容</div>{bar_html(tag_win, color='#0891b2', empty_text='暂无数据', suffix='%')}</div>
-<div class="card"><h2>渠道平均推荐价</h2><div class="subtle">便于横向比较不同渠道票池特征</div>{bar_html(channel_price, color='#16a34a', empty_text='暂无数据')}</div>
-</div>
-<div class="section card">
-<h2>近 30 天录入趋势</h2>
-<div class="muted" style="margin-bottom:10px">看最近录入节奏，判断复盘动作是否连续</div>
-{bar_html(trend_30d, color='#7c3aed', empty_text='近30天暂无数据')}
-</div>
-<div class="section card">
-<h2>筛选 / 搜索</h2>
-<form method="get" action="/">
-<div class="formgrid3">
-<div><label>关键词</label><input name="keyword" value="{keyword}" placeholder="股票代码/股票名称/内容标题/内容编号"></div>
-<div><label>渠道</label><select name="channel"><option value="">全部</option>{channel_opts}</select></div>
-<div><label>标签</label><select name="tag"><option value="">全部</option>{tag_opts}</select></div>
-<div><label>复盘状态</label><select name="status"><option value="">全部</option>{status_opts}</select></div>
-<div><label>结果评级</label><select name="grade"><option value="">全部</option>{grade_opts}</select></div>
-<div><label>成交状态</label><select name="deal_status"><option value="">全部</option>{deal_opts}</select></div>
-<div><label>开始日期</label><input type="date" name="date_from" value="{date_from}"></div>
-<div><label>结束日期</label><input type="date" name="date_to" value="{date_to}"></div>
-<div><label>记录范围</label><select name="archive"><option value="active" {'selected' if archive_mode == 'active' else ''}>仅使用中</option><option value="archived" {'selected' if archive_mode == 'archived' else ''}>仅已归档</option><option value="all" {'selected' if archive_mode == 'all' else ''}>全部记录</option></select></div>
-</div>
-<div style="margin-top:12px"><button type="submit">筛选结果</button> <a class="btn" href="/">清空筛选</a></div>
-<div class="hint" style="margin-top:8px">当前筛选结果：{filter_count} 条</div>
-</form>
-</div>
-<div class="grid2 section">
-<div class="card">
-<h2>新增记录</h2>
-<form method="post" action="/add">
-<div class="formgrid3">
-<div><label>日期</label><input name="pick_date" value="{datetime.now().strftime('%Y-%m-%d')}" required></div>
-<div><label>股票代码</label><input name="code" required></div>
-<div><label>股票名称</label><input name="name" required></div>
-<div><label>推荐价</label><input name="pick_price" required></div>
-<div><label>信号</label><input name="signal"></div>
-<div><label>渠道</label><input name="source_channel" placeholder="douyin/xhs/live/community"></div>
-<div><label>标签</label><input name="reason_tag" placeholder="趋势突破/缩量回踩"></div>
-<div><label>复盘结论</label><select name="review_status">{select_options(REVIEW_STATUS_OPTIONS, '未复盘')}</select></div>
-<div><label>结果评级</label><select name="result_grade">{select_options(RESULT_GRADE_OPTIONS, '待定')}</select></div>
-<div><label>咨询数</label><input name="inquiry_count" value="0"></div>
-<div><label>成交状态</label><select name="deal_status">{select_options(DEAL_STATUS_OPTIONS, '未成交')}</select></div>
-<div><label>二次传播</label><select name="secondary_spread">{select_options(SPREAD_OPTIONS, '否')}</select></div>
-<div><label>内容标题</label><input name="content_title"></div>
-<div><label>内容编号/链接</label><input name="content_ref"></div>
-</div>
-<div style="margin-top:12px"><label>备注/复盘评论</label><textarea name="note"></textarea></div>
-<div style="margin-top:12px"><button type="submit">保存到系统</button></div>
-</form>
-</div>
-<div class="card">
-<h2>批量 CSV 导入</h2>
-<div class="hint">把历史数据按 CSV 表头粘贴进来，一次性导入。支持字段：日期、代码、名称、价格、渠道、标签、复盘状态、评级、咨询数、成交状态、二次传播等。</div>
-<form method="post" action="/bulk-import">
-<div style="margin-top:12px"><textarea class="bigtextarea" name="csv_text" placeholder="{esc(csv_template)}"></textarea></div>
-<div style="margin-top:12px"><button type="submit">批量导入 CSV</button></div>
-</form>
-</div>
-</div>
-<div class="section card">
-<h2>快捷入口</h2>
-<p><a class="btn" href="{export_href}">导出当前筛选 JSON</a><a class="btn" href="/logout">退出登录</a></p>
-</div>
-<div class="section card">
-<div class="topline" style="margin-bottom:12px"><h2>最新记录</h2><div class="subtle">支持批量归档 / 恢复 / 删除 / 批量改复盘状态</div></div>
-<form method="post" action="/batch-review" onsubmit="return ensureSelected(this)">
-<div class="bulkbar" style="margin-bottom:12px">
-<select name="review_status">{select_options(REVIEW_STATUS_OPTIONS, '值得复讲')}</select>
-<button type="submit" class="smallbtn">批量更新复盘状态</button>
-<button formaction="/batch-archive" type="submit" class="smallbtn">批量归档</button>
-<button formaction="/batch-unarchive" type="submit" class="smallbtn">批量恢复</button>
-<button formaction="/batch-delete" type="submit" class="smallbtn" onclick="return ensureSelected(this.form) && confirm('确认批量删除所选记录？删除后不可恢复。')">批量删除</button>
-</div>
-<div class="tablewrap"><table><thead><tr><th><input type="checkbox" onclick="toggleAll(this)"></th><th>日期</th><th>股票</th><th>代码</th><th>推荐价</th><th>渠道</th><th>标签</th><th>复盘结论</th><th>评级</th><th>成交状态</th><th>咨询数</th><th>二次传播</th><th>状态</th><th>操作</th></tr></thead><tbody>{latest_rows}</tbody></table></div>
-</form>
-</div>
-<div class="section card">
-<h2>最近操作日志</h2>
-<div class="subtle" style="margin-bottom:10px">记录新增、编辑、归档、删除、批量更新、批量导入等关键动作</div>
-<div class="tablewrap"><table><thead><tr><th>时间</th><th>动作</th><th>记录ID</th><th>说明</th></tr></thead><tbody>{log_rows}</tbody></table></div>
-</div>
-</div></body></html>'''
+    return f'''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>宣传票复盘系统 v3.8</title><style>
+body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f6f7fb;color:#1f2937;margin:0;padding:24px}} .wrap{{max-width:1540px;margin:0 auto}} .grid{{display:grid;grid-template-columns:repeat(5,1fr);gap:16px}} .grid2{{display:grid;grid-template-columns:repeat(2,1fr);gap:16px}} .grid3{{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}} .card{{background:#fff;border-radius:16px;padding:18px;box-shadow:0 6px 20px rgba(0,0,0,.06)}} h1,h2{{margin:0 0 12px}} .muted{{color:#6b7280;font-size:14px}} .num{{font-size:32px;font-weight:700}} table{{width:100%;border-collapse:collapse}} th,td{{padding:10px;border-bottom:1px solid #eee;text-align:left;font-size:14px;vertical-align:top;white-space:nowrap}} th{{background:#fafafa}} .section{{margin-top:20px}} input,select,textarea{{width:100%;padding:10px;border:1px solid #d1d5db;border-radius:10px;box-sizing:border-box}} textarea{{min-height:90px}} .bigtextarea{{min-height:180px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}} .formgrid3{{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}} button{{background:#111827;color:#fff;border:0;border-radius:10px;padding:10px 16px;cursor:pointer}} .hint{{font-size:13px;color:#6b7280}} a.btn{{display:inline-block;background:#111827;color:#fff;text-decoration:none;padding:10px 16px;border-radius:10px;margin-right:8px}} .bar-row,.line-row{{display:grid;grid-template-columns:140px 1fr 62px;gap:10px;align-items:center;margin:8px 0}} .bar-track,.line-track{{height:12px;background:#eef2ff;border-radius:999px;overflow:hidden}} .bar-fill,.line-fill{{height:100%;border-radius:999px}} .bar-label,.bar-value,.line-date,.line-value{{font-size:13px}} .flash{{background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0;padding:10px 12px;border-radius:12px;margin-top:16px}} .inline-form{{display:inline}} .linkbtn{{background:none;color:#2563eb;padding:0 6px;border:none;border-radius:0}} .linkbtn.danger{{color:#dc2626}} .txtbtn{{color:#2563eb;text-decoration:none;padding-right:6px}} .badge{{display:inline-block;padding:4px 8px;border-radius:999px;font-size:12px}} .badge-active{{background:#dcfce7;color:#166534}} .badge-archived{{background:#f3f4f6;color:#4b5563}} .topline{{display:flex;justify-content:space-between;align-items:flex-end;gap:12px;flex-wrap:wrap}} .bulkbar{{display:flex;gap:8px;flex-wrap:wrap;align-items:center}} .bulkbar select{{width:auto;min-width:140px}} .smallbtn{{padding:8px 12px;border-radius:10px}} .tablewrap{{overflow:auto}} .subtle{{font-size:12px;color:#6b7280}} @media (max-width: 980px){{.grid,.grid2,.grid3,.formgrid3{{grid-template-columns:1fr}} body{{padding:16px}} .wrap{{max-width:100%}}}}
+</style><script>function toggleAll(source){{document.querySelectorAll('input[name="ids"]').forEach(cb=>cb.checked=source.checked);}} function ensureSelected(form){{const checked=form.querySelectorAll('input[name="ids"]:checked'); if(!checked.length){{alert('请先勾选至少一条记录'); return false;}} return true;}}</script></head><body><div class="wrap"><div class="topline"><div><h1>宣传票复盘系统 v3.8</h1><div class="muted">更新时间：{datetime.now().strftime('%Y-%m-%d %H:%M')} · 已启用密码保护 · 本地端口 {PORT}</div></div><div class="muted">本次新增：批量编辑字段 / CSV导出 / 趋势图</div></div>{flash_html}
+<div class="grid section"><div class="card"><div class="muted">累计记录</div><div class="num">{overview.get('total',0)}</div></div><div class="card"><div class="muted">使用中</div><div class="num">{overview.get('active_total',0) or 0}</div></div><div class="card"><div class="muted">已成交数</div><div class="num">{int(overview.get('deal_total') or 0)}</div></div><div class="card"><div class="muted">二次传播数</div><div class="num">{int(overview.get('spread_total') or 0)}</div></div><div class="card"><div class="muted">值得复讲总数</div><div class="num">{int(overview.get('worthy_total') or 0)}</div></div></div>
+<div class="grid3 section"><div class="card"><div class="muted">本周新增</div><div class="num">{int(kpi.get('week_new') or 0)}</div></div><div class="card"><div class="muted">近7天新增</div><div class="num">{int(kpi.get('last7_new') or 0)}</div></div><div class="card"><div class="muted">值得复讲率</div><div class="num">{kpi.get('worthy_rate') or 0}%</div></div></div>
+<div class="grid3 section"><div class="card"><div class="muted">近30天新增</div><div class="num">{int(kpi.get('last30_new') or 0)}</div></div><div class="card"><div class="muted">平均咨询数</div><div class="num">{kpi.get('avg_inquiry') or 0}</div></div><div class="card"><div class="muted">CSV导出</div><div style="margin-top:12px"><a class="btn" href="{export_csv_href}">导出 CSV</a></div></div></div>
+<div class="grid3 section"><div class="card"><h2>结果评级分布</h2>{bar_html(by_grade, color='#0f766e')}</div><div class="card"><h2>成交状态分布</h2>{bar_html(by_deal, color='#ca8a04')}</div><div class="card"><h2>标签分布</h2>{bar_html(by_tag, color='#dc2626')}</div></div>
+<div class="grid3 section"><div class="card"><h2>近30天录入趋势</h2>{line_table_html(trend_30d, color='#7c3aed')}</div><div class="card"><h2>近30天值得复讲趋势</h2>{line_table_html(worthy_trend, color='#0891b2')}</div><div class="card"><h2>近30天成交趋势</h2>{line_table_html(deal_trend, color='#16a34a')}</div></div>
+<div class="section card"><h2>筛选 / 搜索</h2><form method="get" action="/"><div class="formgrid3"><div><label>关键词</label><input name="keyword" value="{esc((params.get('keyword',[''])[0] or '').strip())}" placeholder="股票代码/股票名称/内容标题/内容编号"></div><div><label>渠道</label><select name="channel"><option value="">全部</option>{channel_opts}</select></div><div><label>标签</label><select name="tag"><option value="">全部</option>{tag_opts}</select></div><div><label>复盘状态</label><select name="status"><option value="">全部</option>{status_opts}</select></div><div><label>结果评级</label><select name="grade"><option value="">全部</option>{grade_opts}</select></div><div><label>成交状态</label><select name="deal_status"><option value="">全部</option>{deal_opts}</select></div><div><label>开始日期</label><input type="date" name="date_from" value="{esc((params.get('date_from',[''])[0] or '').strip())}"></div><div><label>结束日期</label><input type="date" name="date_to" value="{esc((params.get('date_to',[''])[0] or '').strip())}"></div><div><label>记录范围</label><select name="archive"><option value="active" {'selected' if (params.get('archive',['active'])[0] or 'active')=='active' else ''}>仅使用中</option><option value="archived" {'selected' if (params.get('archive',['active'])[0] or 'active')=='archived' else ''}>仅已归档</option><option value="all" {'selected' if (params.get('archive',['active'])[0] or 'active')=='all' else ''}>全部记录</option></select></div></div><div style="margin-top:12px"><button type="submit">筛选结果</button> <a class="btn" href="/">清空筛选</a></div><div class="hint" style="margin-top:8px">当前筛选结果：{filter_count} 条</div></form></div>
+<div class="grid2 section"><div class="card"><h2>新增记录</h2><form method="post" action="/add"><div class="formgrid3"><div><label>日期</label><input name="pick_date" value="{datetime.now().strftime('%Y-%m-%d')}" required></div><div><label>股票代码</label><input name="code" required></div><div><label>股票名称</label><input name="name" required></div><div><label>推荐价</label><input name="pick_price" required></div><div><label>信号</label><input name="signal"></div><div><label>渠道</label><input name="source_channel" placeholder="douyin/xhs/live/community"></div><div><label>标签</label><input name="reason_tag" placeholder="趋势突破/缩量回踩"></div><div><label>复盘结论</label><select name="review_status">{select_options(REVIEW_STATUS_OPTIONS, '未复盘')}</select></div><div><label>结果评级</label><select name="result_grade">{select_options(RESULT_GRADE_OPTIONS, '待定')}</select></div><div><label>咨询数</label><input name="inquiry_count" value="0"></div><div><label>成交状态</label><select name="deal_status">{select_options(DEAL_STATUS_OPTIONS, '未成交')}</select></div><div><label>二次传播</label><select name="secondary_spread">{select_options(SPREAD_OPTIONS, '否')}</select></div><div><label>内容标题</label><input name="content_title"></div><div><label>内容编号/链接</label><input name="content_ref"></div></div><div style="margin-top:12px"><label>备注/复盘评论</label><textarea name="note"></textarea></div><div style="margin-top:12px"><button type="submit">保存到系统</button></div></form></div>
+<div class="card"><h2>批量 CSV 导入</h2><div class="hint">粘贴 CSV 历史数据一次性导入。</div><form method="post" action="/bulk-import"><div style="margin-top:12px"><textarea class="bigtextarea" name="csv_text" placeholder="{esc(csv_template)}"></textarea></div><div style="margin-top:12px"><button type="submit">批量导入 CSV</button></div></form></div></div>
+<div class="section card"><h2>快捷入口</h2><p><a class="btn" href="{export_json_href}">导出 JSON</a><a class="btn" href="{export_csv_href}">导出 CSV</a><a class="btn" href="/logout">退出登录</a></p></div>
+<div class="section card"><div class="topline" style="margin-bottom:12px"><h2>最新记录</h2><div class="subtle">支持批量归档 / 恢复 / 删除 / 批量改复盘状态 / 评级 / 成交 / 传播</div></div><form method="post" action="/batch-review" onsubmit="return ensureSelected(this)"><div class="bulkbar" style="margin-bottom:12px"><select name="review_status">{select_options(REVIEW_STATUS_OPTIONS, '值得复讲')}</select><button type="submit" class="smallbtn">批量改复盘状态</button><select name="result_grade">{select_options(RESULT_GRADE_OPTIONS, 'A')}</select><button formaction="/batch-grade" type="submit" class="smallbtn">批量改评级</button><select name="deal_status">{select_options(DEAL_STATUS_OPTIONS, '已咨询')}</select><button formaction="/batch-deal" type="submit" class="smallbtn">批量改成交状态</button><select name="secondary_spread">{select_options(SPREAD_OPTIONS, '是')}</select><button formaction="/batch-spread" type="submit" class="smallbtn">批量改传播</button><button formaction="/batch-archive" type="submit" class="smallbtn">批量归档</button><button formaction="/batch-unarchive" type="submit" class="smallbtn">批量恢复</button><button formaction="/batch-delete" type="submit" class="smallbtn" onclick="return ensureSelected(this.form) && confirm('确认批量删除所选记录？删除后不可恢复。')">批量删除</button></div><div class="tablewrap"><table><thead><tr><th><input type="checkbox" onclick="toggleAll(this)"></th><th>日期</th><th>股票</th><th>代码</th><th>推荐价</th><th>渠道</th><th>标签</th><th>复盘结论</th><th>评级</th><th>成交状态</th><th>咨询数</th><th>二次传播</th><th>状态</th><th>操作</th></tr></thead><tbody>{latest_rows}</tbody></table></div></form></div>
+<div class="section card"><h2>最近操作日志</h2><div class="tablewrap"><table><thead><tr><th>时间</th><th>动作</th><th>记录ID</th><th>说明</th></tr></thead><tbody>{log_rows}</tbody></table></div></div></div></body></html>'''
 
 
 def render_login(error=''):
     err = f'<div class="err">{esc(error)}</div>' if error else ''
-    return f'''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>登录宣传票复盘系统</title><style>body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f6f7fb;padding:24px}}.box{{max-width:420px;margin:10vh auto;background:#fff;padding:24px;border-radius:16px;box-shadow:0 6px 20px rgba(0,0,0,.06)}}input{{width:100%;padding:12px;border:1px solid #d1d5db;border-radius:10px;box-sizing:border-box}}button{{margin-top:12px;width:100%;padding:12px;background:#111827;color:#fff;border:0;border-radius:10px}}.muted{{color:#6b7280;font-size:14px}}.err{{background:#fef2f2;color:#991b1b;border:1px solid #fecaca;padding:10px;border-radius:10px;margin:12px 0}}</style></head><body><div class="box"><h1>登录宣传票复盘系统</h1><div class="muted">v3.7 已启用访问密码保护</div>{err}<form method="post" action="/login"><input type="password" name="password" placeholder="请输入访问密码" required><button type="submit">登录</button></form></div></body></html>'''
+    return f'''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>登录宣传票复盘系统</title><style>body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f6f7fb;padding:24px}}.box{{max-width:420px;margin:10vh auto;background:#fff;padding:24px;border-radius:16px;box-shadow:0 6px 20px rgba(0,0,0,.06)}}input{{width:100%;padding:12px;border:1px solid #d1d5db;border-radius:10px;box-sizing:border-box}}button{{margin-top:12px;width:100%;padding:12px;background:#111827;color:#fff;border:0;border-radius:10px}}.muted{{color:#6b7280;font-size:14px}}.err{{background:#fef2f2;color:#991b1b;border:1px solid #fecaca;padding:10px;border-radius:10px;margin:12px 0}}</style></head><body><div class="box"><h1>登录宣传票复盘系统</h1><div class="muted">v3.8 已启用访问密码保护</div>{err}<form method="post" action="/login"><input type="password" name="password" placeholder="请输入访问密码" required><button type="submit">登录</button></form></div></body></html>'''
 
 
 def render_edit_form(record):
     if not record:
         return '<!doctype html><html><body>记录不存在</body></html>'
-    return f'''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>编辑记录</title><style>body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f6f7fb;padding:24px;color:#1f2937}}.box{{max-width:1080px;margin:0 auto;background:#fff;padding:24px;border-radius:16px;box-shadow:0 6px 20px rgba(0,0,0,.06)}}input,select,textarea{{width:100%;padding:10px;border:1px solid #d1d5db;border-radius:10px;box-sizing:border-box}}textarea{{min-height:100px}}.formgrid3{{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}}button{{background:#111827;color:#fff;border:0;border-radius:10px;padding:10px 16px;cursor:pointer}}a.btn{{display:inline-block;background:#fff;color:#111827;text-decoration:none;padding:10px 16px;border-radius:10px;border:1px solid #d1d5db;margin-left:8px}}@media (max-width: 900px){{.formgrid3{{grid-template-columns:1fr}}}}</style></head><body><div class="box"><h1>编辑宣传票记录</h1><div style="color:#6b7280;margin-bottom:16px">记录 ID：{record['id']} · 可直接修改复盘字段与业务结果</div><form method="post" action="/update"><input type="hidden" name="id" value="{record['id']}"><div class="formgrid3"><div><label>日期</label><input name="pick_date" value="{esc(record['pick_date'])}" required></div><div><label>股票代码</label><input name="code" value="{esc(record['code'])}" required></div><div><label>股票名称</label><input name="name" value="{esc(record['name'])}" required></div><div><label>推荐价</label><input name="pick_price" value="{esc(record['pick_price'])}" required></div><div><label>信号</label><input name="signal" value="{esc(record['signal'])}"></div><div><label>渠道</label><input name="source_channel" value="{esc(record['source_channel'])}"></div><div><label>标签</label><input name="reason_tag" value="{esc(record['reason_tag'])}"></div><div><label>复盘结论</label><select name="review_status">{select_options(REVIEW_STATUS_OPTIONS, label(record['review_status'], '未复盘'))}</select></div><div><label>结果评级</label><select name="result_grade">{select_options(RESULT_GRADE_OPTIONS, label(record.get('result_grade'), '待定'))}</select></div><div><label>咨询数</label><input name="inquiry_count" value="{esc(record.get('inquiry_count', 0))}"></div><div><label>成交状态</label><select name="deal_status">{select_options(DEAL_STATUS_OPTIONS, label(record.get('deal_status'), '未成交'))}</select></div><div><label>二次传播</label><select name="secondary_spread">{select_options(SPREAD_OPTIONS, label(record.get('secondary_spread'), '否'))}</select></div><div><label>内容标题</label><input name="content_title" value="{esc(record['content_title'])}"></div><div><label>内容编号/链接</label><input name="content_ref" value="{esc(record['content_ref'])}"></div></div><div style="margin-top:12px"><label>备注/复盘评论</label><textarea name="note">{esc(record['note'])}</textarea></div><div style="margin-top:16px"><button type="submit">保存修改</button><a class="btn" href="/">返回面板</a></div></form></div></body></html>'''
+    return f'''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>编辑记录</title><style>body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f6f7fb;padding:24px;color:#1f2937}}.box{{max-width:1080px;margin:0 auto;background:#fff;padding:24px;border-radius:16px;box-shadow:0 6px 20px rgba(0,0,0,.06)}}input,select,textarea{{width:100%;padding:10px;border:1px solid #d1d5db;border-radius:10px;box-sizing:border-box}}textarea{{min-height:100px}}.formgrid3{{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}}button{{background:#111827;color:#fff;border:0;border-radius:10px;padding:10px 16px;cursor:pointer}}a.btn{{display:inline-block;background:#fff;color:#111827;text-decoration:none;padding:10px 16px;border-radius:10px;border:1px solid #d1d5db;margin-left:8px}}@media (max-width: 900px){{.formgrid3{{grid-template-columns:1fr}}}}</style></head><body><div class="box"><h1>编辑宣传票记录</h1><form method="post" action="/update"><input type="hidden" name="id" value="{record['id']}"><div class="formgrid3"><div><label>日期</label><input name="pick_date" value="{esc(record['pick_date'])}" required></div><div><label>股票代码</label><input name="code" value="{esc(record['code'])}" required></div><div><label>股票名称</label><input name="name" value="{esc(record['name'])}" required></div><div><label>推荐价</label><input name="pick_price" value="{esc(record['pick_price'])}" required></div><div><label>信号</label><input name="signal" value="{esc(record['signal'])}"></div><div><label>渠道</label><input name="source_channel" value="{esc(record['source_channel'])}"></div><div><label>标签</label><input name="reason_tag" value="{esc(record['reason_tag'])}"></div><div><label>复盘结论</label><select name="review_status">{select_options(REVIEW_STATUS_OPTIONS, label(record.get('review_status'), '未复盘'))}</select></div><div><label>结果评级</label><select name="result_grade">{select_options(RESULT_GRADE_OPTIONS, label(record.get('result_grade'), '待定'))}</select></div><div><label>咨询数</label><input name="inquiry_count" value="{esc(record.get('inquiry_count', 0))}"></div><div><label>成交状态</label><select name="deal_status">{select_options(DEAL_STATUS_OPTIONS, label(record.get('deal_status'), '未成交'))}</select></div><div><label>二次传播</label><select name="secondary_spread">{select_options(SPREAD_OPTIONS, label(record.get('secondary_spread'), '否'))}</select></div><div><label>内容标题</label><input name="content_title" value="{esc(record['content_title'])}"></div><div><label>内容编号/链接</label><input name="content_ref" value="{esc(record['content_ref'])}"></div></div><div style="margin-top:12px"><label>备注/复盘评论</label><textarea name="note">{esc(record['note'])}</textarea></div><div style="margin-top:16px"><button type="submit">保存修改</button><a class="btn" href="/">返回面板</a></div></form></div></body></html>'''
 
 
 class Handler(BaseHTTPRequestHandler):
-    def cookies(self):
-        return parse_cookies(self.headers.get('Cookie'))
-
-    def authed(self):
-        return self.cookies().get(COOKIE_NAME) == PANEL_PASSWORD
-
+    def cookies(self): return parse_cookies(self.headers.get('Cookie'))
+    def authed(self): return self.cookies().get(COOKIE_NAME) == PANEL_PASSWORD
     def _send(self, code, body, content_type='text/html; charset=utf-8', extra_headers=None):
         body_bytes = body.encode('utf-8') if isinstance(body, str) else body
-        self.send_response(code)
-        self.send_header('Content-Type', content_type)
-        self.send_header('Content-Length', str(len(body_bytes)))
+        self.send_response(code); self.send_header('Content-Type', content_type); self.send_header('Content-Length', str(len(body_bytes)))
         if extra_headers:
-            for k, v in extra_headers.items():
-                self.send_header(k, v)
-        self.end_headers()
-        self.wfile.write(body_bytes)
-
+            for k, v in extra_headers.items(): self.send_header(k, v)
+        self.end_headers(); self.wfile.write(body_bytes)
     def _redirect(self, location, cookie=None):
         self.send_response(303)
-        if cookie:
-            self.send_header('Set-Cookie', cookie)
-        self.send_header('Location', location)
-        self.end_headers()
-
+        if cookie: self.send_header('Set-Cookie', cookie)
+        self.send_header('Location', location); self.end_headers()
     def _read_post(self):
         length = int(self.headers.get('Content-Length', '0'))
-        raw = self.rfile.read(length).decode('utf-8')
-        return parse_multi_post(raw)
-
-    def _selected_ids(self, data):
-        return [int(x) for x in as_list(data, 'ids') if str(x).isdigit()]
-
-    def _batch_update(self, sql, ids):
-        if not ids:
-            return 0
-        return execute_many(sql, [(i,) for i in ids])
+        return parse_multi_post(self.rfile.read(length).decode('utf-8'))
+    def _selected_ids(self, data): return [int(x) for x in as_list(data, 'ids') if str(x).isdigit()]
+    def _batch_update(self, sql, ids): return execute_many(sql, [(i,) for i in ids]) if ids else 0
 
     def do_GET(self):
         parsed = urlparse(self.path)
-        if parsed.path == '/health':
-            self._send(200, 'ok', 'text/plain; charset=utf-8')
-            return
-        if parsed.path == '/logout':
-            self._redirect('/login', f'{COOKIE_NAME}=; Path=/; Max-Age=0')
-            return
-        if parsed.path == '/login':
-            self._send(200, render_login())
-            return
-        if not self.authed():
-            self._redirect('/login')
-            return
-        if parsed.path == '/':
-            self._send(200, render_dashboard(parse_qs(parsed.query)))
-        elif parsed.path == '/edit':
-            record_id = parse_qs(parsed.query).get('id', [''])[0]
-            record = q1('SELECT * FROM picks WHERE id=?', (record_id,))
-            self._send(200, render_edit_form(record))
-        elif parsed.path == '/export':
-            params = parse_qs(parsed.query)
-            where, args = filter_where(params)
-            rows = q(f'SELECT * FROM picks {where} ORDER BY pick_date DESC, id DESC', args)
-            self._send(200, json.dumps(rows, ensure_ascii=False, indent=2), 'application/json; charset=utf-8')
-        else:
-            self._send(404, 'not found', 'text/plain; charset=utf-8')
+        if parsed.path == '/health': self._send(200, 'ok', 'text/plain; charset=utf-8'); return
+        if parsed.path == '/logout': self._redirect('/login', f'{COOKIE_NAME}=; Path=/; Max-Age=0'); return
+        if parsed.path == '/login': self._send(200, render_login()); return
+        if not self.authed(): self._redirect('/login'); return
+        if parsed.path == '/': self._send(200, render_dashboard(parse_qs(parsed.query))); return
+        if parsed.path == '/edit': self._send(200, render_edit_form(q1('SELECT * FROM picks WHERE id=?', (parse_qs(parsed.query).get('id', [''])[0],)))); return
+        if parsed.path == '/export':
+            params = parse_qs(parsed.query); where, args = filter_where(params)
+            self._send(200, json.dumps(q(f'SELECT * FROM picks {where} ORDER BY pick_date DESC, id DESC', args), ensure_ascii=False, indent=2), 'application/json; charset=utf-8'); return
+        if parsed.path == '/export.csv':
+            params = parse_qs(parsed.query); where, args = filter_where(params)
+            csv_body = rows_to_csv(q(f'SELECT * FROM picks {where} ORDER BY pick_date DESC, id DESC', args))
+            self._send(200, csv_body, 'text/csv; charset=utf-8', {'Content-Disposition': 'attachment; filename="promo_panel_export.csv"'}); return
+        self._send(404, 'not found', 'text/plain; charset=utf-8')
 
     def do_POST(self):
         data = self._read_post()
         if self.path == '/login':
-            if data.get('password', '') == PANEL_PASSWORD:
-                self._redirect('/', f'{COOKIE_NAME}={PANEL_PASSWORD}; Path=/; HttpOnly')
-            else:
-                self._send(200, render_login('密码不对，再试一次'))
+            if data.get('password', '') == PANEL_PASSWORD: self._redirect('/', f'{COOKIE_NAME}={PANEL_PASSWORD}; Path=/; HttpOnly')
+            else: self._send(200, render_login('密码不对，再试一次'))
             return
-        if not self.authed():
-            self._redirect('/login')
-            return
+        if not self.authed(): self._redirect('/login'); return
         if self.path == '/add':
-            execute(
-                '''INSERT OR REPLACE INTO picks
-                (pick_date, code, name, pick_price, signal, source, source_channel, reason_tag, note, review_status, review_comment, content_title, content_ref, archived, result_grade, inquiry_count, deal_status, secondary_spread)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)''',
-                (
-                    data.get('pick_date', ''), data.get('code', ''), data.get('name', ''), num(data.get('pick_price', '0')),
-                    data.get('signal', ''), 'webform', data.get('source_channel', 'web'), data.get('reason_tag', ''), data.get('note', ''),
-                    data.get('review_status', '未复盘'), data.get('note', ''), data.get('content_title', ''), data.get('content_ref', ''),
-                    data.get('result_grade', '待定'), int_num(data.get('inquiry_count', 0)), data.get('deal_status', '未成交'), data.get('secondary_spread', '否')
-                )
-            )
-            new_row = q1('SELECT id FROM picks ORDER BY id DESC LIMIT 1')
-            log_action('add', [new_row['id']] if new_row else [], f"新增 {data.get('code','')} {data.get('name','')} / 评级 {data.get('result_grade','待定')}")
-            self._redirect('/?saved=1')
-            return
-        if self.path == '/bulk-import':
-            ids = bulk_import_from_csv(data.get('csv_text', ''))
-            log_action('bulk_import', ids, f'CSV 导入 {len(ids)} 条')
-            self._redirect('/?imported=1')
-            return
+            execute('''INSERT OR REPLACE INTO picks (pick_date, code, name, pick_price, signal, source, source_channel, reason_tag, note, review_status, review_comment, content_title, content_ref, archived, result_grade, inquiry_count, deal_status, secondary_spread) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)''',
+                    (data.get('pick_date', ''), data.get('code', ''), data.get('name', ''), num(data.get('pick_price', '0')), data.get('signal', ''), 'webform', data.get('source_channel', 'web'), data.get('reason_tag', ''), data.get('note', ''), data.get('review_status', '未复盘'), data.get('note', ''), data.get('content_title', ''), data.get('content_ref', ''), data.get('result_grade', '待定'), int_num(data.get('inquiry_count', 0)), data.get('deal_status', '未成交'), data.get('secondary_spread', '否')))
+            new_row = q1('SELECT id FROM picks ORDER BY id DESC LIMIT 1'); log_action('add', [new_row['id']] if new_row else [], f"新增 {data.get('code','')} {data.get('name','')}"); self._redirect('/?saved=1'); return
+        if self.path == '/bulk-import': ids = bulk_import_from_csv(data.get('csv_text', '')); log_action('bulk_import', ids, f'CSV 导入 {len(ids)} 条'); self._redirect('/?imported=1'); return
         if self.path == '/update':
             rid = data.get('id', '')
-            before = q1('SELECT code, review_status, result_grade, deal_status FROM picks WHERE id=?', (rid,))
-            execute(
-                '''UPDATE picks SET
-                    pick_date=?, code=?, name=?, pick_price=?, signal=?, source_channel=?, reason_tag=?, note=?,
-                    review_status=?, review_comment=?, content_title=?, content_ref=?, result_grade=?, inquiry_count=?, deal_status=?, secondary_spread=?
-                   WHERE id=?''',
-                (
-                    data.get('pick_date', ''), data.get('code', ''), data.get('name', ''), num(data.get('pick_price', '0')),
-                    data.get('signal', ''), data.get('source_channel', ''), data.get('reason_tag', ''), data.get('note', ''),
-                    data.get('review_status', '未复盘'), data.get('note', ''), data.get('content_title', ''), data.get('content_ref', ''),
-                    data.get('result_grade', '待定'), int_num(data.get('inquiry_count', 0)), data.get('deal_status', '未成交'), data.get('secondary_spread', '否'), rid
-                )
-            )
-            log_action('update', [rid], f"编辑 {label(before.get('code') if before else '')} / 复盘 {label(before.get('review_status') if before else '')}->{data.get('review_status','')} / 评级 {label(before.get('result_grade') if before else '')}->{data.get('result_grade','')} / 成交 {label(before.get('deal_status') if before else '')}->{data.get('deal_status','')}")
-            self._redirect('/?updated=1')
-            return
-        if self.path == '/archive':
-            rid = data.get('id', '')
-            execute('UPDATE picks SET archived=1 WHERE id=?', (rid,))
-            log_action('archive', [rid], '单条归档')
-            self._redirect('/?archived=1')
-            return
-        if self.path == '/unarchive':
-            rid = data.get('id', '')
-            execute('UPDATE picks SET archived=0 WHERE id=?', (rid,))
-            log_action('unarchive', [rid], '单条恢复')
-            self._redirect('/?unarchived=1')
-            return
-        if self.path == '/delete':
-            rid = data.get('id', '')
-            row = q1('SELECT code, name FROM picks WHERE id=?', (rid,))
-            execute('DELETE FROM picks WHERE id=?', (rid,))
-            log_action('delete', [rid], f"删除 {label(row.get('code') if row else '')} {label(row.get('name') if row else '')}")
-            self._redirect('/?deleted=1')
-            return
-        if self.path == '/batch-archive':
-            ids = self._selected_ids(data)
-            self._batch_update('UPDATE picks SET archived=1 WHERE id=?', ids)
-            log_action('batch_archive', ids, f'批量归档 {len(ids)} 条')
-            self._redirect('/?batch_archived=1')
-            return
-        if self.path == '/batch-unarchive':
-            ids = self._selected_ids(data)
-            self._batch_update('UPDATE picks SET archived=0 WHERE id=?', ids)
-            log_action('batch_unarchive', ids, f'批量恢复 {len(ids)} 条')
-            self._redirect('/?batch_unarchived=1')
-            return
-        if self.path == '/batch-delete':
-            ids = self._selected_ids(data)
-            self._batch_update('DELETE FROM picks WHERE id=?', ids)
-            log_action('batch_delete', ids, f'批量删除 {len(ids)} 条')
-            self._redirect('/?batch_deleted=1')
-            return
-        if self.path == '/batch-review':
-            ids = self._selected_ids(data)
-            status = data.get('review_status', '未复盘')
-            if ids:
-                execute_many('UPDATE picks SET review_status=? WHERE id=?', [(status, i) for i in ids])
-            log_action('batch_review', ids, f'批量改复盘状态为 {status}，共 {len(ids)} 条')
-            self._redirect('/?batch_reviewed=1')
-            return
+            execute('''UPDATE picks SET pick_date=?, code=?, name=?, pick_price=?, signal=?, source_channel=?, reason_tag=?, note=?, review_status=?, review_comment=?, content_title=?, content_ref=?, result_grade=?, inquiry_count=?, deal_status=?, secondary_spread=? WHERE id=?''',
+                    (data.get('pick_date', ''), data.get('code', ''), data.get('name', ''), num(data.get('pick_price', '0')), data.get('signal', ''), data.get('source_channel', ''), data.get('reason_tag', ''), data.get('note', ''), data.get('review_status', '未复盘'), data.get('note', ''), data.get('content_title', ''), data.get('content_ref', ''), data.get('result_grade', '待定'), int_num(data.get('inquiry_count', 0)), data.get('deal_status', '未成交'), data.get('secondary_spread', '否'), rid))
+            log_action('update', [rid], f'编辑记录 {rid}'); self._redirect('/?updated=1'); return
+        if self.path == '/archive': rid = data.get('id', ''); execute('UPDATE picks SET archived=1 WHERE id=?', (rid,)); log_action('archive', [rid], '单条归档'); self._redirect('/?archived=1'); return
+        if self.path == '/unarchive': rid = data.get('id', ''); execute('UPDATE picks SET archived=0 WHERE id=?', (rid,)); log_action('unarchive', [rid], '单条恢复'); self._redirect('/?unarchived=1'); return
+        if self.path == '/delete': rid = data.get('id', ''); execute('DELETE FROM picks WHERE id=?', (rid,)); log_action('delete', [rid], '单条删除'); self._redirect('/?deleted=1'); return
+        if self.path == '/batch-archive': ids = self._selected_ids(data); self._batch_update('UPDATE picks SET archived=1 WHERE id=?', ids); log_action('batch_archive', ids, f'批量归档 {len(ids)} 条'); self._redirect('/?batch_archived=1'); return
+        if self.path == '/batch-unarchive': ids = self._selected_ids(data); self._batch_update('UPDATE picks SET archived=0 WHERE id=?', ids); log_action('batch_unarchive', ids, f'批量恢复 {len(ids)} 条'); self._redirect('/?batch_unarchived=1'); return
+        if self.path == '/batch-delete': ids = self._selected_ids(data); self._batch_update('DELETE FROM picks WHERE id=?', ids); log_action('batch_delete', ids, f'批量删除 {len(ids)} 条'); self._redirect('/?batch_deleted=1'); return
+        if self.path == '/batch-review': ids = self._selected_ids(data); status = data.get('review_status', '未复盘'); execute_many('UPDATE picks SET review_status=? WHERE id=?', [(status, i) for i in ids]) if ids else None; log_action('batch_review', ids, f'批量改复盘状态为 {status}'); self._redirect('/?batch_reviewed=1'); return
+        if self.path == '/batch-grade': ids = self._selected_ids(data); grade = data.get('result_grade', '待定'); execute_many('UPDATE picks SET result_grade=? WHERE id=?', [(grade, i) for i in ids]) if ids else None; log_action('batch_grade', ids, f'批量改评级为 {grade}'); self._redirect('/?batch_grade=1'); return
+        if self.path == '/batch-deal': ids = self._selected_ids(data); ds = data.get('deal_status', '未成交'); execute_many('UPDATE picks SET deal_status=? WHERE id=?', [(ds, i) for i in ids]) if ids else None; log_action('batch_deal', ids, f'批量改成交状态为 {ds}'); self._redirect('/?batch_deal=1'); return
+        if self.path == '/batch-spread': ids = self._selected_ids(data); sp = data.get('secondary_spread', '否'); execute_many('UPDATE picks SET secondary_spread=? WHERE id=?', [(sp, i) for i in ids]) if ids else None; log_action('batch_spread', ids, f'批量改二次传播为 {sp}'); self._redirect('/?batch_spread=1'); return
         self._send(404, 'not found', 'text/plain; charset=utf-8')
 
 
 if __name__ == '__main__':
     server = HTTPServer(('0.0.0.0', PORT), Handler)
-    print(f'v3.7 server running on http://0.0.0.0:{PORT}')
+    print(f'v3.8 server running on http://0.0.0.0:{PORT}')
     print(f'panel password: {PANEL_PASSWORD}')
     server.serve_forever()
