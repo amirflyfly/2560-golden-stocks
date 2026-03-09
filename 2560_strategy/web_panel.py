@@ -372,7 +372,7 @@ def report_summary_text():
     monthly = monthly_report_rows()
     weekly = weekly_report_rows()
     if not monthly:
-        return '当前还没有可总结的月报数据。'
+        return {'weekly': '当前还没有可总结的周报数据。', 'monthly': '当前还没有可总结的月报数据。'}
     latest = monthly[0]
     month = latest.get('month') or '-'
     total = int(latest.get('total') or 0)
@@ -380,17 +380,28 @@ def report_summary_text():
     deal = int(latest.get('deal_total') or 0)
     avg_inquiry = latest.get('avg_inquiry') or 0
     worthy_rate = round((worthy / total * 100), 1) if total else 0
-    summary = f"{month} 月共沉淀 {total} 条记录，其中值得复讲 {worthy} 条（{worthy_rate}%），已成交 {deal} 条，平均咨询数 {avg_inquiry}。"
+
+    monthly_summary = f"{month} 月共沉淀 {total} 条记录，其中值得复讲 {worthy} 条（{worthy_rate}%），已成交 {deal} 条，平均咨询数 {avg_inquiry}。"
+    if worthy_rate >= 30:
+        monthly_summary += ' 本月优质内容占比不错，建议继续放大高表现选题。'
+    elif worthy_rate > 0:
+        monthly_summary += ' 本月已经开始出现优质内容，建议继续复盘高表现标签和渠道。'
+    else:
+        monthly_summary += ' 本月还没有跑出明显的优质内容，建议重点复盘标签、渠道和内容脚本。'
+
+    weekly_summary = '当前还没有可总结的周报数据。'
     if weekly:
         current_week = weekly[0]
-        summary += f" 最近一周（{current_week.get('period')}）新增 {int(current_week.get('total') or 0)} 条，其中值得复讲 {int(current_week.get('worthy_total') or 0)} 条、已成交 {int(current_week.get('deal_total') or 0)} 条。"
-    if worthy_rate >= 30:
-        summary += ' 说明当前优质内容占比不错，可以继续放大高表现选题。'
-    elif worthy_rate > 0:
-        summary += ' 优质内容已经开始出现，建议继续复盘高表现标签和渠道。'
-    else:
-        summary += ' 当前还没有跑出明显的优质内容，建议重点复盘标签、渠道和内容脚本。'
-    return summary
+        weekly_total = int(current_week.get('total') or 0)
+        weekly_worthy = int(current_week.get('worthy_total') or 0)
+        weekly_deal = int(current_week.get('deal_total') or 0)
+        weekly_summary = f"最近一周（{current_week.get('period')}）新增 {weekly_total} 条记录，其中值得复讲 {weekly_worthy} 条、已成交 {weekly_deal} 条。"
+        if weekly_worthy > 0 or weekly_deal > 0:
+            weekly_summary += ' 这一周已经有正向信号，建议继续盯住高表现内容。'
+        else:
+            weekly_summary += ' 这一周还在积累期，建议继续测试内容角度和渠道组合。'
+
+    return {'weekly': weekly_summary, 'monthly': monthly_summary}
 
 
 def monthly_report_rows():
@@ -472,11 +483,11 @@ def render_dashboard(params=None):
     export_json_href = '/export' + (f'?{filter_query}' if filter_query else '')
     export_csv_href = '/export.csv' + (f'?{filter_query}' if filter_query else '')
     monthly_href = '/monthly-report.csv'
-    saved_filter_links = ''.join([f"<span style='display:inline-flex;gap:6px;align-items:center;margin-right:8px'><a class='page-link' href='/?{esc(r['query_string'])}'>{esc(r['name'])}</a><form method='post' action='/rename-filter' class='inline-form'><input type='hidden' name='filter_id' value='{r['id']}'><input type='hidden' name='new_name' value='{esc(r['name'])}-新版'><button type='submit' class='linkbtn'>重命名</button></form><form method='post' action='/delete-filter' class='inline-form'><input type='hidden' name='filter_id' value='{r['id']}'><button type='submit' class='linkbtn danger'>删除</button></form></span>" for r in saved_filters]) or "<span class='muted'>还没有保存的常用筛选</span>"
+    saved_filter_links = ''.join([f"<div style='display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:8px 0'><a class='page-link' href='/?{esc(r['query_string'])}'>{esc(r['name'])}</a><form method='post' action='/rename-filter' class='inline-form' style='display:inline-flex;gap:6px;align-items:center'><input type='hidden' name='filter_id' value='{r['id']}'><input name='new_name' value='{esc(r['name'])}' style='width:160px;padding:6px 8px;border:1px solid #d1d5db;border-radius:8px'><button type='submit' class='linkbtn'>改名</button></form><form method='post' action='/delete-filter' class='inline-form'><input type='hidden' name='filter_id' value='{r['id']}'><button type='submit' class='linkbtn danger'>删除</button></form></div>" for r in saved_filters]) or "<span class='muted'>还没有保存的常用筛选</span>"
     csv_template = 'pick_date,code,name,pick_price,signal,source_channel,reason_tag,review_status,result_grade,inquiry_count,deal_status,secondary_spread,content_title,content_ref,note\n2026-03-09,600519,贵州茅台,1688,强势趋势,douyin,趋势突破,值得复讲,A,12,已咨询,是,爆款复盘01,vid-001,样例备注'
 
-    return f'''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>宣传票复盘系统 v4.3</title><style>
-body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f6f7fb;color:#1f2937;margin:0;padding:24px}} .wrap{{max-width:1540px;margin:0 auto}} .grid{{display:grid;grid-template-columns:repeat(5,1fr);gap:16px}} .grid2{{display:grid;grid-template-columns:repeat(2,1fr);gap:16px}} .grid3{{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}} .card{{background:#fff;border-radius:16px;padding:18px;box-shadow:0 6px 20px rgba(0,0,0,.06)}} h1,h2{{margin:0 0 12px}} .muted{{color:#6b7280;font-size:14px}} .num{{font-size:32px;font-weight:700}} table{{width:100%;border-collapse:collapse}} th,td{{padding:10px;border-bottom:1px solid #eee;text-align:left;font-size:14px;vertical-align:top;white-space:nowrap}} th{{background:#fafafa}} .section{{margin-top:20px}} input,select,textarea{{width:100%;padding:10px;border:1px solid #d1d5db;border-radius:10px;box-sizing:border-box}} textarea{{min-height:90px}} .bigtextarea{{min-height:180px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}} .formgrid3{{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}} button{{background:#111827;color:#fff;border:0;border-radius:10px;padding:10px 16px;cursor:pointer}} a.btn{{display:inline-block;background:#111827;color:#fff;text-decoration:none;padding:10px 16px;border-radius:10px;margin-right:8px}} .bar-row,.line-row{{display:grid;grid-template-columns:140px 1fr 62px;gap:10px;align-items:center;margin:8px 0}} .bar-track,.line-track{{height:12px;background:#eef2ff;border-radius:999px;overflow:hidden}} .bar-fill,.line-fill{{height:100%;border-radius:999px}} .inline-form{{display:inline}} .linkbtn{{background:none;color:#2563eb;padding:0 6px;border:none;border-radius:0}} .linkbtn.danger{{color:#dc2626}} .txtbtn{{color:#2563eb;text-decoration:none;padding-right:6px}} .badge{{display:inline-block;padding:4px 8px;border-radius:999px;font-size:12px}} .badge-active{{background:#dcfce7;color:#166534}} .badge-archived{{background:#f3f4f6;color:#4b5563}} .topline{{display:flex;justify-content:space-between;align-items:flex-end;gap:12px;flex-wrap:wrap}} .bulkbar{{display:flex;gap:8px;flex-wrap:wrap;align-items:center}} .bulkbar select{{width:auto;min-width:140px}} .smallbtn{{padding:8px 12px;border-radius:10px}} .tablewrap{{overflow:auto}} .subtle{{font-size:12px;color:#6b7280}} @media (max-width:980px){{.grid,.grid2,.grid3,.formgrid3{{grid-template-columns:1fr}} body{{padding:16px}} .wrap{{max-width:100%}}}}</style><script>function toggleAll(source){{document.querySelectorAll('input[name="ids"]').forEach(cb=>cb.checked=source.checked);}} function ensureSelected(form){{const checked=form.querySelectorAll('input[name="ids"]:checked'); if(!checked.length){{alert('请先勾选至少一条记录'); return false;}} return true;}}</script></head><body><div class="wrap"><div class="topline"><div><h1>宣传票复盘系统 v4.3</h1><div class="muted">更新时间：{datetime.now().strftime('%Y-%m-%d %H:%M')} · 已启用密码保护 · 本地端口 {PORT}</div></div><div class="muted">本次新增：筛选视图重命名 / 增强版自动周报月报文案</div></div><div class='nav'>{render_nav('dashboard')}</div>{flash_html}
+    return f'''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>宣传票复盘系统 v4.4</title><style>
+body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f6f7fb;color:#1f2937;margin:0;padding:24px}} .wrap{{max-width:1540px;margin:0 auto}} .grid{{display:grid;grid-template-columns:repeat(5,1fr);gap:16px}} .grid2{{display:grid;grid-template-columns:repeat(2,1fr);gap:16px}} .grid3{{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}} .card{{background:#fff;border-radius:16px;padding:18px;box-shadow:0 6px 20px rgba(0,0,0,.06)}} h1,h2{{margin:0 0 12px}} .muted{{color:#6b7280;font-size:14px}} .num{{font-size:32px;font-weight:700}} table{{width:100%;border-collapse:collapse}} th,td{{padding:10px;border-bottom:1px solid #eee;text-align:left;font-size:14px;vertical-align:top;white-space:nowrap}} th{{background:#fafafa}} .section{{margin-top:20px}} input,select,textarea{{width:100%;padding:10px;border:1px solid #d1d5db;border-radius:10px;box-sizing:border-box}} textarea{{min-height:90px}} .bigtextarea{{min-height:180px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}} .formgrid3{{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}} button{{background:#111827;color:#fff;border:0;border-radius:10px;padding:10px 16px;cursor:pointer}} a.btn{{display:inline-block;background:#111827;color:#fff;text-decoration:none;padding:10px 16px;border-radius:10px;margin-right:8px}} .bar-row,.line-row{{display:grid;grid-template-columns:140px 1fr 62px;gap:10px;align-items:center;margin:8px 0}} .bar-track,.line-track{{height:12px;background:#eef2ff;border-radius:999px;overflow:hidden}} .bar-fill,.line-fill{{height:100%;border-radius:999px}} .inline-form{{display:inline}} .linkbtn{{background:none;color:#2563eb;padding:0 6px;border:none;border-radius:0}} .linkbtn.danger{{color:#dc2626}} .txtbtn{{color:#2563eb;text-decoration:none;padding-right:6px}} .badge{{display:inline-block;padding:4px 8px;border-radius:999px;font-size:12px}} .badge-active{{background:#dcfce7;color:#166534}} .badge-archived{{background:#f3f4f6;color:#4b5563}} .topline{{display:flex;justify-content:space-between;align-items:flex-end;gap:12px;flex-wrap:wrap}} .bulkbar{{display:flex;gap:8px;flex-wrap:wrap;align-items:center}} .bulkbar select{{width:auto;min-width:140px}} .smallbtn{{padding:8px 12px;border-radius:10px}} .tablewrap{{overflow:auto}} .subtle{{font-size:12px;color:#6b7280}} @media (max-width:980px){{.grid,.grid2,.grid3,.formgrid3{{grid-template-columns:1fr}} body{{padding:16px}} .wrap{{max-width:100%}}}}</style><script>function toggleAll(source){{document.querySelectorAll('input[name="ids"]').forEach(cb=>cb.checked=source.checked);}} function ensureSelected(form){{const checked=form.querySelectorAll('input[name="ids"]:checked'); if(!checked.length){{alert('请先勾选至少一条记录'); return false;}} return true;}}</script></head><body><div class="wrap"><div class="topline"><div><h1>宣传票复盘系统 v4.4</h1><div class="muted">更新时间：{datetime.now().strftime('%Y-%m-%d %H:%M')} · 已启用密码保护 · 本地端口 {PORT}</div></div><div class="muted">本次新增：筛选视图可输入改名 / 周报月报双文案</div></div><div class='nav'>{render_nav('dashboard')}</div>{flash_html}
 <div class="grid section"><div class="card"><div class="muted">累计记录</div><div class="num">{overview.get('total',0)}</div></div><div class="card"><div class="muted">使用中</div><div class="num">{overview.get('active_total',0) or 0}</div></div><div class="card"><div class="muted">已成交数</div><div class="num">{int(overview.get('deal_total') or 0)}</div></div><div class="card"><div class="muted">二次传播数</div><div class="num">{int(overview.get('spread_total') or 0)}</div></div><div class="card"><div class="muted">值得复讲总数</div><div class="num">{int(overview.get('worthy_total') or 0)}</div></div></div>
 <div class="grid3 section"><div class="card"><div class="muted">本周新增</div><div class="num">{int(kpi.get('week_new') or 0)}</div><div class="subtle">反映本周录入节奏</div></div><div class="card"><div class="muted">近30天新增</div><div class="num">{int(kpi.get('last30_new') or 0)}</div><div class="subtle">观察数据沉淀速度</div></div><div class="card"><div class="muted">平均咨询数</div><div class="num">{kpi.get('avg_inquiry') or 0}</div><div class="subtle">衡量内容带来互动的能力</div></div></div>
 <div class="section card"><h2>快捷入口</h2><p><a class="btn" href="/deal-review">成交复盘页</a><a class="btn" href="/leaderboards">排行榜页</a><a class="btn" href="/reports">报表中心</a><a class="btn" href="{monthly_href}">导出月报 CSV</a><a class="btn" href="{export_json_href}">导出 JSON</a><a class="btn" href="{export_csv_href}">导出 CSV</a><a class="btn" href="/logout">退出登录</a></p></div><div class="section card"><h2>常用筛选视图</h2><div class='pagination'>{saved_filter_links}</div><div class='muted' style='margin-top:8px'>点击“重命名”会先自动生成一个占位新名字，你后面如果要我再做成弹窗改名也可以继续升级。</div><form method='post' action='/save-filter' style='margin-top:12px'><div class='formgrid3'><div><label>视图名称</label><input name='filter_name' placeholder='例如：抖音已成交 / A级内容'></div><div><label>当前筛选串</label><input name='query_string' value='{filter_query}' placeholder='会自动带上当前筛选参数'></div><div style='display:flex;align-items:end'><button type='submit'>保存当前筛选</button></div></div></form></div>
@@ -490,7 +501,7 @@ body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;backgro
 
 def render_login(error=''):
     err = f'<div class="err">{esc(error)}</div>' if error else ''
-    return f'''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>登录宣传票复盘系统</title><style>body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f6f7fb;padding:24px}}.box{{max-width:420px;margin:10vh auto;background:#fff;padding:24px;border-radius:16px;box-shadow:0 6px 20px rgba(0,0,0,.06)}}input{{width:100%;padding:12px;border:1px solid #d1d5db;border-radius:10px;box-sizing:border-box}}button{{margin-top:12px;width:100%;padding:12px;background:#111827;color:#fff;border:0;border-radius:10px}}.muted{{color:#6b7280;font-size:14px}}.err{{background:#fef2f2;color:#991b1b;border:1px solid #fecaca;padding:10px;border-radius:10px;margin:12px 0}}</style></head><body><div class="box"><h1>登录宣传票复盘系统</h1><div class="muted">v4.3 已启用访问密码保护</div>{err}<form method="post" action="/login"><input type="password" name="password" placeholder="请输入访问密码" required><button type="submit">登录</button></form></div></body></html>'''
+    return f'''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>登录宣传票复盘系统</title><style>body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f6f7fb;padding:24px}}.box{{max-width:420px;margin:10vh auto;background:#fff;padding:24px;border-radius:16px;box-shadow:0 6px 20px rgba(0,0,0,.06)}}input{{width:100%;padding:12px;border:1px solid #d1d5db;border-radius:10px;box-sizing:border-box}}button{{margin-top:12px;width:100%;padding:12px;background:#111827;color:#fff;border:0;border-radius:10px}}.muted{{color:#6b7280;font-size:14px}}.err{{background:#fef2f2;color:#991b1b;border:1px solid #fecaca;padding:10px;border-radius:10px;margin:12px 0}}</style></head><body><div class="box"><h1>登录宣传票复盘系统</h1><div class="muted">v4.4 已启用访问密码保护</div>{err}<form method="post" action="/login"><input type="password" name="password" placeholder="请输入访问密码" required><button type="submit">登录</button></form></div></body></html>'''
 
 
 def render_edit_form(record):
@@ -539,11 +550,13 @@ def render_reports_page():
     weekly = weekly_report_rows()
     monthly = monthly_report_rows()
     summary_text = report_summary_text()
+    weekly_text = summary_text.get('weekly', '')
+    monthly_text = summary_text.get('monthly', '')
     weekly_rows = ''.join([f"<tr><td>{esc(r['period'])}</td><td>{esc(r['total'])}</td><td>{esc(r['worthy_total'])}</td><td>{esc(r['deal_total'])}</td></tr>" for r in weekly]) or '<tr><td colspan="4">暂无数据</td></tr>'
     monthly_rows = ''.join([f"<tr><td>{esc(r['month'])}</td><td>{esc(r['total'])}</td><td>{esc(r['worthy_total'])}</td><td>{esc(r['deal_total'])}</td><td>{esc(r['avg_inquiry'])}</td></tr>" for r in monthly]) or '<tr><td colspan="5">暂无数据</td></tr>'
     body = f'''<div class="topline"><div><h1>报表中心</h1><div class="muted">集中查看周报/月报，适合正式复盘和团队同步</div></div><div><a class="btn" href="/weekly-report.csv">导出周报CSV</a><a class="btn" href="/monthly-report.csv">导出月报CSV</a></div></div>
 <div class='nav'>{render_nav('reports')}</div>
-<div class="section card"><h2>自动摘要</h2><div class="muted">适合直接复制到周报/月报里</div><div style="margin-top:10px;font-size:16px;line-height:1.7">{summary_text}</div></div>
+<div class="grid2 section"><div class="card"><h2>自动周报文案</h2><div class="muted">适合直接发群、发团队同步</div><div style="margin-top:10px;font-size:16px;line-height:1.7">{weekly_text}</div></div><div class="card"><h2>自动月报文案</h2><div class="muted">适合月复盘、月总结、汇报</div><div style="margin-top:10px;font-size:16px;line-height:1.7">{monthly_text}</div></div></div>
 <div class="grid2 section"><div class="card"><h2>近12周周报</h2><div class="tablewrap"><table><thead><tr><th>周</th><th>总记录</th><th>值得复讲</th><th>已成交</th></tr></thead><tbody>{weekly_rows}</tbody></table></div></div><div class="card"><h2>月报汇总</h2><div class="tablewrap"><table><thead><tr><th>月份</th><th>总记录</th><th>值得复讲</th><th>已成交</th><th>平均咨询数</th></tr></thead><tbody>{monthly_rows}</tbody></table></div></div></div>'''
     return layout_page('报表中心', body)
 
@@ -682,6 +695,6 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == '__main__':
     server = HTTPServer(('0.0.0.0', PORT), Handler)
-    print(f'v4.3 server running on http://0.0.0.0:{PORT}')
+    print(f'v4.4 server running on http://0.0.0.0:{PORT}')
     print(f'panel password: {PANEL_PASSWORD}')
     server.serve_forever()
