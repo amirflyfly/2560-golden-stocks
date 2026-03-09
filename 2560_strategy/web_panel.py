@@ -40,6 +40,15 @@ def ensure_schema():
         cols = [r['name'] for r in cur.execute("PRAGMA table_info(picks)").fetchall()]
         if 'archived' not in cols:
             cur.execute("ALTER TABLE picks ADD COLUMN archived INTEGER DEFAULT 0")
+        cur.execute(
+            '''CREATE TABLE IF NOT EXISTS operation_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                action TEXT NOT NULL,
+                target_ids TEXT DEFAULT '',
+                detail TEXT DEFAULT '',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )'''
+        )
         conn.commit()
     finally:
         conn.close()
@@ -83,6 +92,14 @@ def execute_many(sql, args_list):
         return cur.rowcount
     finally:
         conn.close()
+
+
+def log_action(action, target_ids=None, detail=''):
+    target_ids = target_ids or []
+    execute(
+        'INSERT INTO operation_logs (action, target_ids, detail) VALUES (?, ?, ?)',
+        (action, ','.join(str(i) for i in target_ids), detail[:1000]),
+    )
 
 
 def label(v, default='-'):
@@ -140,13 +157,17 @@ def build_query_string(params):
 def bar_html(rows, label_key='name', value_key='cnt', color='#4f46e5', empty_text='暂无数据', suffix=''):
     if not rows:
         return f'<div class="muted">{esc(empty_text)}</div>'
-    maxv = max([r.get(value_key, 0) or 0 for r in rows]) or 1
+    maxv = max([float(r.get(value_key, 0) or 0) for r in rows]) or 1
     items = []
     for r in rows:
         name = esc(r.get(label_key))
-        val = r.get(value_key, 0) or 0
+        val = float(r.get(value_key, 0) or 0)
         width = max(8, int(val / maxv * 100))
-        display = f"{val}{suffix}" if suffix else f"{val}"
+        if abs(val - round(val)) < 1e-9:
+            display_val = str(int(round(val)))
+        else:
+            display_val = f'{val:.1f}'
+        display = f"{display_val}{suffix}" if suffix else display_val
         items.append(f'''<div class="bar-row"><div class="bar-label">{name}</div><div class="bar-track"><div class="bar-fill" style="width:{width}%;background:{color}"></div></div><div class="bar-value">{display}</div></div>''')
     return ''.join(items)
 
@@ -208,10 +229,6 @@ def get_flash(params):
     return ''
 
 
-def selected_ids_inputs(ids):
-    return ''.join([f"<input type='hidden' name='ids' value='{esc(i)}'>" for i in ids])
-
-
 def render_dashboard(params=None):
     params = params or {}
     flash = get_flash(params)
@@ -223,8 +240,20 @@ def render_dashboard(params=None):
             SUM(CASE WHEN COALESCE(archived,0)=1 THEN 1 ELSE 0 END) AS archived_total,
             COUNT(DISTINCT COALESCE(NULLIF(source_channel,''),'system')) AS channel_total,
             COUNT(DISTINCT COALESCE(NULLIF(reason_tag,''),'未标注')) AS tag_total,
-            COUNT(DISTINCT COALESCE(NULLIF(review_status,''),'未复盘')) AS status_total
+            COUNT(DISTINCT COALESCE(NULLIF(review_status,''),'未复盘')) AS status_total,
+            SUM(CASE WHEN COALESCE(NULLIF(review_status,''),'未复盘')='值得复讲' THEN 1 ELSE 0 END) AS worthy_total
         FROM picks'''
+    ) or {}
+
+    kpi = q1(
+        '''SELECT
+            SUM(CASE WHEN date(pick_date) >= date('now','weekday 1','-7 days') THEN 1 ELSE 0 END) AS week_new,
+            SUM(CASE WHEN date(pick_date) >= date('now','-6 day') THEN 1 ELSE 0 END) AS last7_new,
+            SUM(CASE WHEN date(pick_date) >= date('now','-29 day') THEN 1 ELSE 0 END) AS last30_new,
+            ROUND(100.0 * SUM(CASE WHEN COALESCE(NULLIF(review_status,''),'未复盘')='值得复讲' THEN 1 ELSE 0 END) / NULLIF(COUNT(*),0), 1) AS worthy_rate,
+            ROUND(100.0 * SUM(CASE WHEN COALESCE(NULLIF(review_status,''),'未复盘')='未复盘' THEN 1 ELSE 0 END) / NULLIF(COUNT(*),0), 1) AS unreviewed_rate
+        FROM picks
+        WHERE COALESCE(archived,0)=0'''
     ) or {}
 
     by_channel = q("SELECT COALESCE(NULLIF(source_channel,''),'system') AS name, COUNT(*) AS cnt FROM picks WHERE COALESCE(archived,0)=0 GROUP BY name ORDER BY cnt DESC")
@@ -236,6 +265,7 @@ def render_dashboard(params=None):
     channel_win = q("SELECT COALESCE(NULLIF(source_channel,''),'system') AS name, ROUND(100.0 * SUM(CASE WHEN COALESCE(NULLIF(review_status,''),'未复盘')='值得复讲' THEN 1 ELSE 0 END) / COUNT(*), 1) AS cnt FROM picks WHERE COALESCE(archived,0)=0 GROUP BY name HAVING COUNT(*) >= 1 ORDER BY cnt DESC, COUNT(*) DESC LIMIT 10")
     tag_win = q("SELECT COALESCE(NULLIF(reason_tag,''),'未标注') AS name, ROUND(100.0 * SUM(CASE WHEN COALESCE(NULLIF(review_status,''),'未复盘')='值得复讲' THEN 1 ELSE 0 END) / COUNT(*), 1) AS cnt FROM picks WHERE COALESCE(archived,0)=0 GROUP BY name HAVING COUNT(*) >= 1 ORDER BY cnt DESC, COUNT(*) DESC LIMIT 10")
     channel_price = q("SELECT COALESCE(NULLIF(source_channel,''),'system') AS name, ROUND(AVG(COALESCE(pick_price,0)), 2) AS cnt FROM picks WHERE COALESCE(archived,0)=0 GROUP BY name HAVING COUNT(*) >= 1 ORDER BY cnt DESC LIMIT 10")
+    recent_logs = q("SELECT action, target_ids, detail, created_at FROM operation_logs ORDER BY id DESC LIMIT 15")
 
     where, args = filter_where(params)
     latest = q(
@@ -277,6 +307,11 @@ def render_dashboard(params=None):
         for r in latest
     ]) or '<tr><td colspan="11">暂无数据</td></tr>'
 
+    log_rows = ''.join([
+        f"<tr><td>{esc(r['created_at'])}</td><td>{esc(r['action'])}</td><td>{esc(r['target_ids'])}</td><td>{esc(r['detail'])}</td></tr>"
+        for r in recent_logs
+    ]) or '<tr><td colspan="4">暂无日志</td></tr>'
+
     flash_html = f'<div class="flash">{esc(flash)}</div>' if flash else ''
     keyword = esc((params.get('keyword', [''])[0] or '').strip())
     date_from = esc((params.get('date_from', [''])[0] or '').strip())
@@ -288,10 +323,10 @@ def render_dashboard(params=None):
     return f'''<!doctype html>
 <html lang="zh-CN"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>宣传票复盘系统 v3.5</title>
+<title>宣传票复盘系统 v3.6</title>
 <style>
 body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f6f7fb;color:#1f2937;margin:0;padding:24px}}
-.wrap{{max-width:1440px;margin:0 auto}}
+.wrap{{max-width:1480px;margin:0 auto}}
 .grid{{display:grid;grid-template-columns:repeat(5,1fr);gap:16px}}
 .grid2{{display:grid;grid-template-columns:repeat(2,1fr);gap:16px}}
 .grid3{{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}}
@@ -317,10 +352,10 @@ function ensureSelected(form){{
 </head><body><div class="wrap">
 <div class="topline">
 <div>
-<h1>宣传票复盘系统 v3.5</h1>
+<h1>宣传票复盘系统 v3.6</h1>
 <div class="muted">更新时间：{datetime.now().strftime('%Y-%m-%d %H:%M')} · 已启用密码保护 · 本地端口 {PORT}</div>
 </div>
-<div class="muted">本次新增：批量操作 / 命中率图表 / 渠道价格对比</div>
+<div class="muted">本次新增：KPI 看板 / 操作日志 / 修改历史追踪</div>
 </div>
 {flash_html}
 <div class="grid section">
@@ -329,6 +364,16 @@ function ensureSelected(form){{
 <div class="card"><div class="muted">已归档</div><div class="num">{overview.get('archived_total', 0) or 0}</div></div>
 <div class="card"><div class="muted">渠道数</div><div class="num">{overview.get('channel_total', 0)}</div></div>
 <div class="card"><div class="muted">标签数</div><div class="num">{overview.get('tag_total', 0)}</div></div>
+</div>
+<div class="grid3 section">
+<div class="card"><div class="muted">本周新增</div><div class="num">{int(kpi.get('week_new') or 0)}</div></div>
+<div class="card"><div class="muted">近7天新增</div><div class="num">{int(kpi.get('last7_new') or 0)}</div></div>
+<div class="card"><div class="muted">值得复讲率</div><div class="num">{kpi.get('worthy_rate') or 0}%</div><div class="subtle">当前使用中记录维度</div></div>
+</div>
+<div class="grid3 section">
+<div class="card"><div class="muted">近30天新增</div><div class="num">{int(kpi.get('last30_new') or 0)}</div></div>
+<div class="card"><div class="muted">未复盘占比</div><div class="num">{kpi.get('unreviewed_rate') or 0}%</div></div>
+<div class="card"><div class="muted">值得复讲总数</div><div class="num">{int(overview.get('worthy_total') or 0)}</div></div>
 </div>
 <div class="grid2 section">
 <div class="card"><h2>渠道分布图</h2>{bar_html(by_channel, color='#4f46e5')}</div>
@@ -406,12 +451,17 @@ function ensureSelected(form){{
 <div class="tablewrap"><table><thead><tr><th><input type="checkbox" onclick="toggleAll(this)"></th><th>日期</th><th>股票</th><th>代码</th><th>推荐价</th><th>渠道</th><th>标签</th><th>复盘结论</th><th>内容标题</th><th>状态</th><th>操作</th></tr></thead><tbody>{latest_rows}</tbody></table></div>
 </form>
 </div>
+<div class="section card">
+<h2>最近操作日志</h2>
+<div class="subtle" style="margin-bottom:10px">记录新增、编辑、归档、删除、批量更新等关键动作，方便回溯修改历史</div>
+<div class="tablewrap"><table><thead><tr><th>时间</th><th>动作</th><th>记录ID</th><th>说明</th></tr></thead><tbody>{log_rows}</tbody></table></div>
+</div>
 </div></body></html>'''
 
 
 def render_login(error=''):
     err = f'<div class="err">{esc(error)}</div>' if error else ''
-    return f'''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>登录宣传票复盘系统</title><style>body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f6f7fb;padding:24px}}.box{{max-width:420px;margin:10vh auto;background:#fff;padding:24px;border-radius:16px;box-shadow:0 6px 20px rgba(0,0,0,.06)}}input{{width:100%;padding:12px;border:1px solid #d1d5db;border-radius:10px;box-sizing:border-box}}button{{margin-top:12px;width:100%;padding:12px;background:#111827;color:#fff;border:0;border-radius:10px}}.muted{{color:#6b7280;font-size:14px}}.err{{background:#fef2f2;color:#991b1b;border:1px solid #fecaca;padding:10px;border-radius:10px;margin:12px 0}}</style></head><body><div class="box"><h1>登录宣传票复盘系统</h1><div class="muted">v3.5 已启用访问密码保护</div>{err}<form method="post" action="/login"><input type="password" name="password" placeholder="请输入访问密码" required><button type="submit">登录</button></form></div></body></html>'''
+    return f'''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>登录宣传票复盘系统</title><style>body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f6f7fb;padding:24px}}.box{{max-width:420px;margin:10vh auto;background:#fff;padding:24px;border-radius:16px;box-shadow:0 6px 20px rgba(0,0,0,.06)}}input{{width:100%;padding:12px;border:1px solid #d1d5db;border-radius:10px;box-sizing:border-box}}button{{margin-top:12px;width:100%;padding:12px;background:#111827;color:#fff;border:0;border-radius:10px}}.muted{{color:#6b7280;font-size:14px}}.err{{background:#fef2f2;color:#991b1b;border:1px solid #fecaca;padding:10px;border-radius:10px;margin:12px 0}}</style></head><body><div class="box"><h1>登录宣传票复盘系统</h1><div class="muted">v3.6 已启用访问密码保护</div>{err}<form method="post" action="/login"><input type="password" name="password" placeholder="请输入访问密码" required><button type="submit">登录</button></form></div></body></html>'''
 
 
 def render_edit_form(record):
@@ -510,9 +560,13 @@ class Handler(BaseHTTPRequestHandler):
                     data.get('review_status', '未复盘'), data.get('note', ''), data.get('content_title', ''), data.get('content_ref', '')
                 )
             )
+            new_row = q1('SELECT id FROM picks ORDER BY id DESC LIMIT 1')
+            log_action('add', [new_row['id']] if new_row else [], f"新增 {data.get('code','')} {data.get('name','')}")
             self._redirect('/?saved=1')
             return
         if self.path == '/update':
+            rid = data.get('id', '')
+            before = q1('SELECT code, name, review_status FROM picks WHERE id=?', (rid,))
             execute(
                 '''UPDATE picks SET
                     pick_date=?, code=?, name=?, pick_price=?, signal=?, source_channel=?, reason_tag=?, note=?,
@@ -521,33 +575,47 @@ class Handler(BaseHTTPRequestHandler):
                 (
                     data.get('pick_date', ''), data.get('code', ''), data.get('name', ''), num(data.get('pick_price', '0')),
                     data.get('signal', ''), data.get('source_channel', ''), data.get('reason_tag', ''), data.get('note', ''),
-                    data.get('review_status', '未复盘'), data.get('note', ''), data.get('content_title', ''), data.get('content_ref', ''), data.get('id', '')
+                    data.get('review_status', '未复盘'), data.get('note', ''), data.get('content_title', ''), data.get('content_ref', ''), rid
                 )
             )
+            log_action('update', [rid], f"编辑 {label(before.get('code') if before else '')} -> {data.get('code','')} / 状态 {label(before.get('review_status') if before else '')} -> {data.get('review_status','')}")
             self._redirect('/?updated=1')
             return
         if self.path == '/archive':
-            execute('UPDATE picks SET archived=1 WHERE id=?', (data.get('id', ''),))
+            rid = data.get('id', '')
+            execute('UPDATE picks SET archived=1 WHERE id=?', (rid,))
+            log_action('archive', [rid], '单条归档')
             self._redirect('/?archived=1')
             return
         if self.path == '/unarchive':
-            execute('UPDATE picks SET archived=0 WHERE id=?', (data.get('id', ''),))
+            rid = data.get('id', '')
+            execute('UPDATE picks SET archived=0 WHERE id=?', (rid,))
+            log_action('unarchive', [rid], '单条恢复')
             self._redirect('/?unarchived=1')
             return
         if self.path == '/delete':
-            execute('DELETE FROM picks WHERE id=?', (data.get('id', ''),))
+            rid = data.get('id', '')
+            row = q1('SELECT code, name FROM picks WHERE id=?', (rid,))
+            execute('DELETE FROM picks WHERE id=?', (rid,))
+            log_action('delete', [rid], f"删除 {label(row.get('code') if row else '')} {label(row.get('name') if row else '')}")
             self._redirect('/?deleted=1')
             return
         if self.path == '/batch-archive':
-            self._batch_update('UPDATE picks SET archived=1 WHERE id=?', self._selected_ids(data))
+            ids = self._selected_ids(data)
+            self._batch_update('UPDATE picks SET archived=1 WHERE id=?', ids)
+            log_action('batch_archive', ids, f'批量归档 {len(ids)} 条')
             self._redirect('/?batch_archived=1')
             return
         if self.path == '/batch-unarchive':
-            self._batch_update('UPDATE picks SET archived=0 WHERE id=?', self._selected_ids(data))
+            ids = self._selected_ids(data)
+            self._batch_update('UPDATE picks SET archived=0 WHERE id=?', ids)
+            log_action('batch_unarchive', ids, f'批量恢复 {len(ids)} 条')
             self._redirect('/?batch_unarchived=1')
             return
         if self.path == '/batch-delete':
-            self._batch_update('DELETE FROM picks WHERE id=?', self._selected_ids(data))
+            ids = self._selected_ids(data)
+            self._batch_update('DELETE FROM picks WHERE id=?', ids)
+            log_action('batch_delete', ids, f'批量删除 {len(ids)} 条')
             self._redirect('/?batch_deleted=1')
             return
         if self.path == '/batch-review':
@@ -555,6 +623,7 @@ class Handler(BaseHTTPRequestHandler):
             status = data.get('review_status', '未复盘')
             if ids:
                 execute_many('UPDATE picks SET review_status=? WHERE id=?', [(status, i) for i in ids])
+            log_action('batch_review', ids, f'批量改复盘状态为 {status}，共 {len(ids)} 条')
             self._redirect('/?batch_reviewed=1')
             return
         self._send(404, 'not found', 'text/plain; charset=utf-8')
@@ -562,6 +631,6 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == '__main__':
     server = HTTPServer(('0.0.0.0', PORT), Handler)
-    print(f'v3.5 server running on http://0.0.0.0:{PORT}')
+    print(f'v3.6 server running on http://0.0.0.0:{PORT}')
     print(f'panel password: {PANEL_PASSWORD}')
     server.serve_forever()
