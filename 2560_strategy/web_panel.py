@@ -14,6 +14,7 @@ DATA_DIR = BASE_DIR / 'data'
 DB_PATH = DATA_DIR / 'picks.db'
 SECRET_PATH = DATA_DIR / 'web_panel_secret.txt'
 PORT = 8765
+PAGE_SIZE = 20
 COOKIE_NAME = 'promo_panel_auth'
 
 REVIEW_STATUS_OPTIONS = ['未复盘', '值得复讲', '逻辑一般', '不建议再提']
@@ -221,13 +222,42 @@ def line_table_html(rows, empty_text='暂无数据', color='#4f46e5'):
     return ''.join(html_rows)
 
 
+def render_nav(active='dashboard'):
+    items = [
+        ('/', 'dashboard', '总览面板'),
+        ('/deal-review', 'deal', '成交复盘'),
+        ('/leaderboards', 'leaderboards', '排行榜'),
+        ('/reports', 'reports', '报表中心'),
+    ]
+    links = []
+    for href, key, title in items:
+        cls = 'navlink nav-active' if key == active else 'navlink'
+        links.append(f"<a class='{cls}' href='{href}'>{title}</a>")
+    return ''.join(links)
+
+
+def render_pagination(page, total_count, base_params):
+    total_pages = max(1, (total_count + PAGE_SIZE - 1) // PAGE_SIZE)
+    if total_pages <= 1:
+        return ''
+    page = max(1, min(page, total_pages))
+    links = []
+    for pno in range(1, total_pages + 1):
+        params = dict(base_params or {})
+        params['page'] = [str(pno)]
+        href = '/?' + build_query_string(params)
+        cls = 'page-link page-active' if pno == page else 'page-link'
+        links.append(f"<a class='{cls}' href='{href}'>{pno}</a>")
+    return "<div class='pagination'>" + ''.join(links) + '</div>'
+
+
 def layout_page(title, body):
     return f'''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{esc(title)}</title><style>
 body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f6f7fb;color:#1f2937;margin:0;padding:24px}}
 .wrap{{max-width:1540px;margin:0 auto}} .card{{background:#fff;border-radius:16px;padding:18px;box-shadow:0 6px 20px rgba(0,0,0,.06)}}
 .grid{{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}} .grid2{{display:grid;grid-template-columns:repeat(2,1fr);gap:16px}}
 .bar-row,.line-row{{display:grid;grid-template-columns:140px 1fr 62px;gap:10px;align-items:center;margin:8px 0}} .bar-track,.line-track{{height:12px;background:#eef2ff;border-radius:999px;overflow:hidden}} .bar-fill,.line-fill{{height:100%;border-radius:999px}}
-.muted{{color:#6b7280;font-size:14px}} .num{{font-size:32px;font-weight:700}} .topline{{display:flex;justify-content:space-between;align-items:flex-end;gap:12px;flex-wrap:wrap}} a.btn{{display:inline-block;background:#111827;color:#fff;text-decoration:none;padding:10px 16px;border-radius:10px;margin-right:8px}} table{{width:100%;border-collapse:collapse}} th,td{{padding:10px;border-bottom:1px solid #eee;text-align:left;font-size:14px;vertical-align:top}} th{{background:#fafafa}} .tablewrap{{overflow:auto}} @media (max-width:980px){{.grid,.grid2{{grid-template-columns:1fr}} body{{padding:16px}}}}</style></head><body><div class="wrap">{body}</div></body></html>'''
+.muted{{color:#6b7280;font-size:14px}} .num{{font-size:32px;font-weight:700}} .topline{{display:flex;justify-content:space-between;align-items:flex-end;gap:12px;flex-wrap:wrap}} a.btn{{display:inline-block;background:#111827;color:#fff;text-decoration:none;padding:10px 16px;border-radius:10px;margin-right:8px}} .nav{{display:flex;gap:10px;flex-wrap:wrap;margin:16px 0}} .navlink{{display:inline-block;padding:10px 14px;border-radius:999px;background:#fff;color:#111827;text-decoration:none;border:1px solid #e5e7eb}} .nav-active{{background:#111827;color:#fff;border-color:#111827}} .pagination{{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:14px}} .page-link{{display:inline-block;padding:6px 10px;border-radius:10px;background:#fff;color:#111827;text-decoration:none;border:1px solid #e5e7eb}} .page-active{{background:#111827;color:#fff;border-color:#111827}} table{{width:100%;border-collapse:collapse}} th,td{{padding:10px;border-bottom:1px solid #eee;text-align:left;font-size:14px;vertical-align:top}} th{{background:#fafafa}} .tablewrap{{overflow:auto}} @media (max-width:980px){{.grid,.grid2{{grid-template-columns:1fr}} body{{padding:16px}}}}</style></head><body><div class="wrap">{body}</div></body></html>'''
 
 
 def filter_where(params):
@@ -337,9 +367,20 @@ def monthly_report_rows():
     )
 
 
+def weekly_report_rows():
+    return q(
+        '''SELECT strftime('%Y-W%W', pick_date) AS period,
+                  COUNT(*) AS total,
+                  SUM(CASE WHEN COALESCE(NULLIF(review_status,''),'未复盘')='值得复讲' THEN 1 ELSE 0 END) AS worthy_total,
+                  SUM(CASE WHEN COALESCE(NULLIF(deal_status,''),'未成交')='已成交' THEN 1 ELSE 0 END) AS deal_total
+           FROM picks GROUP BY period ORDER BY period DESC LIMIT 12'''
+    )
+
+
 def render_dashboard(params=None):
     params = params or {}
     flash = get_flash(params)
+    page = max(1, int((params.get('page', ['1'])[0] or '1')))
     overview = q1(
         '''SELECT COUNT(*) AS total,
                   SUM(CASE WHEN COALESCE(archived,0)=0 THEN 1 ELSE 0 END) AS active_total,
@@ -367,13 +408,14 @@ def render_dashboard(params=None):
     recent_logs = q("SELECT action, target_ids, detail, created_at FROM operation_logs ORDER BY id DESC LIMIT 15")
 
     where, args = filter_where(params)
+    filter_count = q1(f"SELECT COUNT(*) AS cnt FROM picks {where}", args)['cnt']
+    offset = (page - 1) * PAGE_SIZE
     latest = q(
         f'''SELECT id, pick_date, code, name, pick_price, source_channel, reason_tag, review_status, content_title,
                    COALESCE(archived,0) AS archived, COALESCE(result_grade,'待定') AS result_grade,
                    COALESCE(inquiry_count,0) AS inquiry_count, COALESCE(deal_status,'未成交') AS deal_status,
                    COALESCE(secondary_spread,'否') AS secondary_spread
-            FROM picks {where} ORDER BY pick_date DESC, id DESC LIMIT 120''', args)
-    filter_count = q1(f"SELECT COUNT(*) AS cnt FROM picks {where}", args)['cnt']
+            FROM picks {where} ORDER BY pick_date DESC, id DESC LIMIT ? OFFSET ?''', args + [PAGE_SIZE, offset])
 
     channel_opts = ''.join([f"<option value='{esc(r['name'])}' {'selected' if (params.get('channel',[''])[0] == r['name']) else ''}>{esc(r['name'])}</option>" for r in by_channel])
     tag_opts = ''.join([f"<option value='{esc(r['name'])}' {'selected' if (params.get('tag',[''])[0] == r['name']) else ''}>{esc(r['name'])}</option>" for r in by_tag])
@@ -394,8 +436,8 @@ def render_dashboard(params=None):
     monthly_href = '/monthly-report.csv'
     csv_template = 'pick_date,code,name,pick_price,signal,source_channel,reason_tag,review_status,result_grade,inquiry_count,deal_status,secondary_spread,content_title,content_ref,note\n2026-03-09,600519,贵州茅台,1688,强势趋势,douyin,趋势突破,值得复讲,A,12,已咨询,是,爆款复盘01,vid-001,样例备注'
 
-    return f'''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>宣传票复盘系统 v3.9</title><style>
-body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f6f7fb;color:#1f2937;margin:0;padding:24px}} .wrap{{max-width:1540px;margin:0 auto}} .grid{{display:grid;grid-template-columns:repeat(5,1fr);gap:16px}} .grid2{{display:grid;grid-template-columns:repeat(2,1fr);gap:16px}} .grid3{{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}} .card{{background:#fff;border-radius:16px;padding:18px;box-shadow:0 6px 20px rgba(0,0,0,.06)}} h1,h2{{margin:0 0 12px}} .muted{{color:#6b7280;font-size:14px}} .num{{font-size:32px;font-weight:700}} table{{width:100%;border-collapse:collapse}} th,td{{padding:10px;border-bottom:1px solid #eee;text-align:left;font-size:14px;vertical-align:top;white-space:nowrap}} th{{background:#fafafa}} .section{{margin-top:20px}} input,select,textarea{{width:100%;padding:10px;border:1px solid #d1d5db;border-radius:10px;box-sizing:border-box}} textarea{{min-height:90px}} .bigtextarea{{min-height:180px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}} .formgrid3{{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}} button{{background:#111827;color:#fff;border:0;border-radius:10px;padding:10px 16px;cursor:pointer}} a.btn{{display:inline-block;background:#111827;color:#fff;text-decoration:none;padding:10px 16px;border-radius:10px;margin-right:8px}} .bar-row,.line-row{{display:grid;grid-template-columns:140px 1fr 62px;gap:10px;align-items:center;margin:8px 0}} .bar-track,.line-track{{height:12px;background:#eef2ff;border-radius:999px;overflow:hidden}} .bar-fill,.line-fill{{height:100%;border-radius:999px}} .inline-form{{display:inline}} .linkbtn{{background:none;color:#2563eb;padding:0 6px;border:none;border-radius:0}} .linkbtn.danger{{color:#dc2626}} .txtbtn{{color:#2563eb;text-decoration:none;padding-right:6px}} .badge{{display:inline-block;padding:4px 8px;border-radius:999px;font-size:12px}} .badge-active{{background:#dcfce7;color:#166534}} .badge-archived{{background:#f3f4f6;color:#4b5563}} .topline{{display:flex;justify-content:space-between;align-items:flex-end;gap:12px;flex-wrap:wrap}} .bulkbar{{display:flex;gap:8px;flex-wrap:wrap;align-items:center}} .bulkbar select{{width:auto;min-width:140px}} .smallbtn{{padding:8px 12px;border-radius:10px}} .tablewrap{{overflow:auto}} .subtle{{font-size:12px;color:#6b7280}} @media (max-width:980px){{.grid,.grid2,.grid3,.formgrid3{{grid-template-columns:1fr}} body{{padding:16px}} .wrap{{max-width:100%}}}}</style><script>function toggleAll(source){{document.querySelectorAll('input[name="ids"]').forEach(cb=>cb.checked=source.checked);}} function ensureSelected(form){{const checked=form.querySelectorAll('input[name="ids"]:checked'); if(!checked.length){{alert('请先勾选至少一条记录'); return false;}} return true;}}</script></head><body><div class="wrap"><div class="topline"><div><h1>宣传票复盘系统 v3.9</h1><div class="muted">更新时间：{datetime.now().strftime('%Y-%m-%d %H:%M')} · 已启用密码保护 · 本地端口 {PORT}</div></div><div class="muted">本次新增：成交复盘页 / 排行榜页 / 月报导出</div></div>{flash_html}
+    return f'''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>宣传票复盘系统 v4.0</title><style>
+body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f6f7fb;color:#1f2937;margin:0;padding:24px}} .wrap{{max-width:1540px;margin:0 auto}} .grid{{display:grid;grid-template-columns:repeat(5,1fr);gap:16px}} .grid2{{display:grid;grid-template-columns:repeat(2,1fr);gap:16px}} .grid3{{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}} .card{{background:#fff;border-radius:16px;padding:18px;box-shadow:0 6px 20px rgba(0,0,0,.06)}} h1,h2{{margin:0 0 12px}} .muted{{color:#6b7280;font-size:14px}} .num{{font-size:32px;font-weight:700}} table{{width:100%;border-collapse:collapse}} th,td{{padding:10px;border-bottom:1px solid #eee;text-align:left;font-size:14px;vertical-align:top;white-space:nowrap}} th{{background:#fafafa}} .section{{margin-top:20px}} input,select,textarea{{width:100%;padding:10px;border:1px solid #d1d5db;border-radius:10px;box-sizing:border-box}} textarea{{min-height:90px}} .bigtextarea{{min-height:180px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}} .formgrid3{{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}} button{{background:#111827;color:#fff;border:0;border-radius:10px;padding:10px 16px;cursor:pointer}} a.btn{{display:inline-block;background:#111827;color:#fff;text-decoration:none;padding:10px 16px;border-radius:10px;margin-right:8px}} .bar-row,.line-row{{display:grid;grid-template-columns:140px 1fr 62px;gap:10px;align-items:center;margin:8px 0}} .bar-track,.line-track{{height:12px;background:#eef2ff;border-radius:999px;overflow:hidden}} .bar-fill,.line-fill{{height:100%;border-radius:999px}} .inline-form{{display:inline}} .linkbtn{{background:none;color:#2563eb;padding:0 6px;border:none;border-radius:0}} .linkbtn.danger{{color:#dc2626}} .txtbtn{{color:#2563eb;text-decoration:none;padding-right:6px}} .badge{{display:inline-block;padding:4px 8px;border-radius:999px;font-size:12px}} .badge-active{{background:#dcfce7;color:#166534}} .badge-archived{{background:#f3f4f6;color:#4b5563}} .topline{{display:flex;justify-content:space-between;align-items:flex-end;gap:12px;flex-wrap:wrap}} .bulkbar{{display:flex;gap:8px;flex-wrap:wrap;align-items:center}} .bulkbar select{{width:auto;min-width:140px}} .smallbtn{{padding:8px 12px;border-radius:10px}} .tablewrap{{overflow:auto}} .subtle{{font-size:12px;color:#6b7280}} @media (max-width:980px){{.grid,.grid2,.grid3,.formgrid3{{grid-template-columns:1fr}} body{{padding:16px}} .wrap{{max-width:100%}}}}</style><script>function toggleAll(source){{document.querySelectorAll('input[name="ids"]').forEach(cb=>cb.checked=source.checked);}} function ensureSelected(form){{const checked=form.querySelectorAll('input[name="ids"]:checked'); if(!checked.length){{alert('请先勾选至少一条记录'); return false;}} return true;}}</script></head><body><div class="wrap"><div class="topline"><div><h1>宣传票复盘系统 v4.0</h1><div class="muted">更新时间：{datetime.now().strftime('%Y-%m-%d %H:%M')} · 已启用密码保护 · 本地端口 {PORT}</div></div><div class="muted">本次新增：统一导航 / 报表中心 / 正式版结构升级</div></div><div class='nav'>{render_nav('dashboard')}</div>{flash_html}
 <div class="grid section"><div class="card"><div class="muted">累计记录</div><div class="num">{overview.get('total',0)}</div></div><div class="card"><div class="muted">使用中</div><div class="num">{overview.get('active_total',0) or 0}</div></div><div class="card"><div class="muted">已成交数</div><div class="num">{int(overview.get('deal_total') or 0)}</div></div><div class="card"><div class="muted">二次传播数</div><div class="num">{int(overview.get('spread_total') or 0)}</div></div><div class="card"><div class="muted">值得复讲总数</div><div class="num">{int(overview.get('worthy_total') or 0)}</div></div></div>
 <div class="grid3 section"><div class="card"><div class="muted">本周新增</div><div class="num">{int(kpi.get('week_new') or 0)}</div></div><div class="card"><div class="muted">近30天新增</div><div class="num">{int(kpi.get('last30_new') or 0)}</div></div><div class="card"><div class="muted">平均咨询数</div><div class="num">{kpi.get('avg_inquiry') or 0}</div></div></div>
 <div class="section card"><p><a class="btn" href="/deal-review">成交复盘页</a><a class="btn" href="/leaderboards">排行榜页</a><a class="btn" href="{monthly_href}">导出月报 CSV</a><a class="btn" href="{export_json_href}">导出 JSON</a><a class="btn" href="{export_csv_href}">导出 CSV</a><a class="btn" href="/logout">退出登录</a></p></div>
@@ -403,13 +445,13 @@ body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;backgro
 <div class="grid3 section"><div class="card"><h2>近30天录入趋势</h2>{line_table_html(trend_30d, color='#7c3aed')}</div><div class="card"><h2>近30天值得复讲趋势</h2>{line_table_html(worthy_trend, color='#0891b2')}</div><div class="card"><h2>近30天成交趋势</h2>{line_table_html(deal_trend, color='#16a34a')}</div></div>
 <div class="section card"><h2>筛选 / 搜索</h2><form method="get" action="/"><div class="formgrid3"><div><label>关键词</label><input name="keyword" value="{esc((params.get('keyword',[''])[0] or '').strip())}" placeholder="股票代码/股票名称/内容标题/内容编号"></div><div><label>渠道</label><select name="channel"><option value="">全部</option>{channel_opts}</select></div><div><label>标签</label><select name="tag"><option value="">全部</option>{tag_opts}</select></div><div><label>复盘状态</label><select name="status"><option value="">全部</option>{status_opts}</select></div><div><label>结果评级</label><select name="grade"><option value="">全部</option>{grade_opts}</select></div><div><label>成交状态</label><select name="deal_status"><option value="">全部</option>{deal_opts}</select></div><div><label>开始日期</label><input type="date" name="date_from" value="{esc((params.get('date_from',[''])[0] or '').strip())}"></div><div><label>结束日期</label><input type="date" name="date_to" value="{esc((params.get('date_to',[''])[0] or '').strip())}"></div><div><label>记录范围</label><select name="archive"><option value="active" {'selected' if (params.get('archive',['active'])[0] or 'active')=='active' else ''}>仅使用中</option><option value="archived" {'selected' if (params.get('archive',['active'])[0] or 'active')=='archived' else ''}>仅已归档</option><option value="all" {'selected' if (params.get('archive',['active'])[0] or 'active')=='all' else ''}>全部记录</option></select></div></div><div style="margin-top:12px"><button type="submit">筛选结果</button> <a class="btn" href="/">清空筛选</a></div><div class="muted" style="margin-top:8px">当前筛选结果：{filter_count} 条</div></form></div>
 <div class="grid2 section"><div class="card"><h2>新增记录</h2><form method="post" action="/add"><div class="formgrid3"><div><label>日期</label><input name="pick_date" value="{datetime.now().strftime('%Y-%m-%d')}" required></div><div><label>股票代码</label><input name="code" required></div><div><label>股票名称</label><input name="name" required></div><div><label>推荐价</label><input name="pick_price" required></div><div><label>信号</label><input name="signal"></div><div><label>渠道</label><input name="source_channel" placeholder="douyin/xhs/live/community"></div><div><label>标签</label><input name="reason_tag" placeholder="趋势突破/缩量回踩"></div><div><label>复盘结论</label><select name="review_status">{select_options(REVIEW_STATUS_OPTIONS, '未复盘')}</select></div><div><label>结果评级</label><select name="result_grade">{select_options(RESULT_GRADE_OPTIONS, '待定')}</select></div><div><label>咨询数</label><input name="inquiry_count" value="0"></div><div><label>成交状态</label><select name="deal_status">{select_options(DEAL_STATUS_OPTIONS, '未成交')}</select></div><div><label>二次传播</label><select name="secondary_spread">{select_options(SPREAD_OPTIONS, '否')}</select></div><div><label>内容标题</label><input name="content_title"></div><div><label>内容编号/链接</label><input name="content_ref"></div></div><div style="margin-top:12px"><label>备注/复盘评论</label><textarea name="note"></textarea></div><div style="margin-top:12px"><button type="submit">保存到系统</button></div></form></div><div class="card"><h2>批量 CSV 导入</h2><form method="post" action="/bulk-import"><div style="margin-top:12px"><textarea style="min-height:180px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace" name="csv_text" placeholder="{esc(csv_template)}"></textarea></div><div style="margin-top:12px"><button type="submit">批量导入 CSV</button></div></form></div></div>
-<div class="section card"><div class="topline" style="margin-bottom:12px"><h2>最新记录</h2><div class="subtle">支持批量归档 / 恢复 / 删除 / 批量改复盘状态 / 评级 / 成交 / 传播</div></div><form method="post" action="/batch-review" onsubmit="return ensureSelected(this)"><div class="bulkbar" style="margin-bottom:12px"><select name="review_status">{select_options(REVIEW_STATUS_OPTIONS, '值得复讲')}</select><button type="submit" class="smallbtn">批量改复盘状态</button><select name="result_grade">{select_options(RESULT_GRADE_OPTIONS, 'A')}</select><button formaction="/batch-grade" type="submit" class="smallbtn">批量改评级</button><select name="deal_status">{select_options(DEAL_STATUS_OPTIONS, '已咨询')}</select><button formaction="/batch-deal" type="submit" class="smallbtn">批量改成交状态</button><select name="secondary_spread">{select_options(SPREAD_OPTIONS, '是')}</select><button formaction="/batch-spread" type="submit" class="smallbtn">批量改传播</button><button formaction="/batch-archive" type="submit" class="smallbtn">批量归档</button><button formaction="/batch-unarchive" type="submit" class="smallbtn">批量恢复</button><button formaction="/batch-delete" type="submit" class="smallbtn" onclick="return ensureSelected(this.form) && confirm('确认批量删除所选记录？删除后不可恢复。')">批量删除</button></div><div class="tablewrap"><table><thead><tr><th><input type="checkbox" onclick="toggleAll(this)"></th><th>日期</th><th>股票</th><th>代码</th><th>推荐价</th><th>渠道</th><th>标签</th><th>复盘结论</th><th>评级</th><th>成交状态</th><th>咨询数</th><th>二次传播</th><th>状态</th><th>操作</th></tr></thead><tbody>{latest_rows}</tbody></table></div></form></div>
+<div class="section card"><div class="topline" style="margin-bottom:12px"><h2>最新记录</h2><div class="subtle">支持批量归档 / 恢复 / 删除 / 批量改复盘状态 / 评级 / 成交 / 传播</div></div><form method="post" action="/batch-review" onsubmit="return ensureSelected(this)"><div class="bulkbar" style="margin-bottom:12px"><select name="review_status">{select_options(REVIEW_STATUS_OPTIONS, '值得复讲')}</select><button type="submit" class="smallbtn">批量改复盘状态</button><select name="result_grade">{select_options(RESULT_GRADE_OPTIONS, 'A')}</select><button formaction="/batch-grade" type="submit" class="smallbtn">批量改评级</button><select name="deal_status">{select_options(DEAL_STATUS_OPTIONS, '已咨询')}</select><button formaction="/batch-deal" type="submit" class="smallbtn">批量改成交状态</button><select name="secondary_spread">{select_options(SPREAD_OPTIONS, '是')}</select><button formaction="/batch-spread" type="submit" class="smallbtn">批量改传播</button><button formaction="/batch-archive" type="submit" class="smallbtn">批量归档</button><button formaction="/batch-unarchive" type="submit" class="smallbtn">批量恢复</button><button formaction="/batch-delete" type="submit" class="smallbtn" onclick="return ensureSelected(this.form) && confirm('确认批量删除所选记录？删除后不可恢复。')">批量删除</button></div><div class="tablewrap"><table><thead><tr><th><input type="checkbox" onclick="toggleAll(this)"></th><th>日期</th><th>股票</th><th>代码</th><th>推荐价</th><th>渠道</th><th>标签</th><th>复盘结论</th><th>评级</th><th>成交状态</th><th>咨询数</th><th>二次传播</th><th>状态</th><th>操作</th></tr></thead><tbody>{latest_rows}</tbody></table></div>{render_pagination(page, filter_count, params)}</form></div>
 <div class="section card"><h2>最近操作日志</h2><div class="tablewrap"><table><thead><tr><th>时间</th><th>动作</th><th>记录ID</th><th>说明</th></tr></thead><tbody>{log_rows}</tbody></table></div></div></div></body></html>'''
 
 
 def render_login(error=''):
     err = f'<div class="err">{esc(error)}</div>' if error else ''
-    return f'''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>登录宣传票复盘系统</title><style>body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f6f7fb;padding:24px}}.box{{max-width:420px;margin:10vh auto;background:#fff;padding:24px;border-radius:16px;box-shadow:0 6px 20px rgba(0,0,0,.06)}}input{{width:100%;padding:12px;border:1px solid #d1d5db;border-radius:10px;box-sizing:border-box}}button{{margin-top:12px;width:100%;padding:12px;background:#111827;color:#fff;border:0;border-radius:10px}}.muted{{color:#6b7280;font-size:14px}}.err{{background:#fef2f2;color:#991b1b;border:1px solid #fecaca;padding:10px;border-radius:10px;margin:12px 0}}</style></head><body><div class="box"><h1>登录宣传票复盘系统</h1><div class="muted">v3.9 已启用访问密码保护</div>{err}<form method="post" action="/login"><input type="password" name="password" placeholder="请输入访问密码" required><button type="submit">登录</button></form></div></body></html>'''
+    return f'''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>登录宣传票复盘系统</title><style>body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f6f7fb;padding:24px}}.box{{max-width:420px;margin:10vh auto;background:#fff;padding:24px;border-radius:16px;box-shadow:0 6px 20px rgba(0,0,0,.06)}}input{{width:100%;padding:12px;border:1px solid #d1d5db;border-radius:10px;box-sizing:border-box}}button{{margin-top:12px;width:100%;padding:12px;background:#111827;color:#fff;border:0;border-radius:10px}}.muted{{color:#6b7280;font-size:14px}}.err{{background:#fef2f2;color:#991b1b;border:1px solid #fecaca;padding:10px;border-radius:10px;margin:12px 0}}</style></head><body><div class="box"><h1>登录宣传票复盘系统</h1><div class="muted">v4.0 已启用访问密码保护</div>{err}<form method="post" action="/login"><input type="password" name="password" placeholder="请输入访问密码" required><button type="submit">登录</button></form></div></body></html>'''
 
 
 def render_edit_form(record):
@@ -436,6 +478,7 @@ def render_deal_review_page():
            FROM picks WHERE COALESCE(NULLIF(deal_status,''),'未成交')='已成交' '''
     ) or {}
     body = f'''<div class="topline"><div><h1>成交复盘页</h1><div class="muted">专门查看已成交内容，反推最有效的渠道 / 标签 / 内容方向</div></div><div><a class="btn" href="/">返回面板</a></div></div>
+<div class='nav'>{render_nav('deal')}</div>
 <div class="grid section"><div class="card"><div class="muted">已成交条数</div><div class="num">{int(summary.get('total') or 0)}</div></div><div class="card"><div class="muted">成交记录平均咨询数</div><div class="num">{summary.get('avg_inquiry') or 0}</div></div><div class="card"><div class="muted">成交中的二次传播数</div><div class="num">{int(summary.get('spread_total') or 0)}</div></div></div>
 <div class="section card"><div class="tablewrap"><table><thead><tr><th>日期</th><th>股票</th><th>代码</th><th>渠道</th><th>标签</th><th>复盘结论</th><th>评级</th><th>咨询数</th><th>二次传播</th><th>内容标题</th></tr></thead><tbody>{rows}</tbody></table></div></div>'''
     return layout_page('成交复盘页', body)
@@ -447,9 +490,21 @@ def render_leaderboards_page():
     deal_rank = q("SELECT COALESCE(NULLIF(source_channel,''),'system') AS name, COUNT(*) AS cnt FROM picks WHERE COALESCE(NULLIF(deal_status,''),'未成交')='已成交' GROUP BY name ORDER BY cnt DESC LIMIT 10")
     inquiry_rank = q("SELECT COALESCE(NULLIF(reason_tag,''),'未标注') AS name, ROUND(AVG(COALESCE(inquiry_count,0)),1) AS cnt FROM picks GROUP BY name ORDER BY cnt DESC LIMIT 10")
     body = f'''<div class="topline"><div><h1>排行榜页</h1><div class="muted">把渠道、标签、成交、咨询这些关键指标拆开看，方便你抓重点</div></div><div><a class="btn" href="/">返回面板</a></div></div>
+<div class='nav'>{render_nav('leaderboards')}</div>
 <div class="grid2 section"><div class="card"><h2>渠道记录 Top10</h2>{bar_html(channel_rank, color='#4f46e5')}</div><div class="card"><h2>值得复讲标签 Top10</h2>{bar_html(worthy_rank, color='#0ea5e9')}</div></div>
 <div class="grid2 section"><div class="card"><h2>成交渠道 Top10</h2>{bar_html(deal_rank, color='#16a34a')}</div><div class="card"><h2>标签平均咨询数 Top10</h2>{bar_html(inquiry_rank, color='#ca8a04')}</div></div>'''
     return layout_page('排行榜页', body)
+
+
+def render_reports_page():
+    weekly = weekly_report_rows()
+    monthly = monthly_report_rows()
+    weekly_rows = ''.join([f"<tr><td>{esc(r['period'])}</td><td>{esc(r['total'])}</td><td>{esc(r['worthy_total'])}</td><td>{esc(r['deal_total'])}</td></tr>" for r in weekly]) or '<tr><td colspan="4">暂无数据</td></tr>'
+    monthly_rows = ''.join([f"<tr><td>{esc(r['month'])}</td><td>{esc(r['total'])}</td><td>{esc(r['worthy_total'])}</td><td>{esc(r['deal_total'])}</td><td>{esc(r['avg_inquiry'])}</td></tr>" for r in monthly]) or '<tr><td colspan="5">暂无数据</td></tr>'
+    body = f'''<div class="topline"><div><h1>报表中心</h1><div class="muted">集中查看周报/月报，适合正式复盘和团队同步</div></div><div><a class="btn" href="/weekly-report.csv">导出周报CSV</a><a class="btn" href="/monthly-report.csv">导出月报CSV</a></div></div>
+<div class='nav'>{render_nav('reports')}</div>
+<div class="grid2 section"><div class="card"><h2>近12周周报</h2><div class="tablewrap"><table><thead><tr><th>周</th><th>总记录</th><th>值得复讲</th><th>已成交</th></tr></thead><tbody>{weekly_rows}</tbody></table></div></div><div class="card"><h2>月报汇总</h2><div class="tablewrap"><table><thead><tr><th>月份</th><th>总记录</th><th>值得复讲</th><th>已成交</th><th>平均咨询数</th></tr></thead><tbody>{monthly_rows}</tbody></table></div></div></div>'''
+    return layout_page('报表中心', body)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -502,6 +557,15 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, render_deal_review_page()); return
         if parsed.path == '/leaderboards':
             self._send(200, render_leaderboards_page()); return
+        if parsed.path == '/reports':
+            self._send(200, render_reports_page()); return
+        if parsed.path == '/weekly-report.csv':
+            csv_body = io.StringIO()
+            writer = csv.DictWriter(csv_body, fieldnames=['period', 'total', 'worthy_total', 'deal_total'])
+            writer.writeheader()
+            for row in weekly_report_rows():
+                writer.writerow(row)
+            self._send(200, csv_body.getvalue(), 'text/csv; charset=utf-8', {'Content-Disposition': 'attachment; filename="weekly_report.csv"'}); return
         if parsed.path == '/monthly-report.csv':
             csv_body = io.StringIO()
             writer = csv.DictWriter(csv_body, fieldnames=['month', 'total', 'worthy_total', 'deal_total', 'avg_inquiry'])
@@ -554,6 +618,6 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == '__main__':
     server = HTTPServer(('0.0.0.0', PORT), Handler)
-    print(f'v3.9 server running on http://0.0.0.0:{PORT}')
+    print(f'v4.0 server running on http://0.0.0.0:{PORT}')
     print(f'panel password: {PANEL_PASSWORD}')
     server.serve_forever()
