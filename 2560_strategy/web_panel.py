@@ -3,11 +3,12 @@ import io
 import json
 import html
 import secrets
-import sqlite3
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse, urlencode
 from http.server import BaseHTTPRequestHandler, HTTPServer
+
+from backend.repositories.db import ensure_schema, q, q1, execute, execute_many
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / 'data'
@@ -40,97 +41,7 @@ def ensure_secret():
 PANEL_PASSWORD = ensure_secret()
 
 
-def db_conn():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-
-def ensure_schema():
-    conn = db_conn()
-    try:
-        cur = conn.cursor()
-        cols = [r['name'] for r in cur.execute("PRAGMA table_info(picks)").fetchall()]
-        alter_sqls = []
-        if 'archived' not in cols:
-            alter_sqls.append("ALTER TABLE picks ADD COLUMN archived INTEGER DEFAULT 0")
-        if 'result_grade' not in cols:
-            alter_sqls.append("ALTER TABLE picks ADD COLUMN result_grade TEXT DEFAULT '待定'")
-        if 'inquiry_count' not in cols:
-            alter_sqls.append("ALTER TABLE picks ADD COLUMN inquiry_count INTEGER DEFAULT 0")
-        if 'deal_status' not in cols:
-            alter_sqls.append("ALTER TABLE picks ADD COLUMN deal_status TEXT DEFAULT '未成交'")
-        if 'secondary_spread' not in cols:
-            alter_sqls.append("ALTER TABLE picks ADD COLUMN secondary_spread TEXT DEFAULT '否'")
-        for sql in alter_sqls:
-            cur.execute(sql)
-        cur.execute(
-            '''CREATE TABLE IF NOT EXISTS operation_logs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                action TEXT NOT NULL,
-                target_ids TEXT DEFAULT '',
-                detail TEXT DEFAULT '',
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP
-            )'''
-        )
-        cur.execute(
-            '''CREATE TABLE IF NOT EXISTS saved_filters (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                query_string TEXT NOT NULL,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP
-            )'''
-        )
-        cur.execute(
-            '''CREATE TABLE IF NOT EXISTS ui_settings (
-                setting_key TEXT PRIMARY KEY,
-                setting_value TEXT NOT NULL,
-                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
-            )'''
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-
 ensure_schema()
-
-
-def q(sql, args=()):
-    conn = db_conn()
-    try:
-        cur = conn.cursor()
-        cur.execute(sql, args)
-        return [dict(r) for r in cur.fetchall()]
-    finally:
-        conn.close()
-
-
-def q1(sql, args=()):
-    rows = q(sql, args)
-    return rows[0] if rows else None
-
-
-def execute(sql, args=()):
-    conn = db_conn()
-    try:
-        cur = conn.cursor()
-        cur.execute(sql, args)
-        conn.commit()
-        return cur.rowcount
-    finally:
-        conn.close()
-
-
-def execute_many(sql, args_list):
-    conn = db_conn()
-    try:
-        cur = conn.cursor()
-        cur.executemany(sql, args_list)
-        conn.commit()
-        return cur.rowcount
-    finally:
-        conn.close()
 
 
 def log_action(action, target_ids=None, detail=''):
