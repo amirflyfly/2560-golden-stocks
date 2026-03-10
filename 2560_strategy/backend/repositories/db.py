@@ -73,7 +73,6 @@ def ensure_schema():
             alter_sqls.append("ALTER TABLE picks ADD COLUMN secondary_spread TEXT DEFAULT '否'")
         for sql in alter_sqls:
             cur.execute(sql)
-
         cur.execute(
             """CREATE TABLE IF NOT EXISTS operation_logs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -83,6 +82,22 @@ def ensure_schema():
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )"""
         )
+        # operation_logs: add user context columns if missing
+        log_cols = [r['name'] for r in cur.execute("PRAGMA table_info(operation_logs)").fetchall()]
+        log_alters = []
+        if 'user_id' not in log_cols:
+            log_alters.append("ALTER TABLE operation_logs ADD COLUMN user_id INTEGER DEFAULT NULL")
+        if 'username' not in log_cols:
+            log_alters.append("ALTER TABLE operation_logs ADD COLUMN username TEXT DEFAULT ''")
+        if 'ip' not in log_cols:
+            log_alters.append("ALTER TABLE operation_logs ADD COLUMN ip TEXT DEFAULT ''")
+        if 'user_agent' not in log_cols:
+            log_alters.append("ALTER TABLE operation_logs ADD COLUMN user_agent TEXT DEFAULT ''")
+        for sql in log_alters:
+            try:
+                cur.execute(sql)
+            except sqlite3.OperationalError:
+                pass
         cur.execute(
             """CREATE TABLE IF NOT EXISTS saved_filters (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -98,6 +113,31 @@ def ensure_schema():
                 updated_at TEXT DEFAULT CURRENT_TIMESTAMP
             )"""
         )
+        cur.execute(
+            """CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL UNIQUE,
+                password_hash TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'admin',
+                is_active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )"""
+        )
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)')
+
+        cur.execute(
+            """CREATE TABLE IF NOT EXISTS sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_token TEXT NOT NULL UNIQUE,
+                user_id INTEGER NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                expires_at TEXT NOT NULL,
+                last_seen_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(user_id) REFERENCES users(id)
+            )"""
+        )
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at)')
 
         conn.commit()
     finally:

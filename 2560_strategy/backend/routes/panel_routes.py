@@ -21,6 +21,7 @@ from backend.services.filters_service import (
     rename_saved_filter,
 )
 from backend.services.reports_service import weekly_report_rows, monthly_report_rows
+from backend.services import multiuser_auth_service
 
 
 def handle_get(h):
@@ -31,6 +32,8 @@ def handle_get(h):
         h._send(200, 'ok', 'text/plain; charset=utf-8')
         return
     if parsed.path == '/logout':
+        token = h.cookies().get(h.COOKIE_NAME)
+        multiuser_auth_service.logout(token)
         h._redirect('/login', f"{h.COOKIE_NAME}=; Path=/; Max-Age=0")
         return
     if parsed.path == '/login':
@@ -101,12 +104,14 @@ def handle_post(h):
     data = h._read_post()
 
     if h.path == '/login':
-        if data.get('password', '') == h.PANEL_PASSWORD:
-            h._redirect('/', f"{h.COOKIE_NAME}={h.PANEL_PASSWORD}; Path=/; HttpOnly")
+        username = (data.get('username', '') or '').strip()
+        password = data.get('password', '')
+        sess = multiuser_auth_service.login(username, password)
+        if sess:
+            h._redirect('/', f"{h.COOKIE_NAME}={sess['session_token']}; Path=/; HttpOnly")
         else:
-            h._send(200, h.render_login('密码不对，再试一次'))
+            h._send(200, h.render_login('账号或密码不对'))
         return
-
     if not h.authed():
         h._redirect('/login')
         return
