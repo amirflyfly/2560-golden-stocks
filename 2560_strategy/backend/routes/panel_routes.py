@@ -9,7 +9,8 @@ import io
 import json
 from urllib.parse import parse_qs, urlparse
 
-from backend.repositories.db import q, q1, execute, execute_many
+from backend.repositories.db import q
+from backend.repositories import picks_repo
 from backend.services.query_service import filter_where
 from backend.services.io_service import bulk_import_from_csv, rows_to_csv
 from backend.services.format_service import num, int_num
@@ -44,7 +45,7 @@ def handle_get(h):
         return
     if parsed.path == '/edit':
         rid = parse_qs(parsed.query).get('id', [''])[0]
-        h._send(200, h.render_edit_form(q1('SELECT * FROM picks WHERE id=?', (rid,))))
+        h._send(200, h.render_edit_form(picks_repo.get_pick_by_id(rid)))
         return
     if parsed.path == '/deal-review':
         h._send(200, h.render_deal_review_page())
@@ -80,7 +81,7 @@ def handle_get(h):
         where, args = filter_where(params)
         h._send(
             200,
-            json.dumps(q(f'SELECT * FROM picks {where} ORDER BY pick_date DESC, id DESC', args), ensure_ascii=False, indent=2),
+            json.dumps(picks_repo.list_picks(where, args), ensure_ascii=False, indent=2),
             'application/json; charset=utf-8',
         )
         return
@@ -88,7 +89,7 @@ def handle_get(h):
     if parsed.path == '/export.csv':
         params = parse_qs(parsed.query)
         where, args = filter_where(params)
-        csv_body = rows_to_csv(q(f'SELECT * FROM picks {where} ORDER BY pick_date DESC, id DESC', args))
+        csv_body = rows_to_csv(picks_repo.list_picks(where, args))
         h._send(200, csv_body, 'text/csv; charset=utf-8', {'Content-Disposition': 'attachment; filename="promo_panel_export.csv"'})
         return
 
@@ -111,30 +112,27 @@ def handle_post(h):
         return
 
     if h.path == '/add':
-        execute(
-            '''INSERT OR REPLACE INTO picks (pick_date, code, name, pick_price, signal, source, source_channel, reason_tag, note, review_status, review_comment, content_title, content_ref, archived, result_grade, inquiry_count, deal_status, secondary_spread) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)''',
-            (
-                data.get('pick_date', ''),
-                data.get('code', ''),
-                data.get('name', ''),
-                num(data.get('pick_price', '0')),
-                data.get('signal', ''),
-                'webform',
-                data.get('source_channel', 'web'),
-                data.get('reason_tag', ''),
-                data.get('note', ''),
-                data.get('review_status', '未复盘'),
-                data.get('note', ''),
-                data.get('content_title', ''),
-                data.get('content_ref', ''),
-                data.get('result_grade', '待定'),
-                int_num(data.get('inquiry_count', 0)),
-                data.get('deal_status', '未成交'),
-                data.get('secondary_spread', '否'),
-            ),
+        picks_repo.create_or_replace_pick(
+            pick_date=data.get('pick_date', ''),
+            code=data.get('code', ''),
+            name=data.get('name', ''),
+            pick_price=num(data.get('pick_price', '0')),
+            signal=data.get('signal', ''),
+            source='webform',
+            source_channel=data.get('source_channel', 'web'),
+            reason_tag=data.get('reason_tag', ''),
+            note=data.get('note', ''),
+            review_status=data.get('review_status', '未复盘'),
+            review_comment=data.get('note', ''),
+            content_title=data.get('content_title', ''),
+            content_ref=data.get('content_ref', ''),
+            result_grade=data.get('result_grade', '待定'),
+            inquiry_count=int_num(data.get('inquiry_count', 0)),
+            deal_status=data.get('deal_status', '未成交'),
+            secondary_spread=data.get('secondary_spread', '否'),
         )
-        new_row = q1('SELECT id FROM picks ORDER BY id DESC LIMIT 1')
-        h.log_action('add', [new_row['id']] if new_row else [], f"新增 {data.get('code','')} {data.get('name','')}")
+        new_id = picks_repo.last_inserted_id()
+        h.log_action('add', [new_id] if new_id else [], f"新增 {data.get('code','')} {data.get('name','')}")
         h._redirect('/?saved=1')
         return
 
@@ -180,27 +178,24 @@ def handle_post(h):
 
     if h.path == '/update':
         rid = data.get('id', '')
-        execute(
-            '''UPDATE picks SET pick_date=?, code=?, name=?, pick_price=?, signal=?, source_channel=?, reason_tag=?, note=?, review_status=?, review_comment=?, content_title=?, content_ref=?, result_grade=?, inquiry_count=?, deal_status=?, secondary_spread=? WHERE id=?''',
-            (
-                data.get('pick_date', ''),
-                data.get('code', ''),
-                data.get('name', ''),
-                num(data.get('pick_price', '0')),
-                data.get('signal', ''),
-                data.get('source_channel', ''),
-                data.get('reason_tag', ''),
-                data.get('note', ''),
-                data.get('review_status', '未复盘'),
-                data.get('note', ''),
-                data.get('content_title', ''),
-                data.get('content_ref', ''),
-                data.get('result_grade', '待定'),
-                int_num(data.get('inquiry_count', 0)),
-                data.get('deal_status', '未成交'),
-                data.get('secondary_spread', '否'),
-                rid,
-            ),
+        picks_repo.update_pick(
+            rid=rid,
+            pick_date=data.get('pick_date', ''),
+            code=data.get('code', ''),
+            name=data.get('name', ''),
+            pick_price=num(data.get('pick_price', '0')),
+            signal=data.get('signal', ''),
+            source_channel=data.get('source_channel', ''),
+            reason_tag=data.get('reason_tag', ''),
+            note=data.get('note', ''),
+            review_status=data.get('review_status', '未复盘'),
+            review_comment=data.get('note', ''),
+            content_title=data.get('content_title', ''),
+            content_ref=data.get('content_ref', ''),
+            result_grade=data.get('result_grade', '待定'),
+            inquiry_count=int_num(data.get('inquiry_count', 0)),
+            deal_status=data.get('deal_status', '未成交'),
+            secondary_spread=data.get('secondary_spread', '否'),
         )
         h.log_action('update', [rid], f'编辑记录 {rid}')
         h._redirect('/?updated=1')
@@ -209,66 +204,66 @@ def handle_post(h):
     # Simple one-liners (batch updates) stay as-is, but routed here.
     if h.path == '/archive':
         rid = data.get('id', '')
-        execute('UPDATE picks SET archived=1 WHERE id=?', (rid,))
+        picks_repo.set_archived(rid, True)
         h.log_action('archive', [rid], '单条归档')
         h._redirect('/?archived=1')
         return
     if h.path == '/unarchive':
         rid = data.get('id', '')
-        execute('UPDATE picks SET archived=0 WHERE id=?', (rid,))
+        picks_repo.set_archived(rid, False)
         h.log_action('unarchive', [rid], '单条恢复')
         h._redirect('/?unarchived=1')
         return
     if h.path == '/delete':
         rid = data.get('id', '')
-        execute('DELETE FROM picks WHERE id=?', (rid,))
+        picks_repo.delete_pick(rid)
         h.log_action('delete', [rid], '单条删除')
         h._redirect('/?deleted=1')
         return
 
     if h.path == '/batch-archive':
         ids = h._selected_ids(data)
-        h._batch_update('UPDATE picks SET archived=1 WHERE id=?', ids)
+        picks_repo.batch_set_archived(ids, True)
         h.log_action('batch_archive', ids, f'批量归档 {len(ids)} 条')
         h._redirect('/?batch_archived=1')
         return
     if h.path == '/batch-unarchive':
         ids = h._selected_ids(data)
-        h._batch_update('UPDATE picks SET archived=0 WHERE id=?', ids)
+        picks_repo.batch_set_archived(ids, False)
         h.log_action('batch_unarchive', ids, f'批量恢复 {len(ids)} 条')
         h._redirect('/?batch_unarchived=1')
         return
     if h.path == '/batch-delete':
         ids = h._selected_ids(data)
-        h._batch_update('DELETE FROM picks WHERE id=?', ids)
+        picks_repo.batch_delete(ids)
         h.log_action('batch_delete', ids, f'批量删除 {len(ids)} 条')
         h._redirect('/?batch_deleted=1')
         return
     if h.path == '/batch-review':
         ids = h._selected_ids(data)
         status = data.get('review_status', '未复盘')
-        execute_many('UPDATE picks SET review_status=? WHERE id=?', [(status, i) for i in ids]) if ids else None
+        picks_repo.batch_set_review_status(ids, status)
         h.log_action('batch_review', ids, f'批量改复盘状态为 {status}')
         h._redirect('/?batch_reviewed=1')
         return
     if h.path == '/batch-grade':
         ids = h._selected_ids(data)
         grade = data.get('result_grade', '待定')
-        execute_many('UPDATE picks SET result_grade=? WHERE id=?', [(grade, i) for i in ids]) if ids else None
+        picks_repo.batch_set_result_grade(ids, grade)
         h.log_action('batch_grade', ids, f'批量改评级为 {grade}')
         h._redirect('/?batch_grade=1')
         return
     if h.path == '/batch-deal':
         ids = h._selected_ids(data)
         ds = data.get('deal_status', '未成交')
-        execute_many('UPDATE picks SET deal_status=? WHERE id=?', [(ds, i) for i in ids]) if ids else None
+        picks_repo.batch_set_deal_status(ids, ds)
         h.log_action('batch_deal', ids, f'批量改成交状态为 {ds}')
         h._redirect('/?batch_deal=1')
         return
     if h.path == '/batch-spread':
         ids = h._selected_ids(data)
         sp = data.get('secondary_spread', '否')
-        execute_many('UPDATE picks SET secondary_spread=? WHERE id=?', [(sp, i) for i in ids]) if ids else None
+        picks_repo.batch_set_secondary_spread(ids, sp)
         h.log_action('batch_spread', ids, f'批量改二次传播为 {sp}')
         h._redirect('/?batch_spread=1')
         return
