@@ -1,2 +1,7 @@
 __pycache__/
 *.pyc
+
+# data artifacts
+2560_strategy/data/
+# secrets
+**/backup_hmac_key.txt
