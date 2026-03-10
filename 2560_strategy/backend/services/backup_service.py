@@ -175,8 +175,16 @@ def validate_backup_zip_bytes(zip_bytes: bytes):
                 sig = meta.get('signature')
                 if sig:
                     try:
-                        expect = _sign_meta(meta)
-                        if str(sig) != str(expect):
+                        ok_any = False
+                        for k in _get_all_hmac_keys():
+                            meta2 = dict(meta)
+                            meta2.pop('signature', None)
+                            payload = json.dumps(meta2, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode('utf-8')
+                            expect = hmac.new(k, payload, hashlib.sha256).hexdigest()
+                            if str(sig) == str(expect):
+                                ok_any = True
+                                break
+                        if not ok_any:
                             return False, '备份包签名校验失败（可能被篡改）'
                     except Exception:
                         return False, '备份包签名校验失败'
@@ -258,18 +266,8 @@ def _sha256_bytes(data: bytes) -> str:
 
 
 def _get_hmac_key():
-    """Return HMAC key bytes; generate and persist if missing."""
-    from backend.app_config import BACKUP_HMAC_KEY_PATH
-    key_path = BASE_DIR / BACKUP_HMAC_KEY_PATH if 'BASE_DIR' in globals() else (DATA_DIR / 'backup_hmac_key.txt')
-    # Prefer DATA_DIR relative path
-    if not key_path.is_absolute():
-        key_path = DATA_DIR.parent / BACKUP_HMAC_KEY_PATH
-    key_path.parent.mkdir(parents=True, exist_ok=True)
-    if key_path.exists():
-        return key_path.read_text(encoding='utf-8').strip().encode('utf-8')
-    k = secrets.token_urlsafe(32)
-    key_path.write_text(k, encoding='utf-8')
-    return k.encode('utf-8')
+    """Return current HMAC key bytes."""
+    return _get_all_hmac_keys()[0]
 
 
 
@@ -314,3 +312,51 @@ def delete_restore_upload(key: str):
             path.unlink()
     except Exception:
         pass
+
+
+
+def _key_file_paths():
+    from backend.app_config import BACKUP_HMAC_KEY_PATH
+    key_path = DATA_DIR / 'backup_hmac_key.txt'
+    legacy_path = DATA_DIR / 'backup_hmac_keys.txt'
+    return key_path, legacy_path
+
+
+
+def _get_all_hmac_keys():
+    """Return list of keys (current first), creating current if missing."""
+    key_path, legacy_path = _key_file_paths()
+    key_path.parent.mkdir(parents=True, exist_ok=True)
+    keys = []
+    if key_path.exists():
+        k = key_path.read_text(encoding='utf-8').strip()
+        if k:
+            keys.append(k.encode('utf-8'))
+    if legacy_path.exists():
+        for line in legacy_path.read_text(encoding='utf-8').splitlines():
+            line = line.strip()
+            if line and line not in ('#',):
+                keys.append(line.encode('utf-8'))
+    if not keys:
+        k = secrets.token_urlsafe(32)
+        key_path.write_text(k, encoding='utf-8')
+        keys = [k.encode('utf-8')]
+    return keys
+
+
+
+def rotate_hmac_key():
+    """Rotate current key, keeping old key in legacy file for verification."""
+    key_path, legacy_path = _key_file_paths()
+    key_path.parent.mkdir(parents=True, exist_ok=True)
+    old = key_path.read_text(encoding='utf-8').strip() if key_path.exists() else ''
+    new = secrets.token_urlsafe(32)
+    key_path.write_text(new, encoding='utf-8')
+    if old:
+        prev = legacy_path.read_text(encoding='utf-8') if legacy_path.exists() else ''
+        if prev and not prev.endswith('\n'):
+            prev += '\n'
+        legacy_path.write_text(prev + old + '\n', encoding='utf-8')
+    return True
+
+

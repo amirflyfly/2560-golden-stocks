@@ -17,7 +17,7 @@ def render_backup_key_page(message=''):
 <div class='section card'>
   <h2>导出密钥</h2>
   <div class='muted'>下载后请妥善保管。泄露会影响备份防篡改能力。</div>
-  <p style='margin-top:12px'><a class='btn' href='/backup-key/download'>下载 backup_hmac_key.txt</a></p>
+  <p style='margin-top:12px'><a class='btn' href='/backup-key/download'>下载 backup_hmac_key.txt</a> <form method='post' action='/backup-key/rotate' class='inline-form' onsubmit="return confirm('确认轮换密钥？轮换后新备份将使用新签名，系统会保留旧密钥用于验证旧备份。')"><button type='submit' class='linkbtn danger'>轮换密钥</button></form></p>
 </div>
 """
     return layout_page('备份签名密钥', body)

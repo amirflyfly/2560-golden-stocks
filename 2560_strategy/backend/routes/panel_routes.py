@@ -251,6 +251,16 @@ def handle_get(h):
         h._redirect('/login', f"{h.COOKIE_NAME}=; Path=/; Max-Age=0")
         return
 
+
+    if h.path == '/backup-key/rotate':
+        s = h.session() or {}
+        if (s.get('role') or '') != 'admin':
+            h._send(403, 'forbidden', 'text/plain; charset=utf-8'); return
+        backup_service.rotate_hmac_key()
+        h.log_action('backup_key_rotate', [], '轮换备份签名密钥')
+        h._send(200, render_backup_key_page('已轮换密钥（已保留旧密钥用于验证旧备份）'))
+        return
+
     h._send(404, 'not found', 'text/plain; charset=utf-8')
 
 
