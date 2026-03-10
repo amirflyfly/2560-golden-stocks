@@ -360,3 +360,35 @@ def rotate_hmac_key():
     return True
 
 
+
+
+
+def backup_stats():
+    """Return basic backup observability stats."""
+    bdir = backup_dir()
+    zips = sorted(bdir.glob('*.zip'), key=lambda p: p.stat().st_mtime, reverse=True)
+    total = len(zips)
+    latest_time = None
+    latest_name = ''
+    if zips:
+        latest_time = datetime.fromtimestamp(zips[0].stat().st_mtime).strftime('%Y-%m-%d %H:%M:%S')
+        latest_name = zips[0].name
+    # count fail among latest 50 (cached)
+    fail = 0
+    checked = 0
+    for p in zips[:50]:
+        try:
+            ok, status = cached_validate_backup(p.name)
+            checked += 1
+            if not ok:
+                fail += 1
+        except Exception:
+            checked += 1
+            fail += 1
+    return {
+        'total': total,
+        'latest_time': latest_time or '-',
+        'latest_name': latest_name or '-',
+        'checked': checked,
+        'fail': fail,
+    }
