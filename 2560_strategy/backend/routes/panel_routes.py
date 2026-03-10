@@ -25,6 +25,7 @@ from backend.pages.users_page import render_users_page
 from backend.pages.restore_page import render_restore_page
 from backend.pages.backups_page import render_backups_page
 from backend.pages.backup_detail_page import render_backup_detail_page
+from backend.pages.backup_key_page import render_backup_key_page
 from backend.services import multiuser_auth_service
 from backend.services import users_admin_service
 from backend.services import backup_service
@@ -153,6 +154,26 @@ def handle_get(h):
         except Exception as e:
             h._send(404, 'not found', 'text/plain; charset=utf-8'); return
         h._send(200, render_backup_detail_page(name, meta))
+        return
+
+    if parsed.path == '/backup-key':
+        s = h.session() or {}
+        if (s.get('role') or '') != 'admin':
+            h._send(403, 'forbidden', 'text/plain; charset=utf-8'); return
+        h._send(200, render_backup_key_page())
+        return
+
+    if parsed.path == '/backup-key/download':
+        s = h.session() or {}
+        if (s.get('role') or '') != 'admin':
+            h._send(403, 'forbidden', 'text/plain; charset=utf-8'); return
+        _ = backup_service._get_hmac_key()
+        key_path = (backup_service.DATA_DIR / 'backup_hmac_key.txt')
+        if not key_path.exists():
+            h._send(404, 'not found', 'text/plain; charset=utf-8'); return
+        b = key_path.read_bytes()
+        h.log_action('backup_key_download', [], '下载备份签名密钥')
+        h._send(200, b, 'text/plain; charset=utf-8', {'Content-Disposition': 'attachment; filename="backup_hmac_key.txt"'})
         return
 
     if parsed.path == '/backups/download':

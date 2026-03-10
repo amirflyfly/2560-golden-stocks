@@ -57,6 +57,12 @@ def make_backup_zip_bytes(actor=None):
             z.write(LEGACY_SECRET, arcname='data/web_panel_secret.txt')
             meta['files'].append('data/web_panel_secret.txt')
 
+        # HMAC key (needed to verify old backups after migration)
+        key_file = DATA_DIR / 'backup_hmac_key.txt'
+        if key_file.exists():
+            z.write(key_file, arcname='data/backup_hmac_key.txt')
+            meta['files'].append('data/backup_hmac_key.txt')
+
         meta['signature'] = _sign_meta(meta)
         z.writestr('meta.json', json.dumps(meta, ensure_ascii=False, indent=2))
 
