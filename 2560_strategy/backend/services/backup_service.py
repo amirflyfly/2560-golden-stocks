@@ -9,6 +9,7 @@ Restore supports replacing picks.db (with an auto-backup of current state).
 """
 
 import io
+import hashlib
 import json
 import os
 import shutil
@@ -45,8 +46,10 @@ def make_backup_zip_bytes(actor=None):
         }
 
         if DB_PATH.exists():
-            z.write(DB_PATH, arcname='data/picks.db')
+            db_bytes = DB_PATH.read_bytes()
+            z.writestr('data/picks.db', db_bytes)
             meta['files'].append('data/picks.db')
+            meta['picks_db'] = {'size': len(db_bytes), 'sha256': _sha256_bytes(db_bytes)}
 
         if LEGACY_SECRET.exists():
             z.write(LEGACY_SECRET, arcname='data/web_panel_secret.txt')
@@ -159,6 +162,17 @@ def validate_backup_zip_bytes(zip_bytes: bytes):
                 meta = json.loads(z.read('meta.json').decode('utf-8'))
                 if not isinstance(meta, dict):
                     return False, 'meta.json 格式不正确'
+                # integrity check (optional)
+                try:
+                    pdb = meta.get('picks_db') or {}
+                    if isinstance(pdb, dict) and pdb.get('sha256') and pdb.get('size') is not None:
+                        db_bytes = z.read('data/picks.db')
+                        if len(db_bytes) != int(pdb.get('size')):
+                            return False, 'picks.db 大小不匹配（可能损坏）'
+                        if _sha256_bytes(db_bytes) != str(pdb.get('sha256')):
+                            return False, 'picks.db 哈希不匹配（可能损坏）'
+                except Exception:
+                    return False, '完整性校验失败'
             except Exception:
                 return False, 'meta.json 无法解析'
         return True, 'ok'
@@ -215,3 +229,10 @@ def cached_validate_backup(name: str):
             (key, stored),
         )
         return False, 'FAIL'
+
+
+
+def _sha256_bytes(data: bytes) -> str:
+    h = hashlib.sha256()
+    h.update(data)
+    return h.hexdigest()
