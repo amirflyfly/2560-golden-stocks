@@ -9,6 +9,14 @@ from urllib.parse import parse_qs, urlparse, urlencode
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from backend.repositories.db import ensure_schema, q, q1, execute, execute_many
+from backend.services.filters_service import (
+    get_saved_filters,
+    get_dashboard_order,
+    set_dashboard_order,
+    save_current_filter,
+    delete_saved_filter,
+    rename_saved_filter,
+)
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / 'data'
@@ -280,24 +288,6 @@ def rows_to_csv(rows):
     for row in rows:
         writer.writerow({k: row.get(k, '') for k in EXPORT_COLUMNS})
     return output.getvalue()
-
-
-def get_saved_filters():
-    return q('SELECT id, name, query_string, created_at FROM saved_filters ORDER BY id DESC LIMIT 12')
-
-
-def get_dashboard_order():
-    row = q1("SELECT setting_value FROM ui_settings WHERE setting_key='dashboard_order'")
-    if not row or not row.get('setting_value'):
-        return 'kpi,trend,filters,actions,records,logs'
-    return row['setting_value']
-
-
-def set_dashboard_order(value):
-    execute(
-        "INSERT INTO ui_settings (setting_key, setting_value, updated_at) VALUES ('dashboard_order', ?, CURRENT_TIMESTAMP) ON CONFLICT(setting_key) DO UPDATE SET setting_value=excluded.setting_value, updated_at=CURRENT_TIMESTAMP",
-        (value,)
-    )
 
 
 def report_summary_text():
@@ -624,7 +614,7 @@ class Handler(BaseHTTPRequestHandler):
             name = (data.get('filter_name', '') or '').strip()
             query_string = (data.get('query_string', '') or '').strip()
             if name and query_string:
-                execute('INSERT INTO saved_filters (name, query_string) VALUES (?, ?)', (name, query_string))
+                save_current_filter(name, query_string)
                 log_action('save_filter', [], f'保存筛选视图：{name}')
             self._redirect('/')
             return
@@ -638,7 +628,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == '/delete-filter':
             fid = data.get('filter_id', '')
             if fid:
-                execute('DELETE FROM saved_filters WHERE id=?', (fid,))
+                delete_saved_filter(fid)
                 log_action('delete_filter', [], f'删除筛选视图 id={fid}')
             self._redirect('/')
             return
@@ -646,7 +636,7 @@ class Handler(BaseHTTPRequestHandler):
             fid = data.get('filter_id', '')
             new_name = (data.get('new_name', '') or '').strip()
             if fid and new_name:
-                execute('UPDATE saved_filters SET name=? WHERE id=?', (new_name, fid))
+                rename_saved_filter(fid, new_name)
                 log_action('rename_filter', [], f'重命名筛选视图 id={fid} -> {new_name}')
             self._redirect('/')
             return
