@@ -81,6 +81,19 @@ class Handler(BaseHTTPRequestHandler):
         token = self.cookies().get(COOKIE_NAME)
         return multiuser_auth_service.get_session(token)
 
+    def actor(self):
+        s = self.session() or {}
+        return {
+            'user_id': s.get('user_id'),
+            'username': s.get('username'),
+            'role': s.get('role'),
+        }
+
+    def log_action(self, action, target_ids=None, detail=''):
+        ip = (self.client_address[0] if getattr(self, 'client_address', None) else '')
+        ua = self.headers.get('User-Agent', '')
+        return log_action(action, target_ids=target_ids, detail=detail, actor=self.actor(), ip=ip, user_agent=ua)
+
     def authed(self):
         token = self.cookies().get(COOKIE_NAME)
         return bool(multiuser_auth_service.get_session(token))
@@ -119,7 +132,6 @@ class Handler(BaseHTTPRequestHandler):
     render_deal_review_page = staticmethod(render_deal_review_page)
     render_leaderboards_page = staticmethod(render_leaderboards_page)
     render_reports_page = staticmethod(render_reports_page)
-    log_action = staticmethod(log_action)
 
     def do_GET(self):
         return handle_get(self)

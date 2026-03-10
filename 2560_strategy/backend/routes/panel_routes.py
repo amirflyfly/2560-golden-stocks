@@ -21,7 +21,9 @@ from backend.services.filters_service import (
     rename_saved_filter,
 )
 from backend.services.reports_service import weekly_report_rows, monthly_report_rows
+from backend.pages.users_page import render_users_page
 from backend.services import multiuser_auth_service
+from backend.services import users_admin_service
 
 
 def handle_get(h):
@@ -59,6 +61,14 @@ def handle_get(h):
         return
     if parsed.path == '/reports':
         h._send(200, h.render_reports_page())
+        return
+
+    if parsed.path == '/users':
+        # admin only
+        s = h.session() or {}
+        if (s.get('role') or '') != 'admin':
+            h._send(403, 'forbidden', 'text/plain; charset=utf-8'); return
+        h._send(200, render_users_page())
         return
 
     if parsed.path == '/weekly-report.csv':
@@ -273,4 +283,31 @@ def handle_post(h):
         h._redirect('/?batch_spread=1')
         return
 
+    
+    if h.path == '/users/create':
+        s = h.session() or {}
+        if (s.get('role') or '') != 'admin':
+            h._send(403, 'forbidden', 'text/plain; charset=utf-8'); return
+        ok, msg = users_admin_service.create_user(data.get('username',''), data.get('password',''), data.get('role','editor'))
+        h.log_action('create_user', [], msg)
+        h._send(200, render_users_page(msg))
+        return
+
+    if h.path == '/users/toggle':
+        s = h.session() or {}
+        if (s.get('role') or '') != 'admin':
+            h._send(403, 'forbidden', 'text/plain; charset=utf-8'); return
+        ok, msg = users_admin_service.toggle_user_active(data.get('user_id',0), data.get('is_active',0))
+        h.log_action('toggle_user', [data.get('user_id',0)], msg)
+        h._send(200, render_users_page(msg))
+        return
+
+    if h.path == '/users/reset':
+        s = h.session() or {}
+        if (s.get('role') or '') != 'admin':
+            h._send(403, 'forbidden', 'text/plain; charset=utf-8'); return
+        ok, msg = users_admin_service.reset_password(data.get('user_id',0), data.get('new_password',''))
+        h.log_action('reset_password', [data.get('user_id',0)], msg)
+        h._send(200, render_users_page(msg))
+        return
     h._send(404, 'not found', 'text/plain; charset=utf-8')

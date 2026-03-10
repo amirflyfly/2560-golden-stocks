@@ -151,3 +151,10 @@ def batch_set_secondary_spread(ids, secondary_spread):
 def last_inserted_id():
     row = q1('SELECT id FROM picks ORDER BY id DESC LIMIT 1')
     return row['id'] if row else None
+
+
+
+def count_picks(where_sql='', args=None):
+    args = args or []
+    row = q1(f'SELECT COUNT(*) AS cnt FROM picks {where_sql}', args)
+    return int(row['cnt']) if row and row.get('cnt') is not None else 0
