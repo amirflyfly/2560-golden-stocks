@@ -39,7 +39,7 @@ def render_backups_page(message=''):
 <div class='section card'>
   <h2>手动备份</h2>
   <div class='muted'>点击后会生成一份备份并保存到 data/backups/，同时会下载一份 zip。</div>
-  <p style='margin-top:12px'><a class='btn' href='/backup.zip'>立即生成并下载备份</a> <a class='btn' href='/backup-key'>备份签名密钥</a></p>
+  <p style='margin-top:12px'><a class='btn' href='/backup.zip'>立即生成并下载备份</a> <a class='btn' href='/backup-key'>备份签名密钥</a> <a class='btn' href='/migration-check'>迁移检查</a></p>
 </div>
 <div class='section card'>
   <h2>历史备份（最近200份）</h2>

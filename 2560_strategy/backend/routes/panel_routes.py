@@ -27,6 +27,7 @@ from backend.pages.backups_page import render_backups_page
 from backend.pages.backup_detail_page import render_backup_detail_page
 from backend.pages.backup_key_page import render_backup_key_page
 from backend.pages.backup_key_import_page import render_backup_key_import_page
+from backend.pages.migration_check_page import render_migration_check_page
 from backend.services import multiuser_auth_service
 from backend.services import users_admin_service
 from backend.services import backup_service
@@ -163,6 +164,13 @@ def handle_get(h):
             h._send(403, 'forbidden', 'text/plain; charset=utf-8'); return
         h._send(200, render_backup_key_page())
         return
+    if parsed.path == '/migration-check':
+        s = h.session() or {}
+        if (s.get('role') or '') != 'admin':
+            h._send(403, 'forbidden', 'text/plain; charset=utf-8'); return
+        h._send(200, render_migration_check_page())
+        return
+
     if parsed.path == '/backup-key/import':
         s = h.session() or {}
         if (s.get('role') or '') != 'admin':
