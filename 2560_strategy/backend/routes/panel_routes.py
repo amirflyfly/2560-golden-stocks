@@ -32,6 +32,8 @@ from backend.services import backup_service
 # minimal multipart/form-data parser (single file)
 # returns bytes for the uploaded file field
 
+MAX_UPLOAD = 50 * 1024 * 1024  # 50MB
+
 def _parse_multipart(handler, field_name='backup_zip'):
     """Minimal multipart/form-data parser (single file).
 
@@ -47,6 +49,8 @@ def _parse_multipart(handler, field_name='backup_zip'):
 
     boundary_bytes = ('--' + boundary).encode('utf-8')
     length = int(handler.headers.get('Content-Length', '0') or '0')
+    if length <= 0 or length > MAX_UPLOAD:
+        return None
     body = handler.rfile.read(length)
 
     parts = body.split(boundary_bytes)
@@ -193,9 +197,15 @@ def handle_get(h):
         except Exception as e:
             h._send(200, render_backups_page(f'读取备份失败：{e}'))
             return
+        vok, vmsg = backup_service.validate_backup_zip_bytes(zip_bytes)
+        if not vok:
+            h._send(200, render_backups_page(vmsg))
+            return
         ok, msg = backup_service.restore_from_backup_zip_bytes(zip_bytes)
         h.log_action('restore_from_history', [], f'{name} -> {msg}')
-        h._send(200, render_backups_page(f'已回滚：{name}（{msg}）'))
+        token = h.cookies().get(h.COOKIE_NAME)
+        multiuser_auth_service.logout(token)
+        h._send(200, render_backups_page(f'已回滚：{name}（{msg}）。已为你退出登录，请重新登录。'))
         return
 
     h._send(404, 'not found', 'text/plain; charset=utf-8')
@@ -412,8 +422,15 @@ def handle_post(h):
         if not zip_bytes:
             h._send(200, render_restore_page('未读取到上传文件，请重试'))
             return
+        vok, vmsg = backup_service.validate_backup_zip_bytes(zip_bytes)
+        if not vok:
+            h._send(200, render_restore_page(vmsg))
+            return
         ok, msg = backup_service.restore_from_backup_zip_bytes(zip_bytes)
         h.log_action('restore', [], msg)
-        h._send(200, render_restore_page(msg))
+        # after restore: force re-login to avoid stale sessions
+        token = h.cookies().get(h.COOKIE_NAME)
+        multiuser_auth_service.logout(token)
+        h._send(200, render_restore_page(msg + '。已为你退出登录，请返回登录页重新登录。'))
         return
     h._send(404, 'not found', 'text/plain; charset=utf-8')

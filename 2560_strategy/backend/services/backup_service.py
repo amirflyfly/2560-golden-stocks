@@ -137,3 +137,27 @@ def read_backup_zip_bytes(name: str):
     if not path.exists():
         raise FileNotFoundError(name)
     return path.read_bytes()
+
+
+
+def validate_backup_zip_bytes(zip_bytes: bytes):
+    """Basic validation: zip readable, contains data/picks.db and meta.json."""
+    import zipfile
+    import io
+    try:
+        with zipfile.ZipFile(io.BytesIO(zip_bytes), 'r') as z:
+            names = set(z.namelist())
+            if 'data/picks.db' not in names:
+                return False, '备份包缺少 data/picks.db'
+            if 'meta.json' not in names:
+                return False, '备份包缺少 meta.json'
+            try:
+                import json
+                meta = json.loads(z.read('meta.json').decode('utf-8'))
+                if not isinstance(meta, dict):
+                    return False, 'meta.json 格式不正确'
+            except Exception:
+                return False, 'meta.json 无法解析'
+        return True, 'ok'
+    except Exception as e:
+        return False, f'无效zip：{e}'
