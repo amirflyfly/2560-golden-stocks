@@ -17,14 +17,22 @@ def render_backups_page(message=''):
     backups = backup_service.list_backups(limit=200)
     msg_html = f"<div class='card' style='background:#eff6ff;border:1px solid #bfdbfe'>{esc(message)}</div>" if message else ''
 
-    rows = ''.join([
-        f"<tr><td>{esc(b['mtime'])}</td><td>{esc(b['name'])}</td><td>{esc(_fmt_size(b['size']))}</td>"
-        f"<td><a class='txtbtn' href='/backups/detail?name={esc(b['name'])}'>详情</a> <a class='txtbtn' href='/backups/download?name={esc(b['name'])}'>下载</a>"
-        f"<form method='post' action='/backups/restore' class='inline-form' onsubmit=\"return confirm('确认回滚到该备份？这会覆盖当前数据。')\">"
-        f"<input type='hidden' name='name' value='{esc(b['name'])}'><button type='submit' class='linkbtn danger'>回滚</button></form></td></tr>"
-        for b in backups
-    ]) or '<tr><td colspan="4">暂无备份</td></tr>'
+    rows_list = []
+    for b in backups:
+        try:
+            ok, _ = backup_service.validate_backup_zip_bytes(backup_service.read_backup_zip_bytes(b['name']))
+            status = 'OK' if ok else 'FAIL'
+        except Exception:
+            status = 'FAIL'
+        rows_list.append(
+            f"<tr><td>{esc(b['mtime'])}</td><td>{esc(b['name'])}</td><td>{esc(_fmt_size(b['size']))}</td><td>{esc(status)}</td>"
+            f"<td><a class='txtbtn' href='/backups/detail?name={esc(b['name'])}'>详情</a> "
+            f"<a class='txtbtn' href='/backups/download?name={esc(b['name'])}'>下载</a>"
+            f"<form method='post' action='/backups/restore' class='inline-form' onsubmit=\"return confirm(\\\"确认回滚到该备份？这会覆盖当前数据。\\\")\">"
+            f"<input type='hidden' name='name' value='{esc(b['name'])}'><button type='submit' class='linkbtn danger'>回滚</button></form></td></tr>"
+        )
 
+    rows = ''.join(rows_list) or '<tr><td colspan="5">暂无备份</td></tr>'
     body = f"""
 <div class='topline'><div><h1>备份管理</h1><div class='muted'>查看历史备份、下载备份、以及一键回滚。</div></div><div><a class='btn' href='/'>返回面板</a></div></div>
 <div class='nav'>{render_nav('dashboard')}</div>
@@ -38,7 +46,7 @@ def render_backups_page(message=''):
   <h2>历史备份（最近200份）</h2>
   <div class='tablewrap'>
     <table>
-      <thead><tr><th>时间</th><th>文件名</th><th>大小</th><th>操作</th></tr></thead>
+      <thead><tr><th>时间</th><th>文件名</th><th>大小</th><th>校验</th><th>操作</th></tr></thead>
       <tbody>{rows}</tbody>
     </table>
   </div>

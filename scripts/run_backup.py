@@ -16,7 +16,7 @@ from backend.services import backup_service
 def main():
     ensure_schema()
     zip_bytes = backup_service.make_backup_zip_bytes(actor={'username': 'system', 'role': 'system'})
-    path = backup_service.save_backup_zip_to_disk(zip_bytes, prefix='scheduled')
+    path = backup_service.save_backup_zip_to_disk(zip_bytes, prefix='scheduled', actor_username='system')
     print(f'backup saved: {path}')
 
 

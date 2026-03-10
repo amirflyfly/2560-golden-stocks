@@ -120,7 +120,7 @@ def handle_get(h):
         if (s.get('role') or '') not in ('admin','editor'):
             h._send(403, 'forbidden', 'text/plain; charset=utf-8'); return
         zip_bytes = backup_service.make_backup_zip_bytes(actor=s)
-        backup_service.save_backup_zip_to_disk(zip_bytes, prefix='manual')
+        backup_service.save_backup_zip_to_disk(zip_bytes, prefix='manual', actor_username=(s.get('username') or ''))
         h.log_action('backup_download', [], '下载备份包')
         h._send(200, zip_bytes, 'application/zip', {'Content-Disposition': 'attachment; filename="promo_panel_backup.zip"'})
         return

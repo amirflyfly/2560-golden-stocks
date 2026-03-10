@@ -57,10 +57,13 @@ def make_backup_zip_bytes(actor=None):
     return buf.getvalue()
 
 
-def save_backup_zip_to_disk(zip_bytes: bytes, prefix='backup'):
+def save_backup_zip_to_disk(zip_bytes: bytes, prefix='backup', actor_username=''):
+    actor_username = (actor_username or '').strip()
     """Save zip to data/backups and enforce retention."""
     bdir = backup_dir()
-    path = bdir / f"{prefix}_{_now_stamp()}.zip"
+    safe_user = ''.join([c for c in actor_username if c.isalnum() or c in ('-','_')])[:20]
+    user_part = f'_{safe_user}' if safe_user else ''
+    path = bdir / f"{prefix}{user_part}_{_now_stamp()}.zip"
     path.write_bytes(zip_bytes)
 
     # retention cleanup
