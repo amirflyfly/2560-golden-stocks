@@ -26,6 +26,7 @@ from backend.pages.restore_page import render_restore_page
 from backend.pages.backups_page import render_backups_page
 from backend.pages.backup_detail_page import render_backup_detail_page
 from backend.pages.backup_key_page import render_backup_key_page
+from backend.pages.backup_key_import_page import render_backup_key_import_page
 from backend.services import multiuser_auth_service
 from backend.services import users_admin_service
 from backend.services import backup_service
@@ -162,6 +163,13 @@ def handle_get(h):
             h._send(403, 'forbidden', 'text/plain; charset=utf-8'); return
         h._send(200, render_backup_key_page())
         return
+    if parsed.path == '/backup-key/import':
+        s = h.session() or {}
+        if (s.get('role') or '') != 'admin':
+            h._send(403, 'forbidden', 'text/plain; charset=utf-8'); return
+        h._send(200, render_backup_key_import_page())
+        return
+
 
     if parsed.path == '/backup-key/download':
         s = h.session() or {}
@@ -259,6 +267,36 @@ def handle_get(h):
         backup_service.rotate_hmac_key()
         h.log_action('backup_key_rotate', [], '轮换备份签名密钥')
         h._send(200, render_backup_key_page('已轮换密钥（已保留旧密钥用于验证旧备份）'))
+        return
+
+
+    if h.path == '/backup-key/import-current':
+        s = h.session() or {}
+        if (s.get('role') or '') != 'admin':
+            h._send(403, 'forbidden', 'text/plain; charset=utf-8'); return
+        b = _parse_multipart(h, field_name='key_file')
+        if not b:
+            h._send(200, render_backup_key_import_page('未读取到上传文件'))
+            return
+        # write current key
+        path = backup_service.DATA_DIR / 'backup_hmac_key.txt'
+        path.write_bytes(b.strip() + b'\n')
+        h.log_action('backup_key_import_current', [], '导入当前备份签名密钥')
+        h._send(200, render_backup_key_import_page('已导入当前 key'))
+        return
+
+    if h.path == '/backup-key/import-legacy':
+        s = h.session() or {}
+        if (s.get('role') or '') != 'admin':
+            h._send(403, 'forbidden', 'text/plain; charset=utf-8'); return
+        b = _parse_multipart(h, field_name='legacy_file')
+        if not b:
+            h._send(200, render_backup_key_import_page('未读取到上传文件'))
+            return
+        path = backup_service.DATA_DIR / 'backup_hmac_keys.txt'
+        path.write_bytes(b.strip() + b'\n')
+        h.log_action('backup_key_import_legacy', [], '导入旧备份签名密钥列表')
+        h._send(200, render_backup_key_import_page('已导入旧 key 列表'))
         return
 
     h._send(404, 'not found', 'text/plain; charset=utf-8')
