@@ -24,6 +24,7 @@ from backend.services.reports_service import weekly_report_rows, monthly_report_
 from backend.pages.users_page import render_users_page
 from backend.pages.restore_page import render_restore_page
 from backend.pages.backups_page import render_backups_page
+from backend.pages.backup_detail_page import render_backup_detail_page
 from backend.services import multiuser_auth_service
 from backend.services import users_admin_service
 from backend.services import backup_service
@@ -138,6 +139,22 @@ def handle_get(h):
         h._send(200, render_backups_page())
         return
 
+    if parsed.path == '/backups/detail':
+        s = h.session() or {}
+        if (s.get('role') or '') != 'admin':
+            h._send(403, 'forbidden', 'text/plain; charset=utf-8'); return
+        name = parse_qs(parsed.query).get('name', [''])[0]
+        try:
+            zip_bytes = backup_service.read_backup_zip_bytes(name)
+            ok, msg = backup_service.validate_backup_zip_bytes(zip_bytes)
+            if not ok:
+                h._send(200, render_backups_page(msg)); return
+            meta = backup_service.read_backup_meta(zip_bytes)
+        except Exception as e:
+            h._send(404, 'not found', 'text/plain; charset=utf-8'); return
+        h._send(200, render_backup_detail_page(name, meta))
+        return
+
     if parsed.path == '/backups/download':
         s = h.session() or {}
         if (s.get('role') or '') != 'admin':
@@ -205,7 +222,7 @@ def handle_get(h):
         h.log_action('restore_from_history', [], f'{name} -> {msg}')
         token = h.cookies().get(h.COOKIE_NAME)
         multiuser_auth_service.logout(token)
-        h._send(200, render_backups_page(f'已回滚：{name}（{msg}）。已为你退出登录，请重新登录。'))
+        h._redirect('/login', f"{h.COOKIE_NAME}=; Path=/; Max-Age=0")
         return
 
     h._send(404, 'not found', 'text/plain; charset=utf-8')
@@ -431,6 +448,6 @@ def handle_post(h):
         # after restore: force re-login to avoid stale sessions
         token = h.cookies().get(h.COOKIE_NAME)
         multiuser_auth_service.logout(token)
-        h._send(200, render_restore_page(msg + '。已为你退出登录，请返回登录页重新登录。'))
+        h._redirect('/login', f"{h.COOKIE_NAME}=; Path=/; Max-Age=0")
         return
     h._send(404, 'not found', 'text/plain; charset=utf-8')

@@ -19,7 +19,7 @@ def render_backups_page(message=''):
 
     rows = ''.join([
         f"<tr><td>{esc(b['mtime'])}</td><td>{esc(b['name'])}</td><td>{esc(_fmt_size(b['size']))}</td>"
-        f"<td><a class='txtbtn' href='/backups/download?name={esc(b['name'])}'>下载</a>"
+        f"<td><a class='txtbtn' href='/backups/detail?name={esc(b['name'])}'>详情</a> <a class='txtbtn' href='/backups/download?name={esc(b['name'])}'>下载</a>"
         f"<form method='post' action='/backups/restore' class='inline-form' onsubmit=\"return confirm('确认回滚到该备份？这会覆盖当前数据。')\">"
         f"<input type='hidden' name='name' value='{esc(b['name'])}'><button type='submit' class='linkbtn danger'>回滚</button></form></td></tr>"
         for b in backups

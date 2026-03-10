@@ -161,3 +161,13 @@ def validate_backup_zip_bytes(zip_bytes: bytes):
         return True, 'ok'
     except Exception as e:
         return False, f'无效zip：{e}'
+
+
+
+def read_backup_meta(zip_bytes: bytes):
+    import zipfile
+    import io
+    import json
+    with zipfile.ZipFile(io.BytesIO(zip_bytes), 'r') as z:
+        meta_raw = z.read('meta.json')
+    return json.loads(meta_raw.decode('utf-8'))
