@@ -18,6 +18,12 @@ from backend.services.filters_service import (
     rename_saved_filter,
 )
 from backend.services.reports_service import report_summary_text, monthly_report_rows, weekly_report_rows
+from backend.services.query_service import filter_where
+from backend.services.io_service import bulk_import_from_csv, rows_to_csv
+from backend.services.format_service import num, int_num
+from backend.services.http_utils import parse_cookies, parse_multi_post, as_list, build_query_string
+from backend.services.flash_service import get_flash
+
 from backend.services.leaderboard_service import leaderboards
 from backend.services.dashboard_service import (
     dashboard_overview,
@@ -32,6 +38,15 @@ from backend.services.dashboard_service import (
     dashboard_deal_trend_30d,
     recent_operation_logs,
 )
+from backend.ui.html_helpers import (
+    label,
+    esc,
+    select_options,
+    bar_html,
+    render_nav,
+    render_pagination,
+    layout_page,
+)
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / 'data'
@@ -45,13 +60,6 @@ REVIEW_STATUS_OPTIONS = ['未复盘', '值得复讲', '逻辑一般', '不建议
 RESULT_GRADE_OPTIONS = ['S', 'A', 'B', 'C', '待定']
 DEAL_STATUS_OPTIONS = ['未成交', '已咨询', '已成交', '待跟进']
 SPREAD_OPTIONS = ['否', '是']
-EXPORT_COLUMNS = [
-    'id', 'pick_date', 'code', 'name', 'pick_price', 'signal', 'source', 'source_channel',
-    'reason_tag', 'review_status', 'result_grade', 'inquiry_count', 'deal_status',
-    'secondary_spread', 'content_title', 'content_ref', 'note', 'archived', 'created_at'
-]
-
-
 def ensure_secret():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     if SECRET_PATH.exists():
@@ -75,88 +83,6 @@ def log_action(action, target_ids=None, detail=''):
     )
 
 
-def label(v, default='-'):
-    if v is None:
-        return default
-    s = str(v).strip()
-    return s if s and s.lower() != 'nan' else default
-
-
-def esc(v):
-    return html.escape(label(v, ''))
-
-
-def num(v, default=0.0):
-    try:
-        return float(v or 0)
-    except Exception:
-        return default
-
-
-def int_num(v, default=0):
-    try:
-        return int(float(v or 0))
-    except Exception:
-        return default
-
-
-def parse_cookies(header):
-    cookies = {}
-    if not header:
-        return cookies
-    for part in header.split(';'):
-        if '=' in part:
-            k, v = part.strip().split('=', 1)
-            cookies[k] = v
-    return cookies
-
-
-def parse_multi_post(raw):
-    parsed = parse_qs(raw, keep_blank_values=True)
-    return {k: v if len(v) > 1 else v[0] for k, v in parsed.items()}
-
-
-def as_list(data, key):
-    v = data.get(key, [])
-    if isinstance(v, list):
-        return [str(x) for x in v if str(x).strip() != '']
-    return [str(v)] if str(v).strip() != '' else []
-
-
-def build_query_string(params):
-    pairs = []
-    for k, values in (params or {}).items():
-        if not isinstance(values, list):
-            values = [values]
-        for v in values:
-            if str(v).strip() != '':
-                pairs.append((k, v))
-    return urlencode(pairs)
-
-
-def select_options(options, selected_value):
-    return ''.join([
-        f"<option value='{esc(v)}' {'selected' if str(selected_value) == str(v) else ''}>{esc(v)}</option>"
-        for v in options
-    ])
-
-
-def bar_html(rows, label_key='name', value_key='cnt', color='#4f46e5', empty_text='暂无数据', suffix=''):
-    if not rows:
-        return f'<div class="muted">{esc(empty_text)}</div>'
-    maxv = max([float(r.get(value_key, 0) or 0) for r in rows]) or 1
-    items = []
-    for r in rows:
-        name = esc(r.get(label_key))
-        val = float(r.get(value_key, 0) or 0)
-        width = max(8, int(val / maxv * 100))
-        display = str(int(round(val))) if abs(val - round(val)) < 1e-9 else f'{val:.1f}'
-        if suffix:
-            display += suffix
-        items.append(f'''<div class="bar-row"><div class="bar-label">{name}</div><div class="bar-track"><div class="bar-fill" style="width:{width}%;background:{color}"></div></div><div class="bar-value">{display}</div></div>''')
-    return ''.join(items)
-
-
 def line_table_html(rows, empty_text='暂无数据', color='#4f46e5'):
     if not rows:
         return f'<div class="muted">{esc(empty_text)}</div>'
@@ -169,140 +95,6 @@ def line_table_html(rows, empty_text='暂无数据', color='#4f46e5'):
         display = str(int(round(val))) if abs(val - round(val)) < 1e-9 else f'{val:.1f}'
         html_rows.append(f"<div class='line-row'><div class='line-date'>{label_text}</div><div class='line-track'><div class='line-fill' style='width:{width}%;background:{color}'></div></div><div class='line-value'>{display}</div></div>")
     return ''.join(html_rows)
-
-
-def render_nav(active='dashboard'):
-    items = [
-        ('/', 'dashboard', '总览面板'),
-        ('/deal-review', 'deal', '成交复盘'),
-        ('/leaderboards', 'leaderboards', '排行榜'),
-        ('/reports', 'reports', '报表中心'),
-    ]
-    links = []
-    for href, key, title in items:
-        cls = 'navlink nav-active' if key == active else 'navlink'
-        links.append(f"<a class='{cls}' href='{href}'>{title}</a>")
-    return ''.join(links)
-
-
-def render_pagination(page, total_count, base_params):
-    total_pages = max(1, (total_count + PAGE_SIZE - 1) // PAGE_SIZE)
-    if total_pages <= 1:
-        return ''
-    page = max(1, min(page, total_pages))
-    links = []
-    for pno in range(1, total_pages + 1):
-        params = dict(base_params or {})
-        params['page'] = [str(pno)]
-        href = '/?' + build_query_string(params)
-        cls = 'page-link page-active' if pno == page else 'page-link'
-        links.append(f"<a class='{cls}' href='{href}'>{pno}</a>")
-    return "<div class='pagination'>" + ''.join(links) + '</div>'
-
-
-def layout_page(title, body):
-    return f'''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{esc(title)}</title><style>
-body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f6f7fb;color:#1f2937;margin:0;padding:24px}}
-.wrap{{max-width:1540px;margin:0 auto}} .card{{background:#fff;border-radius:16px;padding:18px;box-shadow:0 6px 20px rgba(0,0,0,.06)}}
-.grid{{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}} .grid2{{display:grid;grid-template-columns:repeat(2,1fr);gap:16px}}
-.bar-row,.line-row{{display:grid;grid-template-columns:140px 1fr 62px;gap:10px;align-items:center;margin:8px 0}} .bar-track,.line-track{{height:12px;background:#eef2ff;border-radius:999px;overflow:hidden}} .bar-fill,.line-fill{{height:100%;border-radius:999px}}
-.muted{{color:#6b7280;font-size:14px}} .num{{font-size:32px;font-weight:700}} .topline{{display:flex;justify-content:space-between;align-items:flex-end;gap:12px;flex-wrap:wrap}} a.btn{{display:inline-block;background:#111827;color:#fff;text-decoration:none;padding:10px 16px;border-radius:10px;margin-right:8px}} .nav{{display:flex;gap:10px;flex-wrap:wrap;margin:16px 0}} .navlink{{display:inline-block;padding:10px 14px;border-radius:999px;background:#fff;color:#111827;text-decoration:none;border:1px solid #e5e7eb}} .nav-active{{background:#111827;color:#fff;border-color:#111827}} .pagination{{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:14px}} .page-link{{display:inline-block;padding:6px 10px;border-radius:10px;background:#fff;color:#111827;text-decoration:none;border:1px solid #e5e7eb}} .page-active{{background:#111827;color:#fff;border-color:#111827}} table{{width:100%;border-collapse:collapse}} th,td{{padding:10px;border-bottom:1px solid #eee;text-align:left;font-size:14px;vertical-align:top}} th{{background:#fafafa}} .tablewrap{{overflow:auto}} @media (max-width:980px){{.grid,.grid2{{grid-template-columns:1fr}} body{{padding:16px}}}}</style></head><body><div class="wrap">{body}</div></body></html>'''
-
-
-def filter_where(params):
-    wheres = []
-    args = []
-    keyword = (params.get('keyword', [''])[0] or '').strip()
-    channel = (params.get('channel', [''])[0] or '').strip()
-    tag = (params.get('tag', [''])[0] or '').strip()
-    status = (params.get('status', [''])[0] or '').strip()
-    date_from = (params.get('date_from', [''])[0] or '').strip()
-    date_to = (params.get('date_to', [''])[0] or '').strip()
-    archive = (params.get('archive', ['active'])[0] or 'active').strip()
-    grade = (params.get('grade', [''])[0] or '').strip()
-    deal_status = (params.get('deal_status', [''])[0] or '').strip()
-
-    if keyword:
-        wheres.append('(code LIKE ? OR name LIKE ? OR content_title LIKE ? OR content_ref LIKE ?)')
-        kw = f'%{keyword}%'
-        args += [kw, kw, kw, kw]
-    if channel:
-        wheres.append("COALESCE(NULLIF(source_channel,''),'system') = ?")
-        args.append(channel)
-    if tag:
-        wheres.append("COALESCE(NULLIF(reason_tag,''),'未标注') = ?")
-        args.append(tag)
-    if status:
-        wheres.append("COALESCE(NULLIF(review_status,''),'未复盘') = ?")
-        args.append(status)
-    if grade:
-        wheres.append("COALESCE(NULLIF(result_grade,''),'待定') = ?")
-        args.append(grade)
-    if deal_status:
-        wheres.append("COALESCE(NULLIF(deal_status,''),'未成交') = ?")
-        args.append(deal_status)
-    if date_from:
-        wheres.append('pick_date >= ?')
-        args.append(date_from)
-    if date_to:
-        wheres.append('pick_date <= ?')
-        args.append(date_to)
-    if archive == 'archived':
-        wheres.append('COALESCE(archived, 0) = 1')
-    elif archive != 'all':
-        wheres.append('COALESCE(archived, 0) = 0')
-
-    sql_where = (' WHERE ' + ' AND '.join(wheres)) if wheres else ''
-    return sql_where, args
-
-
-def get_flash(params):
-    mapping = {
-        'saved': '已保存记录', 'updated': '已更新记录', 'archived': '已归档记录', 'unarchived': '已恢复记录',
-        'deleted': '已删除记录', 'batch_archived': '已批量归档所选记录', 'batch_unarchived': '已批量恢复所选记录',
-        'batch_deleted': '已批量删除所选记录', 'batch_reviewed': '已批量更新复盘状态', 'batch_grade': '已批量更新结果评级',
-        'batch_deal': '已批量更新成交状态', 'batch_spread': '已批量更新二次传播状态', 'imported': '已完成批量导入',
-    }
-    for key, text in mapping.items():
-        if params.get(key, [''])[0] == '1':
-            return text
-    return ''
-
-
-def bulk_import_from_csv(csv_text):
-    csv_text = (csv_text or '').strip()
-    if not csv_text:
-        return []
-    reader = csv.DictReader(io.StringIO(csv_text))
-    imported_ids = []
-    for row in reader:
-        if not any((v or '').strip() for v in row.values()):
-            continue
-        execute(
-            '''INSERT OR REPLACE INTO picks
-            (pick_date, code, name, pick_price, signal, source, source_channel, reason_tag, note, review_status, review_comment, content_title, content_ref, archived, result_grade, inquiry_count, deal_status, secondary_spread)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)''',
-            (
-                (row.get('pick_date') or '').strip(), (row.get('code') or '').strip(), (row.get('name') or '').strip(), num(row.get('pick_price')),
-                (row.get('signal') or '').strip(), 'csv-import', (row.get('source_channel') or 'csv').strip(), (row.get('reason_tag') or '').strip(),
-                (row.get('note') or '').strip(), (row.get('review_status') or '未复盘').strip(), (row.get('review_comment') or row.get('note') or '').strip(),
-                (row.get('content_title') or '').strip(), (row.get('content_ref') or '').strip(), (row.get('result_grade') or '待定').strip(),
-                int_num(row.get('inquiry_count')), (row.get('deal_status') or '未成交').strip(), (row.get('secondary_spread') or '否').strip(),
-            )
-        )
-        new_row = q1('SELECT id FROM picks ORDER BY id DESC LIMIT 1')
-        if new_row:
-            imported_ids.append(new_row['id'])
-    return imported_ids
-
-
-def rows_to_csv(rows):
-    output = io.StringIO()
-    writer = csv.DictWriter(output, fieldnames=EXPORT_COLUMNS)
-    writer.writeheader()
-    for row in rows:
-        writer.writerow({k: row.get(k, '') for k in EXPORT_COLUMNS})
-    return output.getvalue()
 
 
 def render_dashboard(params=None):
