@@ -218,8 +218,13 @@ def handle_get(h):
         if not vok:
             h._send(200, render_backups_page(vmsg))
             return
+        meta = {}
+        try:
+            meta = backup_service.read_backup_meta(zip_bytes)
+        except Exception:
+            meta = {}
         ok, msg = backup_service.restore_from_backup_zip_bytes(zip_bytes)
-        h.log_action('restore_from_history', [], f'{name} -> {msg}')
+        h.log_action('restore_from_history', [], f"{name} meta={meta.get('created_at','-')} actor={meta.get('actor',{})} -> {msg}")
         token = h.cookies().get(h.COOKIE_NAME)
         multiuser_auth_service.logout(token)
         h._redirect('/login', f"{h.COOKIE_NAME}=; Path=/; Max-Age=0")
@@ -443,8 +448,13 @@ def handle_post(h):
         if not vok:
             h._send(200, render_restore_page(vmsg))
             return
+        meta = {}
+        try:
+            meta = backup_service.read_backup_meta(zip_bytes)
+        except Exception:
+            meta = {}
         ok, msg = backup_service.restore_from_backup_zip_bytes(zip_bytes)
-        h.log_action('restore', [], msg)
+        h.log_action('restore', [], f"upload_restore: {meta.get('created_at','-')} actor={meta.get('actor',{})} -> {msg}")
         # after restore: force re-login to avoid stale sessions
         token = h.cookies().get(h.COOKIE_NAME)
         multiuser_auth_service.logout(token)

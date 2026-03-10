@@ -20,8 +20,7 @@ def render_backups_page(message=''):
     rows_list = []
     for b in backups:
         try:
-            ok, _ = backup_service.validate_backup_zip_bytes(backup_service.read_backup_zip_bytes(b['name']))
-            status = 'OK' if ok else 'FAIL'
+            ok, status = backup_service.cached_validate_backup(b['name'])
         except Exception:
             status = 'FAIL'
         rows_list.append(

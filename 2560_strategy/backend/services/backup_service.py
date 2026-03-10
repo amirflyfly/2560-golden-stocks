@@ -174,3 +174,44 @@ def read_backup_meta(zip_bytes: bytes):
     with zipfile.ZipFile(io.BytesIO(zip_bytes), 'r') as z:
         meta_raw = z.read('meta.json')
     return json.loads(meta_raw.decode('utf-8'))
+
+
+
+def cached_validate_backup(name: str):
+    """Validate a backup file with a small cache in ui_settings.
+
+    Cache key: backup_validate::<name>
+    Value: <mtime>|OK or <mtime>|FAIL::<reason>
+    """
+    from backend.repositories.settings_repo import q1, execute
+    from pathlib import Path
+    path = backup_dir() / name
+    st = path.stat()
+    mtime = int(st.st_mtime)
+    key = f'backup_validate::{name}'
+    row = q1('SELECT setting_value FROM ui_settings WHERE setting_key=?', (key,))
+    if row and row.get('setting_value'):
+        val = row['setting_value']
+        if val.startswith(str(mtime) + '|'):
+            parts = val.split('|', 1)[1]
+            if parts.startswith('OK'):
+                return True, 'OK'
+            return False, 'FAIL'
+    try:
+        zip_bytes = read_backup_zip_bytes(name)
+        ok, msg = validate_backup_zip_bytes(zip_bytes)
+        stored = f"{mtime}|{'OK' if ok else 'FAIL'}"
+        execute(
+            "INSERT INTO ui_settings (setting_key, setting_value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) "
+            "ON CONFLICT(setting_key) DO UPDATE SET setting_value=excluded.setting_value, updated_at=CURRENT_TIMESTAMP",
+            (key, stored),
+        )
+        return ok, ('OK' if ok else 'FAIL')
+    except Exception:
+        stored = f"{mtime}|FAIL"
+        execute(
+            "INSERT INTO ui_settings (setting_key, setting_value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) "
+            "ON CONFLICT(setting_key) DO UPDATE SET setting_value=excluded.setting_value, updated_at=CURRENT_TIMESTAMP",
+            (key, stored),
+        )
+        return False, 'FAIL'
