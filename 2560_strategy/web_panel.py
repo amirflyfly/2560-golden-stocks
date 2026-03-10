@@ -23,6 +23,8 @@ from backend.services.io_service import bulk_import_from_csv, rows_to_csv
 from backend.services.format_service import num, int_num
 from backend.services.http_utils import parse_cookies, parse_multi_post, as_list, build_query_string
 from backend.services.flash_service import get_flash
+from backend.services.auth_service import ensure_secret
+from backend.services.logs_service import log_action
 from backend.routes.panel_routes import handle_get, handle_post
 
 from backend.services.leaderboard_service import leaderboards
@@ -47,6 +49,7 @@ from backend.ui.html_helpers import (
     render_nav,
     render_pagination,
     layout_page,
+    line_table_html,
 )
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -61,41 +64,10 @@ REVIEW_STATUS_OPTIONS = ['未复盘', '值得复讲', '逻辑一般', '不建议
 RESULT_GRADE_OPTIONS = ['S', 'A', 'B', 'C', '待定']
 DEAL_STATUS_OPTIONS = ['未成交', '已咨询', '已成交', '待跟进']
 SPREAD_OPTIONS = ['否', '是']
-def ensure_secret():
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    if SECRET_PATH.exists():
-        return SECRET_PATH.read_text(encoding='utf-8').strip()
-    secret = secrets.token_urlsafe(8)
-    SECRET_PATH.write_text(secret, encoding='utf-8')
-    return secret
-
-
-PANEL_PASSWORD = ensure_secret()
+PANEL_PASSWORD = ensure_secret(DATA_DIR, SECRET_PATH)
 
 
 ensure_schema()
-
-
-def log_action(action, target_ids=None, detail=''):
-    target_ids = target_ids or []
-    execute(
-        'INSERT INTO operation_logs (action, target_ids, detail) VALUES (?, ?, ?)',
-        (action, ','.join(str(i) for i in target_ids), detail[:1000]),
-    )
-
-
-def line_table_html(rows, empty_text='暂无数据', color='#4f46e5'):
-    if not rows:
-        return f'<div class="muted">{esc(empty_text)}</div>'
-    maxv = max([float(r.get('cnt', 0) or 0) for r in rows]) or 1
-    html_rows = []
-    for r in rows:
-        val = float(r.get('cnt', 0) or 0)
-        width = max(8, int(val / maxv * 100))
-        label_text = esc(r.get('name'))
-        display = str(int(round(val))) if abs(val - round(val)) < 1e-9 else f'{val:.1f}'
-        html_rows.append(f"<div class='line-row'><div class='line-date'>{label_text}</div><div class='line-track'><div class='line-fill' style='width:{width}%;background:{color}'></div></div><div class='line-value'>{display}</div></div>")
-    return ''.join(html_rows)
 
 
 def render_dashboard(params=None):

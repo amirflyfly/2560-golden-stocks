@@ -5,6 +5,7 @@ Rendering stays in web_panel.py.
 """
 
 from backend.repositories.db import q, q1
+from backend.services.logs_service import recent_logs
 
 
 def dashboard_overview():
@@ -62,7 +63,4 @@ def dashboard_deal_trend_30d():
 
 
 def recent_operation_logs(limit=15):
-    return q(
-        "SELECT action, target_ids, detail, created_at FROM operation_logs ORDER BY id DESC LIMIT ?",
-        (int(limit),),
-    )
+    return recent_logs(limit=limit)

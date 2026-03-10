@@ -45,6 +45,26 @@ def bar_html(rows, label_key='name', value_key='cnt', color='#4f46e5', empty_tex
     return ''.join(items)
 
 
+
+
+def line_table_html(rows, empty_text='暂无数据', color='#4f46e5'):
+    if not rows:
+        return f'<div class="muted">{esc(empty_text)}</div>'
+    maxv = max([float(r.get('cnt', 0) or 0) for r in rows]) or 1
+    html_rows = []
+    for r in rows:
+        val = float(r.get('cnt', 0) or 0)
+        width = max(8, int(val / maxv * 100))
+        label_text = esc(r.get('name'))
+        display = str(int(round(val))) if abs(val - round(val)) < 1e-9 else f'{val:.1f}'
+        html_rows.append(
+            f"<div class='line-row'><div class='line-date'>{label_text}</div>"
+            f"<div class='line-track'><div class='line-fill' style='width:{width}%;background:{color}'></div></div>"
+            f"<div class='line-value'>{display}</div></div>"
+        )
+    return ''.join(html_rows)
+
+
 def render_nav(active='dashboard'):
     items = [
         ('/', 'dashboard', '面板'),
