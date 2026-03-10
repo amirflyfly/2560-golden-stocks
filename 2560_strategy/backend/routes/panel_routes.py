@@ -22,10 +22,47 @@ from backend.services.filters_service import (
 )
 from backend.services.reports_service import weekly_report_rows, monthly_report_rows
 from backend.pages.users_page import render_users_page
+from backend.pages.restore_page import render_restore_page
 from backend.services import multiuser_auth_service
 from backend.services import users_admin_service
+from backend.services import backup_service
 
 
+# minimal multipart/form-data parser (single file)
+# returns bytes for the uploaded file field
+
+def _parse_multipart(handler, field_name='backup_zip'):
+    """Minimal multipart/form-data parser (single file).
+
+    Returns raw bytes of the uploaded file for the given field name.
+    """
+    ctype = handler.headers.get('Content-Type', '')
+    if 'multipart/form-data' not in ctype or 'boundary=' not in ctype:
+        return None
+
+    boundary = ctype.split('boundary=', 1)[1].strip()
+    if boundary.startswith('\"') and boundary.endswith('\"'):
+        boundary = boundary[1:-1]
+
+    boundary_bytes = ('--' + boundary).encode('utf-8')
+    length = int(handler.headers.get('Content-Length', '0') or '0')
+    body = handler.rfile.read(length)
+
+    parts = body.split(boundary_bytes)
+    name_token = f'name=\"{field_name}\"'.encode('utf-8')
+
+    for part in parts:
+        if b'Content-Disposition:' not in part:
+            continue
+        if name_token not in part:
+            continue
+        if b'\r\n\r\n' not in part:
+            continue
+        _, file_body = part.split(b'\r\n\r\n', 1)
+        file_body = file_body.rsplit(b'\r\n', 1)[0]
+        return file_body
+
+    return None
 def handle_get(h):
     """Route GET requests. `h` is the BaseHTTPRequestHandler instance."""
     parsed = urlparse(h.path)
@@ -69,6 +106,24 @@ def handle_get(h):
         if (s.get('role') or '') != 'admin':
             h._send(403, 'forbidden', 'text/plain; charset=utf-8'); return
         h._send(200, render_users_page())
+        return
+
+
+    if parsed.path == '/backup.zip':
+        s = h.session() or {}
+        if (s.get('role') or '') not in ('admin','editor'):
+            h._send(403, 'forbidden', 'text/plain; charset=utf-8'); return
+        zip_bytes = backup_service.make_backup_zip_bytes(actor=s)
+        backup_service.save_backup_zip_to_disk(zip_bytes, prefix='manual')
+        h.log_action('backup_download', [], '下载备份包')
+        h._send(200, zip_bytes, 'application/zip', {'Content-Disposition': 'attachment; filename="promo_panel_backup.zip"'})
+        return
+
+    if parsed.path == '/restore':
+        s = h.session() or {}
+        if (s.get('role') or '') != 'admin':
+            h._send(403, 'forbidden', 'text/plain; charset=utf-8'); return
+        h._send(200, render_restore_page())
         return
 
     if parsed.path == '/weekly-report.csv':
@@ -309,5 +364,19 @@ def handle_post(h):
         ok, msg = users_admin_service.reset_password(data.get('user_id',0), data.get('new_password',''))
         h.log_action('reset_password', [data.get('user_id',0)], msg)
         h._send(200, render_users_page(msg))
+        return
+
+
+    if h.path == '/restore':
+        s = h.session() or {}
+        if (s.get('role') or '') != 'admin':
+            h._send(403, 'forbidden', 'text/plain; charset=utf-8'); return
+        zip_bytes = _parse_multipart(h, field_name='backup_zip')
+        if not zip_bytes:
+            h._send(200, render_restore_page('未读取到上传文件，请重试'))
+            return
+        ok, msg = backup_service.restore_from_backup_zip_bytes(zip_bytes)
+        h.log_action('restore', [], msg)
+        h._send(200, render_restore_page(msg))
         return
     h._send(404, 'not found', 'text/plain; charset=utf-8')
