@@ -23,6 +23,7 @@ from backend.services.io_service import bulk_import_from_csv, rows_to_csv
 from backend.services.format_service import num, int_num
 from backend.services.http_utils import parse_cookies, parse_multi_post, as_list, build_query_string
 from backend.services.flash_service import get_flash
+from backend.routes.panel_routes import handle_get, handle_post
 
 from backend.services.leaderboard_service import leaderboards
 from backend.services.dashboard_service import (
@@ -231,6 +232,8 @@ def render_reports_page():
 
 
 class Handler(BaseHTTPRequestHandler):
+    COOKIE_NAME = COOKIE_NAME
+    PANEL_PASSWORD = PANEL_PASSWORD
     def cookies(self): return parse_cookies(self.headers.get('Cookie'))
     def authed(self): return self.cookies().get(COOKIE_NAME) == PANEL_PASSWORD
 
@@ -262,112 +265,21 @@ class Handler(BaseHTTPRequestHandler):
     def _batch_update(self, sql, ids):
         return execute_many(sql, [(i,) for i in ids]) if ids else 0
 
+    render_dashboard = staticmethod(render_dashboard)
+    render_login = staticmethod(render_login)
+    render_edit_form = staticmethod(render_edit_form)
+    render_deal_review_page = staticmethod(render_deal_review_page)
+    render_leaderboards_page = staticmethod(render_leaderboards_page)
+    render_reports_page = staticmethod(render_reports_page)
+    log_action = staticmethod(log_action)
+
     def do_GET(self):
-        parsed = urlparse(self.path)
-        if parsed.path == '/health':
-            self._send(200, 'ok', 'text/plain; charset=utf-8'); return
-        if parsed.path == '/logout':
-            self._redirect('/login', f'{COOKIE_NAME}=; Path=/; Max-Age=0'); return
-        if parsed.path == '/login':
-            self._send(200, render_login()); return
-        if not self.authed():
-            self._redirect('/login'); return
-        if parsed.path == '/':
-            self._send(200, render_dashboard(parse_qs(parsed.query))); return
-        if parsed.path == '/edit':
-            self._send(200, render_edit_form(q1('SELECT * FROM picks WHERE id=?', (parse_qs(parsed.query).get('id', [''])[0],)))); return
-        if parsed.path == '/deal-review':
-            self._send(200, render_deal_review_page()); return
-        if parsed.path == '/leaderboards':
-            params = parse_qs(parsed.query)
-            self._send(200, render_leaderboards_page((params.get('range', ['30d'])[0] or '30d'), (params.get('metric', ['default'])[0] or 'default'))); return
-        if parsed.path == '/reports':
-            self._send(200, render_reports_page()); return
-        if parsed.path == '/weekly-report.csv':
-            csv_body = io.StringIO()
-            writer = csv.DictWriter(csv_body, fieldnames=['period', 'total', 'worthy_total', 'deal_total'])
-            writer.writeheader()
-            for row in weekly_report_rows():
-                writer.writerow(row)
-            self._send(200, csv_body.getvalue(), 'text/csv; charset=utf-8', {'Content-Disposition': 'attachment; filename="weekly_report.csv"'}); return
-        if parsed.path == '/monthly-report.csv':
-            csv_body = io.StringIO()
-            writer = csv.DictWriter(csv_body, fieldnames=['month', 'total', 'worthy_total', 'deal_total', 'avg_inquiry'])
-            writer.writeheader()
-            for row in monthly_report_rows():
-                writer.writerow(row)
-            self._send(200, csv_body.getvalue(), 'text/csv; charset=utf-8', {'Content-Disposition': 'attachment; filename="monthly_report.csv"'}); return
-        if parsed.path == '/export':
-            params = parse_qs(parsed.query); where, args = filter_where(params)
-            self._send(200, json.dumps(q(f'SELECT * FROM picks {where} ORDER BY pick_date DESC, id DESC', args), ensure_ascii=False, indent=2), 'application/json; charset=utf-8'); return
-        if parsed.path == '/export.csv':
-            params = parse_qs(parsed.query); where, args = filter_where(params)
-            csv_body = rows_to_csv(q(f'SELECT * FROM picks {where} ORDER BY pick_date DESC, id DESC', args))
-            self._send(200, csv_body, 'text/csv; charset=utf-8', {'Content-Disposition': 'attachment; filename="promo_panel_export.csv"'}); return
-        self._send(404, 'not found', 'text/plain; charset=utf-8')
+        return handle_get(self)
 
     def do_POST(self):
-        data = self._read_post()
-        if self.path == '/login':
-            if data.get('password', '') == PANEL_PASSWORD:
-                self._redirect('/', f'{COOKIE_NAME}={PANEL_PASSWORD}; Path=/; HttpOnly')
-            else:
-                self._send(200, render_login('密码不对，再试一次'))
-            return
-        if not self.authed():
-            self._redirect('/login'); return
-        if self.path == '/add':
-            execute('''INSERT OR REPLACE INTO picks (pick_date, code, name, pick_price, signal, source, source_channel, reason_tag, note, review_status, review_comment, content_title, content_ref, archived, result_grade, inquiry_count, deal_status, secondary_spread) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)''',
-                    (data.get('pick_date', ''), data.get('code', ''), data.get('name', ''), num(data.get('pick_price', '0')), data.get('signal', ''), 'webform', data.get('source_channel', 'web'), data.get('reason_tag', ''), data.get('note', ''), data.get('review_status', '未复盘'), data.get('note', ''), data.get('content_title', ''), data.get('content_ref', ''), data.get('result_grade', '待定'), int_num(data.get('inquiry_count', 0)), data.get('deal_status', '未成交'), data.get('secondary_spread', '否')))
-            new_row = q1('SELECT id FROM picks ORDER BY id DESC LIMIT 1'); log_action('add', [new_row['id']] if new_row else [], f"新增 {data.get('code','')} {data.get('name','')}"); self._redirect('/?saved=1'); return
-        if self.path == '/bulk-import':
-            ids = bulk_import_from_csv(data.get('csv_text', '')); log_action('bulk_import', ids, f'CSV 导入 {len(ids)} 条'); self._redirect('/?imported=1'); return
-        if self.path == '/save-filter':
-            name = (data.get('filter_name', '') or '').strip()
-            query_string = (data.get('query_string', '') or '').strip()
-            if name and query_string:
-                save_current_filter(name, query_string)
-                log_action('save_filter', [], f'保存筛选视图：{name}')
-            self._redirect('/')
-            return
-        if self.path == '/save-dashboard-order':
-            order = (data.get('dashboard_order', '') or '').strip()
-            if order:
-                set_dashboard_order(order)
-                log_action('save_dashboard_order', [], f'保存首页模块顺序：{order}')
-            self._redirect('/')
-            return
-        if self.path == '/delete-filter':
-            fid = data.get('filter_id', '')
-            if fid:
-                delete_saved_filter(fid)
-                log_action('delete_filter', [], f'删除筛选视图 id={fid}')
-            self._redirect('/')
-            return
-        if self.path == '/rename-filter':
-            fid = data.get('filter_id', '')
-            new_name = (data.get('new_name', '') or '').strip()
-            if fid and new_name:
-                rename_saved_filter(fid, new_name)
-                log_action('rename_filter', [], f'重命名筛选视图 id={fid} -> {new_name}')
-            self._redirect('/')
-            return
-        if self.path == '/update':
-            rid = data.get('id', '')
-            execute('''UPDATE picks SET pick_date=?, code=?, name=?, pick_price=?, signal=?, source_channel=?, reason_tag=?, note=?, review_status=?, review_comment=?, content_title=?, content_ref=?, result_grade=?, inquiry_count=?, deal_status=?, secondary_spread=? WHERE id=?''',
-                    (data.get('pick_date', ''), data.get('code', ''), data.get('name', ''), num(data.get('pick_price', '0')), data.get('signal', ''), data.get('source_channel', ''), data.get('reason_tag', ''), data.get('note', ''), data.get('review_status', '未复盘'), data.get('note', ''), data.get('content_title', ''), data.get('content_ref', ''), data.get('result_grade', '待定'), int_num(data.get('inquiry_count', 0)), data.get('deal_status', '未成交'), data.get('secondary_spread', '否'), rid))
-            log_action('update', [rid], f'编辑记录 {rid}'); self._redirect('/?updated=1'); return
-        if self.path == '/archive': rid = data.get('id', ''); execute('UPDATE picks SET archived=1 WHERE id=?', (rid,)); log_action('archive', [rid], '单条归档'); self._redirect('/?archived=1'); return
-        if self.path == '/unarchive': rid = data.get('id', ''); execute('UPDATE picks SET archived=0 WHERE id=?', (rid,)); log_action('unarchive', [rid], '单条恢复'); self._redirect('/?unarchived=1'); return
-        if self.path == '/delete': rid = data.get('id', ''); execute('DELETE FROM picks WHERE id=?', (rid,)); log_action('delete', [rid], '单条删除'); self._redirect('/?deleted=1'); return
-        if self.path == '/batch-archive': ids = self._selected_ids(data); self._batch_update('UPDATE picks SET archived=1 WHERE id=?', ids); log_action('batch_archive', ids, f'批量归档 {len(ids)} 条'); self._redirect('/?batch_archived=1'); return
-        if self.path == '/batch-unarchive': ids = self._selected_ids(data); self._batch_update('UPDATE picks SET archived=0 WHERE id=?', ids); log_action('batch_unarchive', ids, f'批量恢复 {len(ids)} 条'); self._redirect('/?batch_unarchived=1'); return
-        if self.path == '/batch-delete': ids = self._selected_ids(data); self._batch_update('DELETE FROM picks WHERE id=?', ids); log_action('batch_delete', ids, f'批量删除 {len(ids)} 条'); self._redirect('/?batch_deleted=1'); return
-        if self.path == '/batch-review': ids = self._selected_ids(data); status = data.get('review_status', '未复盘'); execute_many('UPDATE picks SET review_status=? WHERE id=?', [(status, i) for i in ids]) if ids else None; log_action('batch_review', ids, f'批量改复盘状态为 {status}'); self._redirect('/?batch_reviewed=1'); return
-        if self.path == '/batch-grade': ids = self._selected_ids(data); grade = data.get('result_grade', '待定'); execute_many('UPDATE picks SET result_grade=? WHERE id=?', [(grade, i) for i in ids]) if ids else None; log_action('batch_grade', ids, f'批量改评级为 {grade}'); self._redirect('/?batch_grade=1'); return
-        if self.path == '/batch-deal': ids = self._selected_ids(data); ds = data.get('deal_status', '未成交'); execute_many('UPDATE picks SET deal_status=? WHERE id=?', [(ds, i) for i in ids]) if ids else None; log_action('batch_deal', ids, f'批量改成交状态为 {ds}'); self._redirect('/?batch_deal=1'); return
-        if self.path == '/batch-spread': ids = self._selected_ids(data); sp = data.get('secondary_spread', '否'); execute_many('UPDATE picks SET secondary_spread=? WHERE id=?', [(sp, i) for i in ids]) if ids else None; log_action('batch_spread', ids, f'批量改二次传播为 {sp}'); self._redirect('/?batch_spread=1'); return
-        self._send(404, 'not found', 'text/plain; charset=utf-8')
+        return handle_post(self)
+
+
 
 
 if __name__ == '__main__':
