@@ -436,6 +436,7 @@ def handle_post(h):
         return
 
 
+
     if h.path == '/restore':
         s = h.session() or {}
         if (s.get('role') or '') != 'admin':
@@ -453,9 +454,33 @@ def handle_post(h):
             meta = backup_service.read_backup_meta(zip_bytes)
         except Exception:
             meta = {}
+        tmp_key = backup_service.save_restore_upload(zip_bytes)
+        meta['_tmp_key'] = tmp_key
+        h._send(200, render_restore_preview_page(meta, '校验通过，请确认恢复'))
+        return
+
+    if h.path == '/restore/confirm':
+        s = h.session() or {}
+        if (s.get('role') or '') != 'admin':
+            h._send(403, 'forbidden', 'text/plain; charset=utf-8'); return
+        key = (data.get('tmp_key', '') or '').strip()
+        try:
+            zip_bytes = backup_service.load_restore_upload(key)
+        except Exception:
+            h._send(200, render_restore_page('恢复文件已过期或不存在，请重新上传'))
+            return
+        vok, vmsg = backup_service.validate_backup_zip_bytes(zip_bytes)
+        if not vok:
+            h._send(200, render_restore_page(vmsg))
+            return
+        meta = {}
+        try:
+            meta = backup_service.read_backup_meta(zip_bytes)
+        except Exception:
+            meta = {}
         ok, msg = backup_service.restore_from_backup_zip_bytes(zip_bytes)
-        h.log_action('restore', [], f"upload_restore: {meta.get('created_at','-')} actor={meta.get('actor',{})} -> {msg}")
-        # after restore: force re-login to avoid stale sessions
+        h.log_action('restore', [], f"confirm_restore: {meta.get('created_at','-')} actor={meta.get('actor',{})} -> {msg}")
+        backup_service.delete_restore_upload(key)
         token = h.cookies().get(h.COOKIE_NAME)
         multiuser_auth_service.logout(token)
         h._redirect('/login', f"{h.COOKIE_NAME}=; Path=/; Max-Age=0")

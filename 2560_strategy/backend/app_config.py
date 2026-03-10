@@ -18,3 +18,6 @@ DATA_DIR_NAME = 'data'
 
 # backup settings
 BACKUP_RETENTION = 30
+
+# HMAC key for backup meta signing (optional but recommended)
+BACKUP_HMAC_KEY_PATH = 'data/backup_hmac_key.txt'

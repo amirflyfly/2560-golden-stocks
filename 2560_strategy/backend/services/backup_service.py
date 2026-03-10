@@ -10,6 +10,8 @@ Restore supports replacing picks.db (with an auto-backup of current state).
 
 import io
 import hashlib
+import hmac
+import secrets
 import json
 import os
 import shutil
@@ -55,6 +57,7 @@ def make_backup_zip_bytes(actor=None):
             z.write(LEGACY_SECRET, arcname='data/web_panel_secret.txt')
             meta['files'].append('data/web_panel_secret.txt')
 
+        meta['signature'] = _sign_meta(meta)
         z.writestr('meta.json', json.dumps(meta, ensure_ascii=False, indent=2))
 
     return buf.getvalue()
@@ -162,6 +165,15 @@ def validate_backup_zip_bytes(zip_bytes: bytes):
                 meta = json.loads(z.read('meta.json').decode('utf-8'))
                 if not isinstance(meta, dict):
                     return False, 'meta.json 格式不正确'
+                # signature verification (optional)
+                sig = meta.get('signature')
+                if sig:
+                    try:
+                        expect = _sign_meta(meta)
+                        if str(sig) != str(expect):
+                            return False, '备份包签名校验失败（可能被篡改）'
+                    except Exception:
+                        return False, '备份包签名校验失败'
                 # integrity check (optional)
                 try:
                     pdb = meta.get('picks_db') or {}
@@ -236,3 +248,63 @@ def _sha256_bytes(data: bytes) -> str:
     h = hashlib.sha256()
     h.update(data)
     return h.hexdigest()
+
+
+
+def _get_hmac_key():
+    """Return HMAC key bytes; generate and persist if missing."""
+    from backend.app_config import BACKUP_HMAC_KEY_PATH
+    key_path = BASE_DIR / BACKUP_HMAC_KEY_PATH if 'BASE_DIR' in globals() else (DATA_DIR / 'backup_hmac_key.txt')
+    # Prefer DATA_DIR relative path
+    if not key_path.is_absolute():
+        key_path = DATA_DIR.parent / BACKUP_HMAC_KEY_PATH
+    key_path.parent.mkdir(parents=True, exist_ok=True)
+    if key_path.exists():
+        return key_path.read_text(encoding='utf-8').strip().encode('utf-8')
+    k = secrets.token_urlsafe(32)
+    key_path.write_text(k, encoding='utf-8')
+    return k.encode('utf-8')
+
+
+
+def _sign_meta(meta: dict) -> str:
+    key = _get_hmac_key()
+    # sign canonical JSON without signature field
+    import json
+    meta2 = dict(meta)
+    meta2.pop('signature', None)
+    payload = json.dumps(meta2, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode('utf-8')
+    return hmac.new(key, payload, hashlib.sha256).hexdigest()
+
+
+
+def save_restore_upload(zip_bytes: bytes):
+    """Store uploaded restore zip temporarily and return a key."""
+    import secrets
+    tmp_dir = DATA_DIR / 'restore_uploads'
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    key = secrets.token_urlsafe(16)
+    path = tmp_dir / f'{key}.zip'
+    path.write_bytes(zip_bytes)
+    return key
+
+
+
+def load_restore_upload(key: str) -> bytes:
+    key = (key or '').strip()
+    if not key or '/' in key or '..' in key:
+        raise ValueError('invalid key')
+    path = (DATA_DIR / 'restore_uploads') / f'{key}.zip'
+    if not path.exists():
+        raise FileNotFoundError(key)
+    return path.read_bytes()
+
+
+
+def delete_restore_upload(key: str):
+    try:
+        path = (DATA_DIR / 'restore_uploads') / f'{key}.zip'
+        if path.exists():
+            path.unlink()
+    except Exception:
+        pass
