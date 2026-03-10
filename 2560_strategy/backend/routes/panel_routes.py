@@ -23,6 +23,7 @@ from backend.services.filters_service import (
 from backend.services.reports_service import weekly_report_rows, monthly_report_rows
 from backend.pages.users_page import render_users_page
 from backend.pages.restore_page import render_restore_page
+from backend.pages.backups_page import render_backups_page
 from backend.services import multiuser_auth_service
 from backend.services import users_admin_service
 from backend.services import backup_service
@@ -126,6 +127,26 @@ def handle_get(h):
         h._send(200, render_restore_page())
         return
 
+    if parsed.path == '/backups':
+        s = h.session() or {}
+        if (s.get('role') or '') != 'admin':
+            h._send(403, 'forbidden', 'text/plain; charset=utf-8'); return
+        h._send(200, render_backups_page())
+        return
+
+    if parsed.path == '/backups/download':
+        s = h.session() or {}
+        if (s.get('role') or '') != 'admin':
+            h._send(403, 'forbidden', 'text/plain; charset=utf-8'); return
+        name = parse_qs(parsed.query).get('name', [''])[0]
+        try:
+            zip_bytes = backup_service.read_backup_zip_bytes(name)
+        except Exception:
+            h._send(404, 'not found', 'text/plain; charset=utf-8'); return
+        h.log_action('backup_download_history', [], f'下载历史备份 {name}')
+        h._send(200, zip_bytes, 'application/zip', {'Content-Disposition': f'attachment; filename="{name}"'})
+        return
+
     if parsed.path == '/weekly-report.csv':
         csv_body = io.StringIO()
         writer = csv.DictWriter(csv_body, fieldnames=['period', 'total', 'worthy_total', 'deal_total'])
@@ -159,6 +180,22 @@ def handle_get(h):
         where, args = filter_where(params)
         csv_body = rows_to_csv(picks_repo.list_picks(where, args))
         h._send(200, csv_body, 'text/csv; charset=utf-8', {'Content-Disposition': 'attachment; filename="promo_panel_export.csv"'})
+        return
+
+
+    if h.path == '/backups/restore':
+        s = h.session() or {}
+        if (s.get('role') or '') != 'admin':
+            h._send(403, 'forbidden', 'text/plain; charset=utf-8'); return
+        name = (data.get('name', '') or '').strip()
+        try:
+            zip_bytes = backup_service.read_backup_zip_bytes(name)
+        except Exception as e:
+            h._send(200, render_backups_page(f'读取备份失败：{e}'))
+            return
+        ok, msg = backup_service.restore_from_backup_zip_bytes(zip_bytes)
+        h.log_action('restore_from_history', [], f'{name} -> {msg}')
+        h._send(200, render_backups_page(f'已回滚：{name}（{msg}）'))
         return
 
     h._send(404, 'not found', 'text/plain; charset=utf-8')

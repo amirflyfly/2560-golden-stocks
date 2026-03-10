@@ -112,3 +112,28 @@ def restore_from_backup_zip_bytes(zip_bytes: bytes):
             shutil.rmtree(tmp)
         except Exception:
             pass
+
+
+
+def list_backups(limit=50):
+    bdir = backup_dir()
+    items = []
+    for z in sorted(bdir.glob('*.zip'), key=lambda p: p.stat().st_mtime, reverse=True)[: int(limit)]:
+        st = z.stat()
+        items.append({
+            'name': z.name,
+            'path': str(z),
+            'size': st.st_size,
+            'mtime': datetime.fromtimestamp(st.st_mtime).strftime('%Y-%m-%d %H:%M:%S'),
+        })
+    return items
+
+
+def read_backup_zip_bytes(name: str):
+    name = (name or '').strip()
+    if not name or '/' in name or '..' in name:
+        raise ValueError('invalid backup name')
+    path = backup_dir() / name
+    if not path.exists():
+        raise FileNotFoundError(name)
+    return path.read_bytes()

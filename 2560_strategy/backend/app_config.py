@@ -17,4 +17,4 @@ SPREAD_OPTIONS = ['否', '是']
 DATA_DIR_NAME = 'data'
 
 # backup settings
-BACKUP_RETENTION = 10
+BACKUP_RETENTION = 30
