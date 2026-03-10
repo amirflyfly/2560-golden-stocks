@@ -19,6 +19,19 @@ from backend.services.filters_service import (
 )
 from backend.services.reports_service import report_summary_text, monthly_report_rows, weekly_report_rows
 from backend.services.leaderboard_service import leaderboards
+from backend.services.dashboard_service import (
+    dashboard_overview,
+    dashboard_kpi,
+    dashboard_channels,
+    dashboard_tags,
+    dashboard_review_status,
+    dashboard_grades,
+    dashboard_deals,
+    dashboard_trend_30d,
+    dashboard_worthy_trend_30d,
+    dashboard_deal_trend_30d,
+    recent_operation_logs,
+)
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / 'data'
@@ -298,31 +311,17 @@ def render_dashboard(params=None):
     page = max(1, int((params.get('page', ['1'])[0] or '1')))
     saved_filters = get_saved_filters()
     dashboard_order = get_dashboard_order()
-    overview = q1(
-        '''SELECT COUNT(*) AS total,
-                  SUM(CASE WHEN COALESCE(archived,0)=0 THEN 1 ELSE 0 END) AS active_total,
-                  SUM(CASE WHEN COALESCE(NULLIF(deal_status,''),'未成交')='已成交' THEN 1 ELSE 0 END) AS deal_total,
-                  SUM(CASE WHEN COALESCE(NULLIF(secondary_spread,''),'否')='是' THEN 1 ELSE 0 END) AS spread_total,
-                  SUM(CASE WHEN COALESCE(NULLIF(review_status,''),'未复盘')='值得复讲' THEN 1 ELSE 0 END) AS worthy_total
-           FROM picks'''
-    ) or {}
-    kpi = q1(
-        '''SELECT SUM(CASE WHEN date(pick_date) >= date('now','weekday 1','-7 days') THEN 1 ELSE 0 END) AS week_new,
-                  SUM(CASE WHEN date(pick_date) >= date('now','-6 day') THEN 1 ELSE 0 END) AS last7_new,
-                  SUM(CASE WHEN date(pick_date) >= date('now','-29 day') THEN 1 ELSE 0 END) AS last30_new,
-                  ROUND(100.0 * SUM(CASE WHEN COALESCE(NULLIF(review_status,''),'未复盘')='值得复讲' THEN 1 ELSE 0 END) / NULLIF(COUNT(*),0), 1) AS worthy_rate,
-                  ROUND(AVG(COALESCE(inquiry_count,0)), 1) AS avg_inquiry
-           FROM picks WHERE COALESCE(archived,0)=0'''
-    ) or {}
-    by_channel = q("SELECT COALESCE(NULLIF(source_channel,''),'system') AS name, COUNT(*) AS cnt FROM picks WHERE COALESCE(archived,0)=0 GROUP BY name ORDER BY cnt DESC")
-    by_tag = q("SELECT COALESCE(NULLIF(reason_tag,''),'未标注') AS name, COUNT(*) AS cnt FROM picks WHERE COALESCE(archived,0)=0 GROUP BY name ORDER BY cnt DESC")
-    by_status = q("SELECT COALESCE(NULLIF(review_status,''),'未复盘') AS name, COUNT(*) AS cnt FROM picks WHERE COALESCE(archived,0)=0 GROUP BY name ORDER BY cnt DESC")
-    by_grade = q("SELECT COALESCE(NULLIF(result_grade,''),'待定') AS name, COUNT(*) AS cnt FROM picks WHERE COALESCE(archived,0)=0 GROUP BY name ORDER BY cnt DESC")
-    by_deal = q("SELECT COALESCE(NULLIF(deal_status,''),'未成交') AS name, COUNT(*) AS cnt FROM picks WHERE COALESCE(archived,0)=0 GROUP BY name ORDER BY cnt DESC")
-    trend_30d = q("SELECT pick_date AS name, COUNT(*) AS cnt FROM picks WHERE COALESCE(archived,0)=0 AND date(pick_date) >= date('now','-29 day') GROUP BY pick_date ORDER BY pick_date ASC")
-    worthy_trend = q("SELECT pick_date AS name, SUM(CASE WHEN COALESCE(NULLIF(review_status,''),'未复盘')='值得复讲' THEN 1 ELSE 0 END) AS cnt FROM picks WHERE COALESCE(archived,0)=0 AND date(pick_date) >= date('now','-29 day') GROUP BY pick_date ORDER BY pick_date ASC")
-    deal_trend = q("SELECT pick_date AS name, SUM(CASE WHEN COALESCE(NULLIF(deal_status,''),'未成交')='已成交' THEN 1 ELSE 0 END) AS cnt FROM picks WHERE COALESCE(archived,0)=0 AND date(pick_date) >= date('now','-29 day') GROUP BY pick_date ORDER BY pick_date ASC")
-    recent_logs = q("SELECT action, target_ids, detail, created_at FROM operation_logs ORDER BY id DESC LIMIT 15")
+    overview = dashboard_overview()
+    kpi = dashboard_kpi()
+    by_channel = dashboard_channels()
+    by_tag = dashboard_tags()
+    by_status = dashboard_review_status()
+    by_grade = dashboard_grades()
+    by_deal = dashboard_deals()
+    trend_30d = dashboard_trend_30d()
+    worthy_trend = dashboard_worthy_trend_30d()
+    deal_trend = dashboard_deal_trend_30d()
+    recent_logs = recent_operation_logs(15)
 
     where, args = filter_where(params)
     filter_count = q1(f"SELECT COUNT(*) AS cnt FROM picks {where}", args)['cnt']
