@@ -13,6 +13,31 @@ def run_step(args, env=None):
     subprocess.run([PY] + args, check=True, env=env, cwd=BASE_DIR)
 
 
+def ping_render_dashboard():
+    url = 'https://dashboard.render.com'
+    log_path = Path(BASE_DIR) / 'data' / 'render_dashboard_ping.log'
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    ts = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    try:
+        with urllib.request.urlopen(url, timeout=20) as r:
+            line = f'[{ts}] status={r.status} url={url}'
+    except Exception as e:
+        line = f'[{ts}] error={e} url={url}'
+    with log_path.open('a', encoding='utf-8') as f:
+        f.write(line + '\n')
+    print(f'🌐 Render dashboard ping: {line}')
+
+
+def morning_digest():
+    print(f"🌅 触发早盘重点汇报... 时间：{datetime.datetime.now()}")
+    run_step(['strategy_digest.py', 'am'])
+
+
+def afternoon_digest():
+    print(f"🌇 触发尾盘汇总汇报... 时间：{datetime.datetime.now()}")
+    run_step(['strategy_digest.py', 'pm'])
+
+
 def job():
     print(f"⏰ 触发定时任务：2560 战法选股... 时间：{datetime.datetime.now()}")
     env = os.environ.copy()
