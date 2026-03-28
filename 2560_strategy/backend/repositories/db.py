@@ -71,6 +71,38 @@ def ensure_schema():
             alter_sqls.append("ALTER TABLE picks ADD COLUMN deal_status TEXT DEFAULT '未成交'")
         if 'secondary_spread' not in cols:
             alter_sqls.append("ALTER TABLE picks ADD COLUMN secondary_spread TEXT DEFAULT '否'")
+        if 'last_price' not in cols:
+            alter_sqls.append("ALTER TABLE picks ADD COLUMN last_price REAL DEFAULT NULL")
+        if 'return_pct' not in cols:
+            alter_sqls.append("ALTER TABLE picks ADD COLUMN return_pct REAL DEFAULT NULL")
+        if 'quote_time' not in cols:
+            alter_sqls.append("ALTER TABLE picks ADD COLUMN quote_time TEXT DEFAULT ''")
+        if 'max_return_pct' not in cols:
+            alter_sqls.append("ALTER TABLE picks ADD COLUMN max_return_pct REAL DEFAULT NULL")
+        if 'drawdown_pct' not in cols:
+            alter_sqls.append("ALTER TABLE picks ADD COLUMN drawdown_pct REAL DEFAULT NULL")
+        if 'holding_days' not in cols:
+            alter_sqls.append("ALTER TABLE picks ADD COLUMN holding_days INTEGER DEFAULT NULL")
+        if 'strategy_name' not in cols:
+            alter_sqls.append("ALTER TABLE picks ADD COLUMN strategy_name TEXT DEFAULT '2560'")
+        if 'first_board_time' not in cols:
+            alter_sqls.append("ALTER TABLE picks ADD COLUMN first_board_time TEXT DEFAULT ''")
+        if 'theme_reason' not in cols:
+            alter_sqls.append("ALTER TABLE picks ADD COLUMN theme_reason TEXT DEFAULT ''")
+        if 'second_board_expectation' not in cols:
+            alter_sqls.append("ALTER TABLE picks ADD COLUMN second_board_expectation TEXT DEFAULT ''")
+        if 'second_board_score' not in cols:
+            alter_sqls.append("ALTER TABLE picks ADD COLUMN second_board_score INTEGER DEFAULT 0")
+        if 'prediction_reason' not in cols:
+            alter_sqls.append("ALTER TABLE picks ADD COLUMN prediction_reason TEXT DEFAULT ''")
+        if 'watch_flag' not in cols:
+            alter_sqls.append("ALTER TABLE picks ADD COLUMN watch_flag INTEGER DEFAULT 0")
+        if 'validation_result' not in cols:
+            alter_sqls.append("ALTER TABLE picks ADD COLUMN validation_result TEXT DEFAULT ''")
+        if 'validation_note' not in cols:
+            alter_sqls.append("ALTER TABLE picks ADD COLUMN validation_note TEXT DEFAULT ''")
+        if 'validated_at' not in cols:
+            alter_sqls.append("ALTER TABLE picks ADD COLUMN validated_at TEXT DEFAULT ''")
         for sql in alter_sqls:
             cur.execute(sql)
         cur.execute(

@@ -19,6 +19,15 @@ from backend.services.dashboard_service import (
     dashboard_worthy_trend_30d,
     dashboard_deal_trend_30d,
     recent_operation_logs,
+    dashboard_strategy_summary,
+    dashboard_strategy_panels,
+    dashboard_strategy_compare,
+    dashboard_second_board_pool,
+    dashboard_watch_pool,
+    dashboard_validate_rows,
+    dashboard_validate_stats,
+    dashboard_validate_rate,
+    dashboard_hit_compare,
 )
 from backend.services.http_utils import build_query_string
 from backend.ui.html_helpers import esc, select_options, bar_html, render_nav, render_pagination, line_table_html
@@ -50,6 +59,15 @@ def render_dashboard(params=None, port=8765):
     deal_trend = dashboard_deal_trend_30d()
     recent_logs = recent_operation_logs(15)
     bstats = backup_service.backup_stats()
+    strategy_summary = dashboard_strategy_summary()
+    strategy_panels = dashboard_strategy_panels()
+    strategy_compare = dashboard_strategy_compare()
+    second_board_pool = dashboard_second_board_pool()
+    watch_pool = dashboard_watch_pool()
+    validate_rows = dashboard_validate_rows()
+    validate_stats = dashboard_validate_stats()
+    validate_rate = dashboard_validate_rate()
+    hit_compare = dashboard_hit_compare()
 
     where, args = filter_where(params)
     filter_count = picks_repo.count_picks(where, args)
@@ -87,6 +105,15 @@ def render_dashboard(params=None, port=8765):
         for r in recent_logs
     ]) or '<tr><td colspan="6">暂无日志</td></tr>'
 
+    strategy_summary_html = ''.join([f"<div class='card'><div class='muted'>{esc(r['name'])}</div><div class='num'>{int(r.get('cnt') or 0)}</div></div>" for r in strategy_summary]) or '<div class="card">暂无策略数据</div>'
+    strategy_panel_html = ''.join([f"<div class='card'><h2>{esc(r['strategy_name'])} 分区</h2><div class='grid2'><div><div class='muted'>记录数</div><div class='num'>{int(r.get('total') or 0)}</div></div><div><div class='muted'>值得复讲</div><div class='num'>{int(r.get('worthy_total') or 0)}</div></div><div><div class='muted'>已成交</div><div class='num'>{int(r.get('deal_total') or 0)}</div></div><div><div class='muted'>平均收益%</div><div class='num'>{r.get('avg_return') if r.get('avg_return') is not None else 0}</div></div></div></div>" for r in strategy_panels])
+    strategy_compare_html = ''.join([f"<tr><td>{esc(r['name'])}</td><td>{int(r.get('total') or 0)}</td><td>{r.get('avg_return') if r.get('avg_return') is not None else 0}</td><td>{int(r.get('deal_total') or 0)}</td></tr>" for r in strategy_compare]) or '<tr><td colspan="4">暂无策略对比数据</td></tr>'
+    second_board_html = ''.join([f"<tr><td>{esc(r['pick_date'])}</td><td>{esc(r['name'])}</td><td>{esc(r['code'])}</td><td>{esc(r['second_board_expectation'])}</td><td>{esc(r['second_board_score'])}</td><td>{esc(r['prediction_reason'])}</td></tr>" for r in second_board_pool]) or '<tr><td colspan="6">暂无高预期二板候选</td></tr>'
+    watch_pool_html = ''.join([f"<tr><td>{esc(r['pick_date'])}</td><td>{esc(r['name'])}</td><td>{esc(r['code'])}</td><td>{esc(r['second_board_score'])}</td><td>{esc(r['prediction_reason'])}</td></tr>" for r in watch_pool]) or '<tr><td colspan="5">暂无重点观察记录</td></tr>'
+    validate_html = ''.join([f"<tr><td>{esc(r['pick_date'])}</td><td>{esc(r['name'])}</td><td>{esc(r['code'])}</td><td>{esc(r['second_board_expectation'])}</td><td>{esc(r['second_board_score'])}</td><td>{esc(r['validation_result'])}</td></tr>" for r in validate_rows]) or '<tr><td colspan="6">暂无次日验证记录</td></tr>'
+    hit_compare_html = ''.join([f"<tr><td>{esc(r['name'])}</td><td>{int(r.get('total') or 0)}</td><td>{int(r.get('hit_total') or 0)}</td><td>{round((float(r.get('hit_total') or 0) / float(r.get('total') or 1)) * 100, 2) if int(r.get('total') or 0) else 0}%</td></tr>" for r in hit_compare]) or '<tr><td colspan="4">暂无命中分析数据</td></tr>'
+    war_report_html = bar_html(validate_stats, color='#dc2626', suffix=' 条')
+
     flash_html = (
         f"<div class=\"card\" style=\"background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0\">{esc(flash)}</div>"
         if flash else ''
@@ -113,7 +140,7 @@ body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;backgro
 <div class="grid3 section"><div class="card"><div class="muted">本周新增</div><div class="num">{int(kpi.get('week_new') or 0)}</div><div class="subtle">反映本周录入节奏</div></div><div class="card"><div class="muted">近30天新增</div><div class="num">{int(kpi.get('last30_new') or 0)}</div><div class="subtle">观察数据沉淀速度</div></div><div class="card"><div class="muted">平均咨询数</div><div class="num">{kpi.get('avg_inquiry') or 0}</div><div class="subtle">衡量内容带来互动的能力</div></div></div>
 <div class="grid3 section"><div class="card"><div class="muted">备份总数</div><div class="num">{bstats.get('total',0)}</div><div class="subtle">最近备份：{esc(bstats.get('latest_time'))}</div></div><div class="card"><div class="muted">最近校验失败</div><div class="num">{bstats.get('fail',0)}</div><div class="subtle">统计最近 {bstats.get('checked',0)} 份</div></div><div class="card"><div class="muted">最近备份文件</div><div class="num" style="font-size:16px">{esc(bstats.get('latest_name'))}</div><div class="subtle">可在「备份管理」查看详情</div></div></div>
 <div class="section card"><h2>首页模块排序</h2><div class='muted'>当前顺序：{dashboard_order}</div><form method='post' action='/save-dashboard-order' style='margin-top:12px'><div class='formgrid3'><div><label>模块顺序字符串</label><input name='dashboard_order' value='{dashboard_order}'></div><div class='muted' style='display:flex;align-items:end'>可用值示例：kpi,trend,filters,actions,records,logs</div><div style='display:flex;align-items:end'><button type='submit'>保存首页顺序</button></div></div></form></div><div class="section card"><h2>备份 / 恢复</h2><div class='muted'>建议每周至少备份一次（方案B：db+关键文件）。恢复前系统会自动再备份一次当前数据。</div><p><a class="btn" href="/backup.zip">下载备份包（zip）</a> <a class="btn" href="/restore">上传恢复</a> <a class="btn" href="/backups">备份管理</a></p></div>
-<div class="section card"><h2>快捷入口</h2><p><a class="btn" href="/deal-review">成交复盘页</a><a class="btn" href="/leaderboards">排行榜页</a><a class="btn" href="/reports">报表中心</a><a class="btn" href="{monthly_href}">导出月报 CSV</a><a class="btn" href="{export_json_href}">导出 JSON</a><a class="btn" href="{export_csv_href}">导出 CSV</a><a class="btn" href="/logout">退出登录</a></p></div><div class="section card"><h2>常用筛选视图</h2><div class='pagination'>{saved_filter_links}</div><div class='muted' style='margin-top:8px'>点击“重命名”会先自动生成一个占位新名字，你后面如果要我再做成弹窗改名也可以继续升级。</div><form method='post' action='/save-filter' style='margin-top:12px'><div class='formgrid3'><div><label>视图名称</label><input name='filter_name' placeholder='例如：抖音已成交 / A级内容'></div><div><label>当前筛选串</label><input name='query_string' value='{filter_query}' placeholder='会自动带上当前筛选参数'></div><div style='display:flex;align-items:end'><button type='submit'>保存当前筛选</button></div></div></form></div>
+<div class="grid2 section">{strategy_summary_html}</div><div class="grid2 section">{strategy_panel_html}</div><div class="grid2 section"><div class="card"><h2>策略横向对比</h2><div class='tablewrap'><table><thead><tr><th>策略</th><th>样本数</th><th>平均收益%</th><th>已成交</th></tr></thead><tbody>{strategy_compare_html}</tbody></table></div></div><div class="card"><h2>首板预判命中分析</h2><div class='tablewrap'><table><thead><tr><th>预期等级</th><th>样本数</th><th>命中数</th><th>命中率</th></tr></thead><tbody>{hit_compare_html}</tbody></table></div></div></div><div class="section card"><h2>今日二板预期池</h2><div class='tablewrap'><table><thead><tr><th>日期</th><th>股票</th><th>代码</th><th>预期</th><th>评分</th><th>理由</th></tr></thead><tbody>{second_board_html}</tbody></table></div></div><div class="section card"><h2>重点观察池</h2><div class='tablewrap'><table><thead><tr><th>日期</th><th>股票</th><th>代码</th><th>评分</th><th>理由</th></tr></thead><tbody>{watch_pool_html}</tbody></table></div></div><div class="section card"><h2>次日验证池</h2><div class='tablewrap'><table><thead><tr><th>日期</th><th>股票</th><th>代码</th><th>预期</th><th>评分</th><th>验证结果</th></tr></thead><tbody>{validate_html}</tbody></table></div></div><div class="section card"><h2>首板验证战报</h2><div class='muted'>验证样本总数：{int(validate_rate.get('total') or 0)}，晋级成功：{int(validate_rate.get('success') or 0)}</div><div style='margin-top:12px'>{war_report_html}</div></div><div class="section card"><h2>快捷入口</h2><p><a class="btn" href="/deal-review">成交复盘页</a><a class="btn" href="/leaderboards">排行榜页</a><a class="btn" href="/reports">报表中心</a><a class="btn" href="{monthly_href}">导出月报 CSV</a><a class="btn" href="{export_json_href}">导出 JSON</a><a class="btn" href="{export_csv_href}">导出 CSV</a><a class="btn" href="/logout">退出登录</a></p></div><div class="section card"><h2>常用筛选视图</h2><div class='pagination'>{saved_filter_links}</div><div class='muted' style='margin-top:8px'>点击“重命名”会先自动生成一个占位新名字，你后面如果要我再做成弹窗改名也可以继续升级。</div><form method='post' action='/save-filter' style='margin-top:12px'><div class='formgrid3'><div><label>视图名称</label><input name='filter_name' placeholder='例如：抖音已成交 / A级内容'></div><div><label>当前筛选串</label><input name='query_string' value='{filter_query}' placeholder='会自动带上当前筛选参数'></div><div style='display:flex;align-items:end'><button type='submit'>保存当前筛选</button></div></div></form></div>
 <div class="grid3 section"><div class="card"><h2>结果评级分布</h2>{bar_html(by_grade, color='#0f766e')}</div><div class="card"><h2>成交状态分布</h2>{bar_html(by_deal, color='#ca8a04')}</div><div class="card"><h2>标签分布</h2>{bar_html(by_tag, color='#dc2626')}</div></div>
 <div class="grid3 section"><div class="card"><h2>近30天录入趋势</h2>{line_table_html(trend_30d, color='#7c3aed')}</div><div class="card"><h2>近30天值得复讲趋势</h2>{line_table_html(worthy_trend, color='#0891b2')}</div><div class="card"><h2>近30天成交趋势</h2>{line_table_html(deal_trend, color='#16a34a')}</div></div>
 <div class="section card"><h2>筛选 / 搜索</h2><form method="get" action="/"><div class="formgrid3"><div><label>关键词</label><input name="keyword" value="{esc((params.get('keyword',[''])[0] or '').strip())}" placeholder="股票代码/股票名称/内容标题/内容编号"></div><div><label>渠道</label><select name="channel"><option value="">全部</option>{channel_opts}</select></div><div><label>标签</label><select name="tag"><option value="">全部</option>{tag_opts}</select></div><div><label>复盘状态</label><select name="status"><option value="">全部</option>{status_opts}</select></div><div><label>结果评级</label><select name="grade"><option value="">全部</option>{grade_opts}</select></div><div><label>成交状态</label><select name="deal_status"><option value="">全部</option>{deal_opts}</select></div><div><label>开始日期</label><input type="date" name="date_from" value="{esc((params.get('date_from',[''])[0] or '').strip())}"></div><div><label>结束日期</label><input type="date" name="date_to" value="{esc((params.get('date_to',[''])[0] or '').strip())}"></div><div><label>记录范围</label><select name="archive"><option value="active" {'selected' if (params.get('archive',['active'])[0] or 'active')=='active' else ''}>仅使用中</option><option value="archived" {'selected' if (params.get('archive',['active'])[0] or 'active')=='archived' else ''}>仅已归档</option><option value="all" {'selected' if (params.get('archive',['active'])[0] or 'active')=='all' else ''}>全部记录</option></select></div></div><div style="margin-top:12px"><button type="submit">筛选结果</button> <a class="btn" href="/">清空筛选</a></div><div class="muted" style="margin-top:8px">当前筛选结果：{filter_count} 条</div></form></div>

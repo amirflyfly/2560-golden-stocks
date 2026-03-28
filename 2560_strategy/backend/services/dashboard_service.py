@@ -64,3 +64,39 @@ def dashboard_deal_trend_30d():
 
 def recent_operation_logs(limit=15):
     return recent_logs(limit=limit)
+
+
+def dashboard_strategy_summary():
+    return q("SELECT COALESCE(NULLIF(strategy_name,''),'2560') AS name, COUNT(*) AS cnt FROM picks WHERE COALESCE(archived,0)=0 GROUP BY name ORDER BY cnt DESC")
+
+
+def dashboard_strategy_panels():
+    return q("SELECT COALESCE(NULLIF(strategy_name,''),'2560') AS strategy_name, COUNT(*) AS total, SUM(CASE WHEN COALESCE(review_status,'未复盘')='值得复讲' THEN 1 ELSE 0 END) AS worthy_total, SUM(CASE WHEN COALESCE(deal_status,'未成交')='已成交' THEN 1 ELSE 0 END) AS deal_total, ROUND(AVG(COALESCE(return_pct,0)),2) AS avg_return FROM picks WHERE COALESCE(archived,0)=0 GROUP BY strategy_name ORDER BY total DESC")
+
+
+def dashboard_strategy_compare():
+    return q("SELECT COALESCE(NULLIF(strategy_name,''),'2560') AS name, COUNT(*) AS total, ROUND(AVG(COALESCE(return_pct,0)),2) AS avg_return, SUM(CASE WHEN COALESCE(deal_status,'未成交')='已成交' THEN 1 ELSE 0 END) AS deal_total FROM picks WHERE COALESCE(archived,0)=0 GROUP BY name ORDER BY total DESC")
+
+
+def dashboard_second_board_pool():
+    return q("SELECT id, pick_date, code, name, COALESCE(second_board_expectation,'') AS second_board_expectation, COALESCE(second_board_score,0) AS second_board_score, COALESCE(prediction_reason,'') AS prediction_reason FROM picks WHERE COALESCE(archived,0)=0 AND COALESCE(strategy_name,'')='首板涨停' AND COALESCE(second_board_expectation,'')='高' ORDER BY COALESCE(second_board_score,0) DESC, pick_date DESC LIMIT 8")
+
+
+def dashboard_watch_pool():
+    return q("SELECT id, pick_date, code, name, COALESCE(second_board_score,0) AS second_board_score, COALESCE(prediction_reason,'') AS prediction_reason FROM picks WHERE COALESCE(archived,0)=0 AND COALESCE(watch_flag,0)=1 ORDER BY pick_date DESC, COALESCE(second_board_score,0) DESC LIMIT 10")
+
+
+def dashboard_validate_rows():
+    return q("SELECT pick_date, code, name, COALESCE(second_board_expectation,'') AS second_board_expectation, COALESCE(second_board_score,0) AS second_board_score, COALESCE(validation_result,'待验证') AS validation_result FROM picks WHERE COALESCE(strategy_name,'')='首板涨停' AND COALESCE(watch_flag,0)=1 ORDER BY pick_date DESC, id DESC LIMIT 10")
+
+
+def dashboard_validate_stats():
+    return q("SELECT COALESCE(validation_result,'待验证') AS name, COUNT(*) AS cnt FROM picks WHERE COALESCE(strategy_name,'')='首板涨停' GROUP BY validation_result ORDER BY cnt DESC")
+
+
+def dashboard_validate_rate():
+    return q1("SELECT COUNT(*) AS total, SUM(CASE WHEN COALESCE(validation_result,'')='晋级成功' THEN 1 ELSE 0 END) AS success FROM picks WHERE COALESCE(strategy_name,'')='首板涨停'") or {}
+
+
+def dashboard_hit_compare():
+    return q("SELECT COALESCE(second_board_expectation,'待定') AS name, COUNT(*) AS total, SUM(CASE WHEN COALESCE(validation_result,'')='晋级成功' THEN 1 ELSE 0 END) AS hit_total FROM picks WHERE COALESCE(strategy_name,'')='首板涨停' GROUP BY second_board_expectation ORDER BY total DESC")
