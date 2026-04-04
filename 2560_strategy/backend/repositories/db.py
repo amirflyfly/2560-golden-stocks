@@ -152,10 +152,25 @@ def ensure_schema():
                 password_hash TEXT NOT NULL,
                 role TEXT NOT NULL DEFAULT 'admin',
                 is_active INTEGER NOT NULL DEFAULT 1,
+                points INTEGER DEFAULT 0,
+                last_checkin TEXT DEFAULT NULL,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )"""
         )
         cur.execute('CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)')
+        
+        # Add points and last_checkin columns to users table if missing
+        user_cols = [r['name'] for r in cur.execute("PRAGMA table_info(users)").fetchall()]
+        user_alters = []
+        if 'points' not in user_cols:
+            user_alters.append("ALTER TABLE users ADD COLUMN points INTEGER DEFAULT 0")
+        if 'last_checkin' not in user_cols:
+            user_alters.append("ALTER TABLE users ADD COLUMN last_checkin TEXT DEFAULT NULL")
+        for sql in user_alters:
+            try:
+                cur.execute(sql)
+            except sqlite3.OperationalError:
+                pass
 
         cur.execute(
             """CREATE TABLE IF NOT EXISTS sessions (
@@ -170,6 +185,75 @@ def ensure_schema():
         )
         cur.execute('CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id)')
         cur.execute('CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at)')
+
+        # Strategies table for multi-strategy support
+        cur.execute(
+            """CREATE TABLE IF NOT EXISTS strategies (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                code TEXT NOT NULL UNIQUE,
+                name TEXT NOT NULL,
+                category TEXT DEFAULT '',
+                description TEXT DEFAULT '',
+                is_active INTEGER DEFAULT 1,
+                sort_order INTEGER DEFAULT 0,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )"""
+        )
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_strategies_active ON strategies(is_active)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_strategies_sort ON strategies(sort_order)')
+
+        # Strategy pools table
+        cur.execute(
+            """CREATE TABLE IF NOT EXISTS strategy_pools (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                strategy_code TEXT NOT NULL,
+                code TEXT NOT NULL,
+                name TEXT NOT NULL,
+                add_date TEXT NOT NULL,
+                add_price REAL,
+                reason TEXT DEFAULT '',
+                status TEXT DEFAULT 'active',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(strategy_code, code)
+            )"""
+        )
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_strategy_pools_strategy ON strategy_pools(strategy_code)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_strategy_pools_status ON strategy_pools(status)')
+
+        # Backtest results table
+        cur.execute(
+            """CREATE TABLE IF NOT EXISTS backtest_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                strategy_code TEXT NOT NULL,
+                start_date TEXT NOT NULL,
+                end_date TEXT NOT NULL,
+                total_trades INTEGER,
+                win_rate REAL,
+                avg_return REAL,
+                max_return REAL,
+                max_drawdown REAL,
+                sharpe_ratio REAL,
+                total_return REAL,
+                backtest_date TEXT DEFAULT CURRENT_TIMESTAMP
+            )"""
+        )
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_backtest_results_strategy ON backtest_results(strategy_code)')
+
+        # Insert default strategies if empty
+        cur.execute("SELECT COUNT(*) as cnt FROM strategies")
+        if cur.fetchone()['cnt'] == 0:
+            default_strategies = [
+                ('2560', '2560战法', '趋势策略', '25日均线+60日均量选股策略'),
+                ('first_board', '首板涨停', '打板策略', '首板涨停接力策略'),
+                ('trend_low', '趋势低吸', '趋势策略', '趋势股低吸策略'),
+                ('breakout', '突破策略', '技术策略', '平台突破选股策略'),
+                ('volume', '放量启动', '量能策略', '放量启动选股策略'),
+            ]
+            cur.executemany(
+                "INSERT INTO strategies (code, name, category, description, sort_order) VALUES (?, ?, ?, ?, ?)",
+                [(s[0], s[1], s[2], s[3], i) for i, s in enumerate(default_strategies)]
+            )
 
         conn.commit()
     finally:

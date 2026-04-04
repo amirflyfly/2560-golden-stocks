@@ -16,6 +16,7 @@ def filter_where(params):
     archive = (params.get('archive', ['active'])[0] or 'active').strip()
     grade = (params.get('grade', [''])[0] or '').strip()
     deal_status = (params.get('deal_status', [''])[0] or '').strip()
+    strategy = (params.get('strategy', [''])[0] or '').strip()
 
     if keyword:
         wheres.append('(code LIKE ? OR name LIKE ? OR content_title LIKE ? OR content_ref LIKE ?)')
@@ -36,6 +37,9 @@ def filter_where(params):
     if deal_status:
         wheres.append("COALESCE(NULLIF(deal_status,''),'未成交') = ?")
         args.append(deal_status)
+    if strategy:
+        wheres.append("COALESCE(NULLIF(strategy_name,''),'2560') = ?")
+        args.append(strategy)
     if date_from:
         wheres.append('pick_date >= ?')
         args.append(date_from)

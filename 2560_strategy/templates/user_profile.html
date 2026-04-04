@@ -1,0 +1,58 @@
+{% extends 'base.html' %}
+
+{% block title %}个人信息 - 飞哥复盘{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1 class="page-title">个人信息</h1>
+    <div class="page-actions">
+        <a href="{{ url_for('main.dashboard') }}" class="btn btn-secondary">
+            <span class="btn-icon">←</span>
+            返回首页
+        </a>
+        <a href="{{ url_for('main.checkin') }}" class="btn btn-primary checkin-btn">
+            <span class="btn-icon">📅</span>
+            每日签到
+        </a>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h3 class="card-title">账户信息</h3>
+    </div>
+    <div class="card-body">
+        <div class="form-grid">
+            <div class="form-group">
+                <label class="form-label">用户名</label>
+                <input type="text" class="form-input" value="{{ user.username }}" disabled>
+            </div>
+            <div class="form-group">
+                <label class="form-label">用户角色</label>
+                <input type="text" class="form-input" value="{{ user.role }}" disabled>
+            </div>
+            <div class="form-group">
+                <label class="form-label">积分</label>
+                <input type="text" class="form-input" value="{{ user.points }}" disabled>
+            </div>
+            <div class="form-group">
+                <label class="form-label">最后签到</label>
+                <input type="text" class="form-input" value="{{ user_detail.last_checkin or '从未签到' }}" disabled>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="card mt-4">
+    <div class="card-header">
+        <h3 class="card-title">积分记录</h3>
+    </div>
+    <div class="card-body">
+        <div class="empty-state">
+            <div class="empty-state-icon">📊</div>
+            <div class="empty-state-text">积分记录功能开发中</div>
+            <div class="empty-state-subtext">敬请期待</div>
+        </div>
+    </div>
+</div>
+{% endblock %}

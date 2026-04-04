@@ -100,3 +100,30 @@ def dashboard_validate_rate():
 
 def dashboard_hit_compare():
     return q("SELECT COALESCE(second_board_expectation,'待定') AS name, COUNT(*) AS total, SUM(CASE WHEN COALESCE(validation_result,'')='晋级成功' THEN 1 ELSE 0 END) AS hit_total FROM picks WHERE COALESCE(strategy_name,'')='首板涨停' GROUP BY second_board_expectation ORDER BY total DESC")
+
+
+def dashboard_strategy_names():
+    return q("SELECT COALESCE(NULLIF(strategy_name,''),'2560') AS name, COUNT(*) AS cnt FROM picks WHERE COALESCE(archived,0)=0 GROUP BY name ORDER BY cnt DESC, name ASC")
+
+
+def dashboard_daily_strategy_matrix(target_date):
+    return q(
+        "SELECT COALESCE(NULLIF(strategy_name,''),'2560') AS strategy_name, COUNT(*) AS total, "
+        "SUM(CASE WHEN COALESCE(NULLIF(review_status,''),'未复盘')='值得复讲' THEN 1 ELSE 0 END) AS worthy_total, "
+        "SUM(CASE WHEN COALESCE(NULLIF(deal_status,''),'未成交')='已成交' THEN 1 ELSE 0 END) AS deal_total "
+        "FROM picks WHERE COALESCE(archived,0)=0 AND pick_date=? "
+        "GROUP BY strategy_name ORDER BY total DESC, strategy_name ASC",
+        (target_date,),
+    )
+
+
+def dashboard_daily_strategy_picks(target_date, strategy_name=''):
+    if strategy_name:
+        return q(
+            "SELECT * FROM picks WHERE COALESCE(archived,0)=0 AND pick_date=? AND COALESCE(NULLIF(strategy_name,''),'2560')=? ORDER BY id DESC",
+            (target_date, strategy_name),
+        )
+    return q(
+        "SELECT * FROM picks WHERE COALESCE(archived,0)=0 AND pick_date=? ORDER BY COALESCE(NULLIF(strategy_name,''),'2560') ASC, id DESC",
+        (target_date,),
+    )

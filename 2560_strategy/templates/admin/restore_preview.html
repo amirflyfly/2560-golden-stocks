@@ -1,0 +1,68 @@
+{% extends 'base.html' %}
+
+{% block title %}确认恢复 - 2560战法复盘系统{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1 class="page-title">确认恢复</h1>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h3 class="card-title">备份信息</h3>
+    </div>
+    <div class="card-body">
+        <div class="info-list">
+            <div class="info-item">
+                <span class="info-label">创建时间</span>
+                <span class="info-value">{{ meta.created_at | default('-') }}</span>
+            </div>
+            <div class="info-item">
+                <span class="info-label">操作者</span>
+                <span class="info-value">{{ meta.actor.username | default('-') }}</span>
+            </div>
+            <div class="info-item">
+                <span class="info-label">版本</span>
+                <span class="info-value">{{ meta.version | default('-') }}</span>
+            </div>
+        </div>
+        
+        <div class="alert alert-warning" style="background: var(--danger-light); padding: 12px; border-radius: 8px; margin: 20px 0;">
+            <strong>⚠️ 警告：</strong>此操作将覆盖当前所有数据，且不可撤销！
+        </div>
+        
+        <form method="POST" action="{{ url_for('admin.restore_confirm') }}">
+            <input type="hidden" name="tmp_key" value="{{ tmp_key }}">
+            <div style="display: flex; gap: 12px;">
+                <button type="submit" class="btn btn-danger">确认恢复</button>
+                <a href="{{ url_for('admin.restore_page') }}" class="btn btn-secondary">取消</a>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_css %}
+<style>
+.info-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.info-item {
+    display: flex;
+    justify-content: space-between;
+    padding: 8px 0;
+    border-bottom: 1px dashed var(--border-color);
+}
+
+.info-label {
+    color: var(--text-secondary);
+}
+
+.info-value {
+    font-weight: 500;
+}
+</style>
+{% endblock %}

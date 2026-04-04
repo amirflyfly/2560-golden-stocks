@@ -1,0 +1,400 @@
+{% extends 'base.html' %}
+
+{% block title %}{{ strategy.name }} - 手动运行 - 2560战法复盘系统{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1 class="page-title">{{ strategy.name }} - 手动运行</h1>
+    <div class="page-actions">
+        <a href="{{ url_for('strategies.index') }}" class="btn btn-secondary">
+            <span class="btn-icon">←</span>
+            返回策略列表
+        </a>
+        <a href="{{ url_for('strategy_management.strategy_pool', strategy_code=strategy.code) }}" class="btn btn-primary">
+            <span class="btn-icon">📋</span>
+            股票池子
+        </a>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h3 class="card-title">运行参数</h3>
+    </div>
+    <div class="card-body">
+        <!-- 运行参数 -->
+        <div class="mb-6">
+            <form id="runForm" class="space-y-4">
+                <div class="form-group">
+                    <label class="form-label">选择日期</label>
+                    <div class="relative">
+                        <input type="date" id="targetDate" name="target_date" class="form-input pr-10" 
+                               value="{{ today }}" required>
+                        <div class="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400">
+                            📅
+                        </div>
+                    </div>
+                    <div class="mt-2 flex space-x-2">
+                        <button type="button" class="btn btn-sm btn-outline" onclick="setDate('today')">今天</button>
+                        <button type="button" class="btn btn-sm btn-outline" onclick="setDate('yesterday')">昨天</button>
+                        <button type="button" class="btn btn-sm btn-outline" onclick="setDate('last_week')">上周</button>
+                    </div>
+                </div>
+                <div class="flex space-x-2">
+                    <button type="button" id="runBtn" class="btn btn-primary">
+                        <span id="runBtnText">运行策略</span>
+                        <span id="runBtnLoading" class="hidden">
+                            <span class="loading-spinner mr-2"></span>运行中...
+                        </span>
+                    </button>
+                    <button type="button" id="addAllBtn" class="btn btn-success" disabled>
+                        <span id="addAllBtnText">全部加入股票池子</span>
+                        <span id="addAllBtnLoading" class="hidden">
+                            <span class="loading-spinner mr-2"></span>加入中...
+                        </span>
+                    </button>
+                </div>
+            </form>
+        </div>
+
+        <!-- 运行结果 -->
+        <div class="mb-6">
+            <h3 class="text-lg font-medium mb-3">运行结果</h3>
+            <div id="resultContainer" class="hidden">
+                <div class="mb-4">
+                    <div class="text-sm text-gray-600">运行时间</div>
+                    <div id="runTime" class="font-medium"></div>
+                </div>
+                <div class="mb-4">
+                    <div class="text-sm text-gray-600">选出股票数量</div>
+                    <div id="stockCount" class="font-medium"></div>
+                </div>
+                <div class="overflow-x-auto">
+                    <table class="table" id="resultTable">
+                        <thead>
+                            <tr>
+                                <th>股票代码</th>
+                                <th>股票名称</th>
+                                <th>选择日期</th>
+                                <th>选择价格</th>
+                                <th>信号类型</th>
+                                <th>25日均线</th>
+                                <th>量比</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <div id="emptyResult" class="empty-state">
+                <div class="empty-state-icon">🚀</div>
+                <div class="empty-state-text">请选择日期并运行策略</div>
+                <div class="empty-state-subtext">系统将按照策略规则筛选股票</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+const runForm = document.getElementById('runForm');
+const runBtn = document.getElementById('runBtn');
+const runBtnText = document.getElementById('runBtnText');
+const runBtnLoading = document.getElementById('runBtnLoading');
+const addAllBtn = document.getElementById('addAllBtn');
+const addAllBtnText = document.getElementById('addAllBtnText');
+const addAllBtnLoading = document.getElementById('addAllBtnLoading');
+const resultContainer = document.getElementById('resultContainer');
+const emptyResult = document.getElementById('emptyResult');
+const resultTable = document.getElementById('resultTable').querySelector('tbody');
+const runTime = document.getElementById('runTime');
+const stockCount = document.getElementById('stockCount');
+const targetDateInput = document.getElementById('targetDate');
+
+let scanResults = [];
+
+// 日期选择快捷按钮
+function setDate(type) {
+    const today = new Date();
+    let targetDate;
+    
+    switch(type) {
+        case 'today':
+            targetDate = today;
+            break;
+        case 'yesterday':
+            targetDate = new Date(today);
+            targetDate.setDate(today.getDate() - 1);
+            break;
+        case 'last_week':
+            targetDate = new Date(today);
+            targetDate.setDate(today.getDate() - 7);
+            break;
+    }
+    
+    const dateStr = targetDate.toISOString().split('T')[0];
+    targetDateInput.value = dateStr;
+    showToast(`已选择日期: ${dateStr}`);
+}
+
+// 运行策略
+runBtn.addEventListener('click', function() {
+    const targetDate = targetDateInput.value;
+    if (!targetDate) {
+        showToast('请选择日期');
+        return;
+    }
+
+    // 显示加载状态
+    runBtn.disabled = true;
+    runBtnText.classList.add('hidden');
+    runBtnLoading.classList.remove('hidden');
+
+    // 显示运行中的提示
+    const loadingToast = showToast('策略正在运行中，请稍候...', 'info', 10000);
+
+    console.log('开始运行策略，日期：', targetDate);
+    
+    fetch('/strategies/run/{{ strategy.code }}', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: 'target_date=' + encodeURIComponent(targetDate)
+    })
+    .then(response => {
+        console.log('响应状态：', response.status);
+        return response.json();
+    })
+    .then(data => {
+        console.log('响应数据：', data);
+        
+        // 隐藏加载状态
+        runBtn.disabled = false;
+        runBtnText.classList.remove('hidden');
+        runBtnLoading.classList.add('hidden');
+        
+        // 关闭加载提示
+        if (loadingToast) {
+            setTimeout(() => {
+                loadingToast.remove();
+            }, 500);
+        }
+
+        if (data.success) {
+            scanResults = data.data.picks || [];
+            displayResults(scanResults);
+            addAllBtn.disabled = scanResults.length === 0;
+            
+            if (scanResults.length === 0) {
+                showToast('策略运行成功，但未选出股票', 'info');
+            } else {
+                showToast(`策略运行成功，选出 ${scanResults.length} 只股票`, 'success');
+            }
+        } else {
+            showToast(data.message || '运行失败', 'error');
+        }
+    })
+    .catch(error => {
+        console.error('请求错误：', error);
+        
+        // 隐藏加载状态
+        runBtn.disabled = false;
+        runBtnText.classList.remove('hidden');
+        runBtnLoading.classList.add('hidden');
+        
+        showToast('网络请求失败，请检查网络连接', 'error');
+    });
+});
+
+// 全部加入股票池子
+addAllBtn.addEventListener('click', function() {
+    if (scanResults.length === 0) {
+        showToast('没有可加入的股票');
+        return;
+    }
+
+    if (confirm('确定要将所有选出的股票加入股票池子吗？')) {
+        // 显示加载状态
+        addAllBtn.disabled = true;
+        addAllBtnText.classList.add('hidden');
+        addAllBtnLoading.classList.remove('hidden');
+
+        const loadingToast = showToast('正在加入股票到池子，请稍候...', 'info', 10000);
+
+        fetch('/api/strategy/scan/add-to-pool', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                strategy_code: '{{ strategy.code }}',
+                scan_results: scanResults
+            })
+        })
+        .then(response => response.json())
+        .then(data => {
+            // 隐藏加载状态
+            addAllBtn.disabled = false;
+            addAllBtnText.classList.remove('hidden');
+            addAllBtnLoading.classList.add('hidden');
+            
+            if (loadingToast) {
+                setTimeout(() => {
+                    loadingToast.remove();
+                }, 500);
+            }
+
+            if (data.success) {
+                showToast(`成功加入 ${data.added_count} 只股票到池子`, 'success');
+                setTimeout(() => {
+                    window.location.href = '{{ url_for('strategy_management.strategy_pool', strategy_code=strategy.code) }}';
+                }, 1500);
+            } else {
+                showToast('加入失败', 'error');
+            }
+        })
+        .catch(() => {
+            // 隐藏加载状态
+            addAllBtn.disabled = false;
+            addAllBtnText.classList.remove('hidden');
+            addAllBtnLoading.classList.add('hidden');
+            
+            showToast('加入失败', 'error');
+        });
+    }
+});
+
+// 显示结果
+function displayResults(results) {
+    resultTable.innerHTML = '';
+    
+    if (!results || results.length === 0) {
+        resultContainer.classList.add('hidden');
+        emptyResult.classList.remove('hidden');
+        stockCount.textContent = '0';
+        return;
+    }
+
+    resultContainer.classList.remove('hidden');
+    emptyResult.classList.add('hidden');
+    
+    runTime.textContent = new Date().toLocaleString();
+    stockCount.textContent = results.length;
+
+    results.forEach(stock => {
+        const row = document.createElement('tr');
+        row.innerHTML = `
+            <td>${stock.code || '-'}</td>
+            <td>${stock.name || '-'}</td>
+            <td>${stock.pick_date || new Date().toISOString().split('T')[0]}</td>
+            <td>${stock.pick_price ? stock.pick_price.toFixed(2) : '-'}</td>
+            <td>${stock.signal || '-'}</td>
+            <td>${stock.ma25 ? stock.ma25.toFixed(2) : '-'}</td>
+            <td>${stock.vol_ratio ? stock.vol_ratio.toFixed(2) : '-'}</td>
+            <td>
+                <button class="btn btn-sm btn-primary" onclick="addStock('${stock.code || ''}', '${stock.name || ''}', ${stock.pick_price || 0})">
+                    加入池子
+                </button>
+            </td>
+        `;
+        resultTable.appendChild(row);
+    });
+}
+
+// 单个添加股票
+function addStock(code, name, price) {
+    const button = event.target;
+    const originalText = button.innerHTML;
+    
+    button.disabled = true;
+    button.innerHTML = '<span class="loading-spinner"></span> 添加中...';
+
+    fetch('/api/strategy/pool/add', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+            strategy_code: '{{ strategy.code }}',
+            code: code,
+            name: name,
+            add_price: price
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        button.disabled = false;
+        button.innerHTML = originalText;
+        
+        if (data.success) {
+            showToast('添加成功', 'success');
+        } else {
+            showToast(data.message || '添加失败', 'error');
+        }
+    })
+    .catch(() => {
+        button.disabled = false;
+        button.innerHTML = originalText;
+        showToast('添加失败', 'error');
+    });
+}
+
+// 增强版Toast函数
+function showToast(message, type = 'info', duration = 3000) {
+    const toast = document.createElement('div');
+    toast.className = `toast toast-${type}`;
+    toast.style.position = 'fixed';
+    toast.style.top = '20px';
+    toast.style.right = '20px';
+    toast.style.padding = '12px 20px';
+    toast.style.borderRadius = '8px';
+    toast.style.zIndex = '10000';
+    toast.style.boxShadow = '0 4px 12px rgba(0,0,0,0.15)';
+    toast.style.transition = 'all 0.3s ease';
+    toast.style.opacity = '0';
+    toast.style.transform = 'translateY(-20px)';
+    
+    switch(type) {
+        case 'success':
+            toast.style.backgroundColor = '#52c41a';
+            toast.style.color = 'white';
+            break;
+        case 'error':
+            toast.style.backgroundColor = '#ff4d4f';
+            toast.style.color = 'white';
+            break;
+        case 'warning':
+            toast.style.backgroundColor = '#faad14';
+            toast.style.color = 'white';
+            break;
+        default:
+            toast.style.backgroundColor = '#1890ff';
+            toast.style.color = 'white';
+    }
+    
+    toast.textContent = message;
+    document.body.appendChild(toast);
+    
+    // 显示动画
+    setTimeout(() => {
+        toast.style.opacity = '1';
+        toast.style.transform = 'translateY(0)';
+    }, 10);
+    
+    // 自动消失
+    setTimeout(() => {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateY(-20px)';
+        setTimeout(() => {
+            if (document.body.contains(toast)) {
+                document.body.removeChild(toast);
+            }
+        }, 300);
+    }, duration);
+    
+    return toast;
+}
+</script>
+{% endblock %}

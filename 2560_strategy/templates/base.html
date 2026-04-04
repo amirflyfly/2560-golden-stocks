@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="{{ current_language or 'zh-CN' }}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}飞哥复盘{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/main.css') }}">
+    {% block extra_css %}{% endblock %}
+</head>
+<body class="{{ 'dark-mode' if dark_mode else '' }}">
+    <div class="app-container">
+        {% if user %}
+        <aside class="sidebar {% if sidebar_collapsed %}collapsed{% endif %}">
+            <div class="sidebar-header">
+                <div class="logo">
+                    <span class="logo-icon">📈</span>
+                    <span class="logo-text">飞哥复盘</span>
+                </div>
+                <button class="sidebar-toggle" onclick="toggleSidebar()">
+                    <span class="toggle-icon">{% if sidebar_collapsed %}▶{% else %}◀{% endif %}</span>
+                </button>
+            </div>
+            <nav class="sidebar-nav">
+                <a href="{{ url_for('main.dashboard') }}" class="nav-item {% if request.endpoint == 'main.dashboard' %}active{% endif %}">
+                    <span class="nav-icon">🏠</span>
+                    <span class="nav-text">{{ _('首页概览') }}</span>
+                </a>
+                <a href="{{ url_for('main.deal_review') }}" class="nav-item {% if request.endpoint == 'main.deal_review' %}active{% endif %}">
+                    <span class="nav-icon">💰</span>
+                    <span class="nav-text">{{ _('成交复盘') }}</span>
+                </a>
+                <a href="{{ url_for('main.leaderboards') }}" class="nav-item {% if request.endpoint == 'main.leaderboards' %}active{% endif %}">
+                    <span class="nav-icon">🏆</span>
+                    <span class="nav-text">{{ _('排行榜') }}</span>
+                </a>
+                <a href="{{ url_for('main.reports') }}" class="nav-item {% if request.endpoint == 'main.reports' %}active{% endif %}">
+                    <span class="nav-icon">📊</span>
+                    <span class="nav-text">{{ _('报表中心') }}</span>
+                </a>
+                <div class="nav-divider"></div>
+                <div class="nav-section-title">{{ _('策略中心') }}</div>
+                <a href="{{ url_for('strategies.index') }}" class="nav-item {% if request.endpoint and request.endpoint.startswith('strategies.') %}active{% endif %}">
+                    <span class="nav-icon">🎯</span>
+                    <span class="nav-text">{{ _('策略管理') }}</span>
+                </a>
+                {% if user.role == 'admin' %}
+                <div class="nav-divider"></div>
+                <div class="nav-section-title">{{ _('系统管理') }}</div>
+                <a href="{{ url_for('admin.users') }}" class="nav-item {% if request.endpoint == 'admin.users' %}active{% endif %}">
+                    <span class="nav-icon">👥</span>
+                    <span class="nav-text">{{ _('用户管理') }}</span>
+                </a>
+                <a href="{{ url_for('admin.backups') }}" class="nav-item {% if request.endpoint == 'admin.backups' %}active{% endif %}">
+                    <span class="nav-icon">💾</span>
+                    <span class="nav-text">{{ _('备份管理') }}</span>
+                </a>
+                {% endif %}
+            </nav>
+            <div class="sidebar-footer">
+                <div class="user-info">
+                    <div class="user-avatar">{{ user.username[0] | upper }}</div>
+                    <div class="user-details">
+                        <div class="user-name">{{ user.username }}</div>
+                        <div class="user-role">{{ user.role }}</div>
+                        {% if user.points %}
+                        <div class="user-points">{{ _('积分') }}: {{ user.points }}</div>
+                        {% endif %}
+                    </div>
+                </div>
+                <div class="user-actions">
+                    <a href="{{ url_for('main.user_profile') }}" class="action-btn">
+                        <span class="action-icon">👤</span>
+                        <span class="action-text">{{ _('个人信息') }}</span>
+                    </a>
+                    <a href="{{ url_for('main.checkin') }}" class="action-btn">
+                        <span class="action-icon">📅</span>
+                        <span class="action-text">{{ _('签到') }}</span>
+                    </a>
+                    <a href="{{ url_for('main.logout') }}" class="action-btn logout-btn">
+                        <span class="action-icon">🚪</span>
+                        <span class="action-text">{{ _('退出登录') }}</span>
+                    </a>
+                </div>
+            </div>
+        </aside>
+        {% endif %}
+        
+        <main class="main-content">
+            {% if user %}
+            <div class="top-bar">
+                <div class="top-actions">
+                    <button class="theme-toggle" onclick="toggleTheme()">
+                        <span class="theme-icon">{% if dark_mode %}☀️{% else %}🌙{% endif %}</span>
+                        <span class="theme-text">{% if dark_mode %}{{ _('明亮模式') }}{% else %}{{ _('暗黑模式') }}{% endif %}</span>
+                    </button>
+                    <div class="language-selector">
+                        <select onchange="changeLanguage(this.value)">
+                            <option value="zh-CN" {% if current_language == 'zh-CN' %}selected{% endif %}>中文</option>
+                            <option value="en-US" {% if current_language == 'en-US' %}selected{% endif %}>English</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+            {% endif %}
+            
+            {% with messages = get_flashed_messages(with_categories=true) %}
+                {% if messages %}
+                <div class="flash-messages">
+                    {% for category, message in messages %}
+                    <div class="flash-message flash-{{ category }}">
+                        <span class="flash-icon">{% if category == 'success' %}✓{% elif category == 'error' %}✗{% else %}ℹ{% endif %}</span>
+                        <span class="flash-text">{{ message }}</span>
+                        <button class="flash-close" onclick="this.parentElement.remove()">×</button>
+                    </div>
+                    {% endfor %}
+                </div>
+                {% endif %}
+            {% endwith %}
+            
+            {% block content %}{% endblock %}
+        </main>
+    </div>
+    
+    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+    <script>
+        // Sidebar toggle
+        function toggleSidebar() {
+            const sidebar = document.querySelector('.sidebar');
+            const isCollapsed = sidebar.classList.toggle('collapsed');
+            localStorage.setItem('sidebar_collapsed', isCollapsed);
+            // Update toggle icon
+            const toggleIcon = document.querySelector('.toggle-icon');
+            if (isCollapsed) {
+                toggleIcon.textContent = '▶';
+            } else {
+                toggleIcon.textContent = '◀';
+            }
+        }
+        
+        // Theme toggle
+        function toggleTheme() {
+            const body = document.body;
+            const isDark = body.classList.toggle('dark-mode');
+            localStorage.setItem('dark_mode', isDark);
+            // Update theme toggle
+            const themeIcon = document.querySelector('.theme-icon');
+            const themeText = document.querySelector('.theme-text');
+            if (isDark) {
+                themeIcon.textContent = '☀️';
+                themeText.textContent = '{{ _('明亮模式') }}';
+            } else {
+                themeIcon.textContent = '🌙';
+                themeText.textContent = '{{ _('暗黑模式') }}';
+            }
+        }
+        
+        // Language change
+        function changeLanguage(lang) {
+            fetch('/api/set-language', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ language: lang })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    location.reload();
+                }
+            });
+        }
+        
+        // Initialize sidebar state
+        document.addEventListener('DOMContentLoaded', function() {
+            const sidebarCollapsed = localStorage.getItem('sidebar_collapsed') === 'true';
+            if (sidebarCollapsed) {
+                document.querySelector('.sidebar').classList.add('collapsed');
+                document.querySelector('.toggle-icon').textContent = '▶';
+            }
+            
+            // Initialize theme
+            const darkMode = localStorage.getItem('dark_mode') === 'true';
+            if (darkMode) {
+                document.body.classList.add('dark-mode');
+                const themeIcon = document.querySelector('.theme-icon');
+                const themeText = document.querySelector('.theme-text');
+                if (themeIcon) themeIcon.textContent = '☀️';
+                if (themeText) themeText.textContent = '{{ _('明亮模式') }}';
+            }
+        });
+    </script>
+    {% block extra_js %}{% endblock %}
+</body>
+</html>

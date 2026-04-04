@@ -1,0 +1,153 @@
+{% extends 'base.html' %}
+
+{% block title %}{{ strategy.name }} - 策略回测 - 2560战法复盘系统{% endblock %}
+
+{% block content %}
+<div class="card">
+    <div class="card-header">
+        <div class="flex items-center justify-between">
+            <h2 class="text-xl font-semibold">{{ strategy.name }} - 策略回测</h2>
+            <div class="flex space-x-2">
+                <a href="{{ url_for('strategies.index') }}" class="btn btn-outline">返回策略列表</a>
+                <a href="{{ url_for('strategy_management.strategy_pool', strategy_code=strategy.code) }}" class="btn btn-primary">股票池子</a>
+            </div>
+        </div>
+    </div>
+    <div class="card-body">
+        <!-- 回测参数 -->
+        <div class="mb-6">
+            <h3 class="text-lg font-medium mb-3">回测参数</h3>
+            <form id="backtestForm" class="space-y-4">
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div class="form-group">
+                        <label class="form-label">开始日期</label>
+                        <input type="date" id="startDate" name="start_date" class="form-input" 
+                               value="{{ backtest_start_date }}" required>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">结束日期</label>
+                        <input type="date" id="endDate" name="end_date" class="form-input" 
+                               value="{{ today }}" required>
+                    </div>
+                </div>
+                <button type="button" id="backtestBtn" class="btn btn-primary">
+                    运行回测
+                </button>
+            </form>
+        </div>
+
+        <!-- 回测结果 -->
+        <div class="mb-6">
+            <h3 class="text-lg font-medium mb-3">回测结果</h3>
+            {% if backtest_results %}
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {% for result in backtest_results %}
+                <div class="card">
+                    <div class="card-header">
+                        <h4 class="text-md font-medium">
+                            {{ result.start_date }} 至 {{ result.end_date }}
+                        </h4>
+                        <div class="text-xs text-gray-500">{{ result.backtest_date }}</div>
+                    </div>
+                    <div class="card-body">
+                        <div class="grid grid-cols-2 gap-2">
+                            <div>
+                                <div class="text-sm text-gray-600">总交易次数</div>
+                                <div class="font-medium">{{ result.total_trades }}</div>
+                            </div>
+                            <div>
+                                <div class="text-sm text-gray-600">胜率</div>
+                                <div class="font-medium">{{ (result.win_rate * 100)|round(1) }}%</div>
+                            </div>
+                            <div>
+                                <div class="text-sm text-gray-600">平均收益</div>
+                                <div class="font-medium">{{ (result.avg_return * 100)|round(2) }}%</div>
+                            </div>
+                            <div>
+                                <div class="text-sm text-gray-600">最大收益</div>
+                                <div class="font-medium">{{ (result.max_return * 100)|round(1) }}%</div>
+                            </div>
+                            <div>
+                                <div class="text-sm text-gray-600">最大回撤</div>
+                                <div class="font-medium">{{ (result.max_drawdown * 100)|round(1) }}%</div>
+                            </div>
+                            <div>
+                                <div class="text-sm text-gray-600">夏普比率</div>
+                                <div class="font-medium">{{ result.sharpe_ratio|round(2) }}</div>
+                            </div>
+                            <div class="col-span-2">
+                                <div class="text-sm text-gray-600">总收益</div>
+                                <div class="font-medium text-lg">
+                                    {% if result.total_return > 0 %}
+                                    <span class="text-green-600">+{{ (result.total_return * 100)|round(1) }}%</span>
+                                    {% else %}
+                                    <span class="text-red-600">{{ (result.total_return * 100)|round(1) }}%</span>
+                                    {% endif %}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+            {% else %}
+            <div class="empty-state">
+                <div class="empty-state-icon">📊</div>
+                <div class="empty-state-text">暂无回测结果</div>
+                <div class="empty-state-subtext">设置参数并运行回测</div>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+<script>
+const backtestForm = document.getElementById('backtestForm');
+const backtestBtn = document.getElementById('backtestBtn');
+
+backtestBtn.addEventListener('click', function() {
+    const startDate = document.getElementById('startDate').value;
+    const endDate = document.getElementById('endDate').value;
+    
+    if (!startDate || !endDate) {
+        showToast('请选择起止日期');
+        return;
+    }
+
+    if (new Date(startDate) > new Date(endDate)) {
+        showToast('开始日期不能晚于结束日期');
+        return;
+    }
+
+    backtestBtn.disabled = true;
+    backtestBtn.innerHTML = '<span class="loading-spinner"></span> 回测中...';
+
+    fetch('/strategies/backtest/{{ strategy.code }}', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: 'start_date=' + encodeURIComponent(startDate) + '&end_date=' + encodeURIComponent(endDate)
+    })
+    .then(response => response.json())
+    .then(data => {
+        backtestBtn.disabled = false;
+        backtestBtn.innerHTML = '运行回测';
+
+        if (data.success) {
+            showToast('回测完成');
+            setTimeout(() => {
+                location.reload();
+            }, 1000);
+        } else {
+            showToast(data.message || '回测失败');
+        }
+    })
+    .catch(() => {
+        backtestBtn.disabled = false;
+        backtestBtn.innerHTML = '运行回测';
+        showToast('回测失败');
+    });
+});
+</script>
+{% endblock %}

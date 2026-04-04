@@ -40,13 +40,14 @@ def create_or_replace_pick(
     inquiry_count,
     deal_status,
     secondary_spread,
+    strategy_name='2560',
 ):
     return execute(
         '''INSERT OR REPLACE INTO picks
         (pick_date, code, name, pick_price, signal, source, source_channel, reason_tag, note,
          review_status, review_comment, content_title, content_ref, archived,
-         result_grade, inquiry_count, deal_status, secondary_spread)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)''',
+         result_grade, inquiry_count, deal_status, secondary_spread, strategy_name)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)''',
         (
             pick_date,
             code,
@@ -65,6 +66,7 @@ def create_or_replace_pick(
             inquiry_count,
             deal_status,
             secondary_spread,
+            strategy_name,
         ),
     )
 
@@ -87,12 +89,13 @@ def update_pick(
     inquiry_count,
     deal_status,
     secondary_spread,
+    strategy_name='2560',
 ):
     return execute(
         '''UPDATE picks SET
             pick_date=?, code=?, name=?, pick_price=?, signal=?,
             source_channel=?, reason_tag=?, note=?, review_status=?, review_comment=?,
-            content_title=?, content_ref=?, result_grade=?, inquiry_count=?, deal_status=?, secondary_spread=?
+            content_title=?, content_ref=?, result_grade=?, inquiry_count=?, deal_status=?, secondary_spread=?, strategy_name=?
            WHERE id=?''',
         (
             pick_date,
@@ -111,6 +114,7 @@ def update_pick(
             inquiry_count,
             deal_status,
             secondary_spread,
+            strategy_name,
             rid,
         ),
     )
