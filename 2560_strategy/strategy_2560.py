@@ -1,18 +1,63 @@
-import akshare as ak
-import pandas as pd
-import numpy as np
+try:
+    import akshare as ak
+except ModuleNotFoundError:  # pragma: no cover - local test fallback
+    ak = None
+try:
+    import pandas as pd
+except ModuleNotFoundError:  # pragma: no cover - local test fallback
+    pd = None
+try:
+    import numpy as np
+except ModuleNotFoundError:  # pragma: no cover - local test fallback
+    np = None
 import datetime as dt
 import json
 import os
 import sys
 
+from scripts.maintenance.legacy_sqlite_guard import refuse_production
+
+refuse_production("strategy_2560.py")
+
+
+class SimpleTable(list):
+    @property
+    def empty(self):
+        return len(self) == 0
+
+    @property
+    def columns(self):
+        return list(self[0].keys()) if self else []
+
+    def head(self, count):
+        return SimpleTable(self[:count])
+
+    def iterrows(self):
+        for index, row in enumerate(self):
+            yield index, row
+
+
+def _fallback_stock_table():
+    rows = [
+        {'代码': '600000', '名称': '浦发银行'},
+        {'代码': '600519', '名称': '贵州茅台'},
+        {'代码': '000001', '名称': '平安银行'},
+        {'代码': '000002', '名称': '万科A'},
+        {'代码': '002594', '名称': '比亚迪'},
+    ]
+    if pd is not None:
+        return pd.DataFrame(rows)
+    return SimpleTable(rows)
+
 
 def is_trading_day_today() -> bool:
     """尽力判断是否为A股交易日（简单冗余判断，失败默认 True 以不阻塞人工触发）。"""
     try:
+        if ak is None:
+            raise RuntimeError("akshare unavailable")
         # 东方财富交易日历（若可用）
         cal = ak.tool_trade_date_hist_sina()
-        if isinstance(cal, pd.DataFrame) and not cal.empty:
+        if pd is not None and isinstance(cal, pd.DataFrame) and not cal.empty:
             today = dt.datetime.now().strftime('%Y-%m-%d')
             # 该接口一般返回 date 列
             date_col = 'date' if 'date' in cal.columns else (cal.columns[0] if len(cal.columns) > 0 else None)
@@ -32,6 +77,9 @@ def get_stock_list():
     3) ak.stock_info_sh_name_code + ak.stock_info_sz_name_code 合并
     4) 兜底少量样本
     """
+    if ak is None or pd is None:
+        return _fallback_stock_table()
+
     # 1. 交易所源
     try:
         df = ak.stock_info_a_code_name()
@@ -72,10 +120,10 @@ def get_stock_list():
 
     # 4. 兜底少量样本
     print("使用兜底样本代码集")
-    return pd.DataFrame({'代码':['600000','600519','000001','000002','002594'], '名称':['浦发银行','贵州茅台','平安银行','万科A','比亚迪']})
+    return _fallback_stock_table()
 
 
-def _rename_hist_cols(df: pd.DataFrame) -> pd.DataFrame:
+def _rename_hist_cols(df):
     if df is None or df.empty:
         return df
     mapping_cn = {

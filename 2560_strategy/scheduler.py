@@ -6,6 +6,10 @@ import os
 import urllib.request
 from pathlib import Path
 
+from scripts.maintenance.legacy_sqlite_guard import refuse_production
+
+refuse_production("scheduler.py")
+
 BASE_DIR = os.path.dirname(__file__)
 VENV_PY = os.path.join(BASE_DIR, '.venv', 'bin', 'python')
 PY = VENV_PY if os.path.exists(VENV_PY) else 'python'
@@ -46,8 +50,8 @@ def job():
     env.setdefault('SCAN_LIMIT', '500')
     run_step(['strategy_2560.py'], env=env)
     run_step(['report_2560.py'])
-    run_step(['init_tracker_db.py'])
-    run_step(['ingest_daily_picks.py'])
+    run_step(['scripts/maintenance/init_tracker_db.py'])
+    run_step(['scripts/maintenance/ingest_daily_picks.py'])
     run_step(['first_limit_replay.py'])
     run_step(['first_limit_validate.py'])
     run_step(['review_metrics.py'])

@@ -9,7 +9,6 @@ import io
 import json
 from urllib.parse import parse_qs, urlparse
 
-from backend.repositories.db import q
 from backend.repositories import picks_repo
 from backend.services.query_service import filter_where
 from backend.services.io_service import bulk_import_from_csv, rows_to_csv

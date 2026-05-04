@@ -11,9 +11,18 @@ Added features:
 
 from typing import List, Dict, Any, Optional, Tuple
 from backend.strategies import BaseStrategy, register_strategy
-import akshare as ak
-import pandas as pd
-import numpy as np
+try:
+    import akshare as ak
+except ModuleNotFoundError:  # pragma: no cover - local test fallback
+    ak = None
+try:
+    import pandas as pd
+except ModuleNotFoundError:  # pragma: no cover - local test fallback
+    pd = None
+try:
+    import numpy as np
+except ModuleNotFoundError:  # pragma: no cover - local test fallback
+    np = None
 from datetime import datetime, timedelta
 import json
 import os
@@ -143,7 +152,7 @@ class Strategy2560(BaseStrategy):
             }
         }
     
-    def _rename_hist_cols(self, df: pd.DataFrame) -> pd.DataFrame:
+    def _rename_hist_cols(self, df):
         """重命名历史数据列."""
         if df is None or df.empty:
             return df
@@ -171,7 +180,7 @@ class Strategy2560(BaseStrategy):
                 rename_map[c] = c
         return df.rename(columns=rename_map)
     
-    def _calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
+    def _calculate_indicators(self, df):
         """计算技术指标."""
         config = self.config['strategy']
         ma_period = config.get('ma_period', 25)
@@ -191,7 +200,7 @@ class Strategy2560(BaseStrategy):
         
         return df
     
-    def _calculate_risk_score(self, df: pd.DataFrame) -> float:
+    def _calculate_risk_score(self, df) -> float:
         """计算风险评分 (0-100, 分数越低风险越小)."""
         if len(df) < 30:
             return 50.0
@@ -435,7 +444,7 @@ class Strategy2560(BaseStrategy):
         
         return selected_stocks
     
-    def _get_stock_list(self) -> pd.DataFrame:
+    def _get_stock_list(self):
         """获取股票列表，带多源降级."""
         from backend.services.stock_data_service import get_stock_data_service
         stock_data = get_stock_data_service()
@@ -473,7 +482,7 @@ class Strategy2560(BaseStrategy):
         select_count = config.get('select_count', 5)
         return stocks[:select_count]
     
-    def _generate_mock_data(self, target_date: str) -> pd.DataFrame:
+    def _generate_mock_data(self, target_date: str):
         """生成模拟股票数据."""
         end_date = datetime.strptime(target_date, '%Y-%m-%d')
         start_date = end_date - timedelta(days=180)
@@ -549,6 +558,8 @@ class Strategy2560(BaseStrategy):
         
         # 获取交易日历
         try:
+            if ak is None:
+                raise RuntimeError("akshare unavailable")
             cal = ak.tool_trade_date_hist_sina()
             trade_dates = cal[cal['trade_date'] >= start_date]['trade_date'].tolist()
             trade_dates = [d for d in trade_dates if d <= end_date]

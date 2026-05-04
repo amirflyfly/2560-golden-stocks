@@ -1,7 +1,23 @@
-from flask import Blueprint, render_template, request, redirect, url_for, flash, jsonify
+import os
 from functools import wraps
 
+from flask import Blueprint, render_template, request, redirect, url_for, flash, jsonify
+
 bp = Blueprint('strategies', __name__, url_prefix='/strategies')
+
+
+@bp.after_request
+def add_legacy_strategy_headers(response):
+    response.headers['X-Legacy-Page'] = 'deprecated'
+    response.headers['Link'] = '</app?page=strategies>; rel="successor-version"'
+    return response
+
+
+@bp.before_request
+def freeze_production_legacy_strategy_page_writes_before_auth():
+    if _is_production() and request.method in {'POST', 'PUT', 'PATCH', 'DELETE'}:
+        return _legacy_strategy_page_frozen_response()
+    return None
 
 
 def admin_required(f):
@@ -33,19 +49,38 @@ def get_current_user():
     return None
 
 
+def _is_production() -> bool:
+    return (os.getenv('APP_ENV') or '').strip().lower() in {'prod', 'production'}
+
+
+def _legacy_strategy_page_frozen_response():
+    response = jsonify({
+        'success': False,
+        'message': 'legacy strategy write endpoint is frozen; use the React v1 workflow',
+        'successor': '/app?page=strategies',
+    })
+    response.status_code = 410
+    return response
+
+
+def freeze_legacy_strategy_page_write_in_production(f):
+    @wraps(f)
+    def wrapped(*args, **kwargs):
+        if _is_production():
+            return _legacy_strategy_page_frozen_response()
+        return f(*args, **kwargs)
+    return wrapped
+
+
 @bp.route('/')
 @admin_required
 def index():
-    from backend.services import strategy_service
-    strategies = strategy_service.get_all_strategies(active_only=False)
-    return render_template('strategies/index.html', 
-        strategies=strategies,
-        user=get_current_user()
-    )
+    return redirect('/app?page=strategies')
 
 
 @bp.route('/create', methods=['POST'])
 @admin_required
+@freeze_legacy_strategy_page_write_in_production
 def create():
     from backend.services import strategy_service
     
@@ -69,6 +104,7 @@ def create():
 
 @bp.route('/<int:sid>/update', methods=['POST'])
 @admin_required
+@freeze_legacy_strategy_page_write_in_production
 def update(sid):
     from backend.services import strategy_service
     
@@ -83,6 +119,7 @@ def update(sid):
 
 @bp.route('/<int:sid>/toggle', methods=['POST'])
 @admin_required
+@freeze_legacy_strategy_page_write_in_production
 def toggle(sid):
     from backend.services import strategy_service
     strategy_service.toggle_strategy(sid)
@@ -91,6 +128,7 @@ def toggle(sid):
 
 @bp.route('/<int:sid>/delete', methods=['POST'])
 @admin_required
+@freeze_legacy_strategy_page_write_in_production
 def delete(sid):
     from backend.services import strategy_service
     strategy_service.delete_strategy(sid)
@@ -109,9 +147,8 @@ def api_list():
 @bp.route('/stock-chart')
 def stock_chart():
     """股票K线图表页面"""
-    return render_template('strategies/stock_chart.html',
-        user=get_current_user()
-    )
+    suffix = '&' + request.query_string.decode('utf-8') if request.query_string else ''
+    return redirect(f"/app?page=kline{suffix}")
 
 
 @bp.route('/react-stock-chart')
@@ -119,4 +156,5 @@ def react_stock_chart():
     """React股票K线图表页面"""
     from flask import redirect, url_for, request
     # 重定向到新的股票K线图表页面
-    return redirect(f"/stock-chart{ '?' + request.query_string.decode('utf-8') if request.query_string else '' }")
+    suffix = '&' + request.query_string.decode('utf-8') if request.query_string else ''
+    return redirect(f"/app?page=kline{suffix}")

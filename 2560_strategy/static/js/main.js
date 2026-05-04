@@ -1,8 +1,76 @@
 document.addEventListener('DOMContentLoaded', function() {
+    patchFetchWithCsrf();
+    attachCsrfTokensToForms();
     initFlashMessages();
     initSidebar();
     initFormValidation();
 });
+
+function getCookieValue(name) {
+    const cookie = document.cookie
+        .split('; ')
+        .find(row => row.startsWith(name + '='));
+    return cookie ? decodeURIComponent(cookie.split('=').slice(1).join('=')) : '';
+}
+
+function getCsrfToken() {
+    const cookieName = window.APP_CSRF_COOKIE_NAME || 'promo_panel_csrf';
+    return getCookieValue(cookieName);
+}
+
+function patchFetchWithCsrf() {
+    if (window.__csrfFetchPatched || typeof window.fetch !== 'function') {
+        return;
+    }
+
+    const originalFetch = window.fetch.bind(window);
+    window.fetch = function(resource, options = {}) {
+        const nextOptions = {...options};
+        const method = (nextOptions.method || 'GET').toUpperCase();
+        const headers = new Headers(nextOptions.headers || {});
+        const targetUrl = typeof resource === 'string' ? resource : resource?.url || window.location.href;
+        const resolvedUrl = new URL(targetUrl, window.location.origin);
+        const isSameOrigin = resolvedUrl.origin === window.location.origin;
+
+        if (isSameOrigin && !nextOptions.credentials) {
+            nextOptions.credentials = 'same-origin';
+        }
+        if (isSameOrigin && !['GET', 'HEAD', 'OPTIONS'].includes(method)) {
+            const csrfToken = getCsrfToken();
+            if (csrfToken && !headers.has('X-CSRF-Token')) {
+                headers.set('X-CSRF-Token', csrfToken);
+            }
+        }
+
+        nextOptions.headers = headers;
+        return originalFetch(resource, nextOptions);
+    };
+
+    window.__csrfFetchPatched = true;
+    window.getCsrfToken = getCsrfToken;
+}
+
+function attachCsrfTokensToForms() {
+    const csrfToken = getCsrfToken();
+    if (!csrfToken) {
+        return;
+    }
+
+    document.querySelectorAll('form').forEach(function(form) {
+        const method = (form.getAttribute('method') || 'GET').toUpperCase();
+        if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
+            return;
+        }
+        let input = form.querySelector('input[name="csrf_token"]');
+        if (!input) {
+            input = document.createElement('input');
+            input.type = 'hidden';
+            input.name = 'csrf_token';
+            form.appendChild(input);
+        }
+        input.value = csrfToken;
+    });
+}
 
 function initFlashMessages() {
     const messages = document.querySelectorAll('.flash-message');

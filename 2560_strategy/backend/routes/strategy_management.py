@@ -1,47 +1,93 @@
 """Strategy management routes."""
 
-from flask import Blueprint, render_template, request, jsonify, redirect, url_for
-from datetime import datetime, timedelta
-from backend.services.strategy_service import get_all_strategies
+import os
+from functools import wraps
+
+from flask import Blueprint, request, jsonify, redirect, url_for, session
 from backend.services.strategy_pool_service import (
-    get_strategy_pool, add_stock_to_pool, remove_stock_from_pool,
+    add_stock_to_pool, remove_stock_from_pool,
     run_strategy_for_date, add_scan_result_to_pool,
-    get_strategy_backtest, run_backtest
+    run_backtest
 )
 
 strategy_management_bp = Blueprint('strategy_management', __name__)
 
 
+def login_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        from backend.services.multiuser_auth_service import get_session
+        token = session.get('auth_token')
+        if not token or not get_session(token):
+            if request.path.startswith('/api/'):
+                return jsonify({'error': '未登录'}), 401
+            return redirect(url_for('main.login'))
+        return f(*args, **kwargs)
+    return decorated_function
+
+
+@strategy_management_bp.after_request
+def add_legacy_strategy_management_headers(response):
+    response.headers['X-Legacy-API'] = 'deprecated'
+    response.headers['Link'] = '</api/v1>; rel="successor-version"'
+    return response
+
+
+@strategy_management_bp.before_request
+def freeze_production_legacy_strategy_writes_before_auth():
+    if not _is_production() or request.method in {'GET', 'HEAD', 'OPTIONS'}:
+        return None
+    successor = '/app?page=scans' if request.path.startswith('/strategies/run') else '/app?page=strategies'
+    if request.path.startswith('/api/strategy/'):
+        successor = '/app?page=picks'
+    return _legacy_strategy_frozen_response(successor)
+
+
+def _react_redirect(page, **params):
+    query = "&".join([f"{key}={value}" for key, value in {"page": page, **params}.items() if value])
+    return redirect(f"/app?{query}")
+
+
+def _is_production() -> bool:
+    return (os.getenv('APP_ENV') or '').strip().lower() in {'prod', 'production'}
+
+
+def _legacy_strategy_frozen_response(successor='/app?page=strategies'):
+    response = jsonify({
+        'success': False,
+        'message': 'legacy strategy write endpoint is frozen; use the React v1 workflow',
+        'successor': successor,
+    })
+    response.status_code = 410
+    return response
+
+
+def freeze_legacy_strategy_write_in_production(successor='/app?page=strategies'):
+    def decorator(f):
+        @wraps(f)
+        def wrapped(*args, **kwargs):
+            if request.method not in {'GET', 'HEAD', 'OPTIONS'} and _is_production():
+                return _legacy_strategy_frozen_response(successor)
+            return f(*args, **kwargs)
+        return wrapped
+    return decorator
+
+
 @strategy_management_bp.route('/strategies/pool/<strategy_code>')
+@login_required
 def strategy_pool(strategy_code):
     """Strategy pool page."""
-    strategies = get_all_strategies()
-    strategy = next((s for s in strategies if s['code'] == strategy_code), None)
-    if not strategy:
-        return redirect(url_for('strategies.index'))
-    
-    pool_stocks = get_strategy_pool(strategy_code)
-    backtest_results = get_strategy_backtest(strategy_code)
-    today = datetime.now().strftime('%Y-%m-%d')
-    backtest_start_date = (datetime.now() - timedelta(days=90)).strftime('%Y-%m-%d')
-    
-    return render_template('strategies/pool.html',
-                         strategy=strategy,
-                         strategies=strategies,
-                         pool_stocks=pool_stocks,
-                         backtest_results=backtest_results,
-                         today=today,
-                         backtest_start_date=backtest_start_date)
+    return _react_redirect("picks", strategy_code=strategy_code)
 
 
 @strategy_management_bp.route('/strategies/run/<strategy_code>', methods=['GET', 'POST'])
+@login_required
+@freeze_legacy_strategy_write_in_production('/app?page=scans')
 def strategy_run(strategy_code):
     """Strategy manual run page."""
-    strategies = get_all_strategies()
-    strategy = next((s for s in strategies if s['code'] == strategy_code), None)
-    if not strategy:
-        return redirect(url_for('strategies.index'))
-    
+    if request.method == 'GET':
+        return _react_redirect("scans", strategy_code=strategy_code)
+
     if request.method == 'POST':
         target_date = request.form.get('target_date')
         if not target_date:
@@ -49,23 +95,16 @@ def strategy_run(strategy_code):
         
         result = run_strategy_for_date(strategy_code, target_date)
         return jsonify(result)
-    
-    today = datetime.now().strftime('%Y-%m-%d')
-    
-    return render_template('strategies/run.html',
-                         strategy=strategy,
-                         strategies=strategies,
-                         today=today)
 
 
 @strategy_management_bp.route('/strategies/backtest/<strategy_code>', methods=['GET', 'POST'])
+@login_required
+@freeze_legacy_strategy_write_in_production()
 def strategy_backtest(strategy_code):
     """Strategy backtest page."""
-    strategies = get_all_strategies()
-    strategy = next((s for s in strategies if s['code'] == strategy_code), None)
-    if not strategy:
-        return redirect(url_for('strategies.index'))
-    
+    if request.method == 'GET':
+        return _react_redirect("strategies", strategy_code=strategy_code)
+
     if request.method == 'POST':
         start_date = request.form.get('start_date')
         end_date = request.form.get('end_date')
@@ -74,20 +113,11 @@ def strategy_backtest(strategy_code):
         
         result = run_backtest(strategy_code, start_date, end_date)
         return jsonify(result)
-    
-    backtest_results = get_strategy_backtest(strategy_code)
-    today = datetime.now().strftime('%Y-%m-%d')
-    backtest_start_date = (datetime.now() - timedelta(days=90)).strftime('%Y-%m-%d')
-    
-    return render_template('strategies/backtest.html',
-                         strategy=strategy,
-                         strategies=strategies,
-                         backtest_results=backtest_results,
-                         today=today,
-                         backtest_start_date=backtest_start_date)
 
 
 @strategy_management_bp.route('/api/strategy/pool/add', methods=['POST'])
+@login_required
+@freeze_legacy_strategy_write_in_production('/app?page=picks')
 def api_add_to_pool():
     """API: Add stock to strategy pool."""
     data = request.json
@@ -108,6 +138,8 @@ def api_add_to_pool():
 
 
 @strategy_management_bp.route('/api/strategy/pool/remove', methods=['POST'])
+@login_required
+@freeze_legacy_strategy_write_in_production('/app?page=picks')
 def api_remove_from_pool():
     """API: Remove stock from strategy pool."""
     data = request.json
@@ -125,6 +157,8 @@ def api_remove_from_pool():
 
 
 @strategy_management_bp.route('/api/strategy/scan/add-to-pool', methods=['POST'])
+@login_required
+@freeze_legacy_strategy_write_in_production('/app?page=picks')
 def api_add_scan_to_pool():
     """API: Add scan results to strategy pool."""
     data = request.json

@@ -2,6 +2,10 @@ import json
 import os
 from datetime import datetime
 
+from scripts.maintenance.legacy_sqlite_guard import refuse_production
+
+refuse_production("report_2560.py")
+
 BASE_DIR = os.path.dirname(__file__)
 DATA_JSON = os.path.join(BASE_DIR, 'data', 'daily_selection.json')
 OUT_TXT = os.path.join(BASE_DIR, 'data', 'daily_report.txt')

@@ -1,31 +1,53 @@
 """Page: deal review."""
 
-from backend.repositories.db import q, q1
-from backend.ui.html_helpers import esc, render_nav, layout_page
+from backend.repositories import picks_repo
+from backend.ui.html_helpers import esc, layout_page, render_nav
+
+
+_NOT_DEAL_STATUSES = {"", "not_dealt", "not_done", "pending", "未成交", "鏈垚浜?"}
+_NO_SPREAD_STATUSES = {"", "no", "false", "0", "否", "鍚?"}
+
+
+def _is_deal_row(row):
+    return (row.get("deal_status") or "").strip() not in _NOT_DEAL_STATUSES
+
+
+def _safe_float(value):
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def render_deal_review_page():
-    deals = q(
-        '''SELECT pick_date, code, name, source_channel, reason_tag, review_status, result_grade, inquiry_count, deal_status, secondary_spread, content_title
-           FROM picks
-           WHERE COALESCE(NULLIF(deal_status,''),'未成交')='已成交'
-           ORDER BY pick_date DESC, id DESC'''
-    )
-    rows = ''.join([
-        f"<tr><td>{esc(r['pick_date'])}</td><td>{esc(r['name'])}</td><td>{esc(r['code'])}</td><td>{esc(r['source_channel'])}</td><td>{esc(r['reason_tag'])}</td><td>{esc(r['review_status'])}</td><td>{esc(r['result_grade'])}</td><td>{esc(r['inquiry_count'])}</td><td>{esc(r['secondary_spread'])}</td><td>{esc(r['content_title'])}</td></tr>"
-        for r in deals
-    ]) or '<tr><td colspan="10">暂无成交记录</td></tr>'
+    deals = [row for row in picks_repo.list_picks(limit=10000) if _is_deal_row(row)]
+    rows = "".join(
+        [
+            f"<tr><td>{esc(r.get('pick_date'))}</td><td>{esc(r.get('name'))}</td><td>{esc(r.get('code'))}</td>"
+            f"<td>{esc(r.get('source_channel'))}</td><td>{esc(r.get('reason_tag'))}</td>"
+            f"<td>{esc(r.get('review_status'))}</td><td>{esc(r.get('result_grade'))}</td>"
+            f"<td>{esc(r.get('inquiry_count'))}</td><td>{esc(r.get('secondary_spread'))}</td>"
+            f"<td>{esc(r.get('content_title'))}</td></tr>"
+            for r in deals
+        ]
+    ) or '<tr><td colspan="10">No deal records</td></tr>'
 
-    summary = q1(
-        '''SELECT COUNT(*) AS total,
-                  ROUND(AVG(COALESCE(inquiry_count,0)),1) AS avg_inquiry,
-                  SUM(CASE WHEN COALESCE(NULLIF(secondary_spread,''),'否')='是' THEN 1 ELSE 0 END) AS spread_total
-           FROM picks WHERE COALESCE(NULLIF(deal_status,''),'未成交')='已成交' '''
-    ) or {}
+    total = len(deals)
+    avg_inquiry = round(sum(_safe_float(row.get("inquiry_count")) for row in deals) / total, 1) if total else 0
+    spread_total = sum(1 for row in deals if (row.get("secondary_spread") or "").strip().lower() not in _NO_SPREAD_STATUSES)
 
-    body = f'''<div class="topline"><div><h1>成交复盘页</h1><div class="muted">专门查看已成交内容，反推最有效的渠道 / 标签 / 内容方向</div></div><div><a class="btn" href="/">返回面板</a></div></div>
+    body = f"""
+<div class="topline"><div><h1>Deal Review</h1><div class="muted">Review completed deals and compare channel, tag and content signals.</div></div><div><a class="btn" href="/">Back</a></div></div>
 <div class='nav'>{render_nav('deal')}</div>
-<div class="grid section"><div class="card"><div class="muted">已成交条数</div><div class="num">{int(summary.get('total') or 0)}</div></div><div class="card"><div class="muted">成交记录平均咨询数</div><div class="num">{summary.get('avg_inquiry') or 0}</div></div><div class="card"><div class="muted">成交中的二次传播数</div><div class="num">{int(summary.get('spread_total') or 0)}</div></div></div>
-<div class="section card"><div class="tablewrap"><table><thead><tr><th>日期</th><th>股票</th><th>代码</th><th>渠道</th><th>标签</th><th>复盘结论</th><th>评级</th><th>咨询数</th><th>二次传播</th><th>内容标题</th></tr></thead><tbody>{rows}</tbody></table></div></div>'''
+<div class="grid section">
+  <div class="card"><div class="muted">Deals</div><div class="num">{total}</div></div>
+  <div class="card"><div class="muted">Avg inquiries</div><div class="num">{avg_inquiry}</div></div>
+  <div class="card"><div class="muted">Secondary spread</div><div class="num">{spread_total}</div></div>
+</div>
+<div class="section card"><div class="tablewrap"><table>
+  <thead><tr><th>Date</th><th>Stock</th><th>Code</th><th>Channel</th><th>Tag</th><th>Review</th><th>Grade</th><th>Inquiries</th><th>Spread</th><th>Title</th></tr></thead>
+  <tbody>{rows}</tbody>
+</table></div></div>
+"""
 
-    return layout_page('成交复盘页', body)
+    return layout_page("Deal Review", body)

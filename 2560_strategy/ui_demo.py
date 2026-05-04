@@ -1,6 +1,11 @@
 import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from scripts.maintenance.legacy_sqlite_guard import refuse_production
+
+refuse_production("ui_demo.py")
+
 import werkzeug_patch
 from flask import Flask, render_template
 

@@ -9,10 +9,16 @@
         text-decoration: none;
         font-weight: 500;
     }
-    
+
     .stock-code-link:hover {
         text-decoration: underline;
         color: #0056b3;
+    }
+
+    .research-summary {
+        max-width: 360px;
+        white-space: normal;
+        line-height: 1.5;
     }
 </style>
 {% endblock %}
@@ -32,6 +38,8 @@
             <span class="btn-icon">📥</span>
             批量导入
         </button>
+        <button class="btn btn-outline" onclick="analyzeRecentPicks()">研究增强</button>
+        <button class="btn btn-outline" onclick="analyzeWatchPool()">刷新自选分析</button>
     </div>
 </div>
 
@@ -91,29 +99,84 @@
             </div>
         </div>
     </div>
-    
+
     <div class="card">
         <div class="card-header">
             <h3 class="card-title">
-                <span class="card-icon">💾</span>
-                备份状态
+                <span class="card-icon">🧠</span>
+                多维研究看板
             </h3>
         </div>
         <div class="card-body">
-            <div class="backup-info">
-                <div class="backup-stat">
-                    <span class="backup-label">备份总数</span>
-                    <span class="backup-value">{{ bstats.total | default(0) }}</span>
+            <div class="kpi-list">
+                <div class="kpi-item">
+                    <span class="kpi-label">研究覆盖</span>
+                    <span class="kpi-value">{{ research_stats.total | default(0) | int }}</span>
                 </div>
-                <div class="backup-stat">
-                    <span class="backup-label">最近备份</span>
-                    <span class="backup-value">{{ bstats.latest_time | default('-') }}</span>
+                <div class="kpi-item">
+                    <span class="kpi-label">重点观察</span>
+                    <span class="kpi-value">{{ research_stats.watch_total | default(0) | int }}</span>
+                </div>
+                <div class="kpi-item">
+                    <span class="kpi-label">平均研究分</span>
+                    <span class="kpi-value">{{ research_stats.avg_score | default(0) }}</span>
+                </div>
+                <div class="kpi-item">
+                    <span class="kpi-label">强信号样本</span>
+                    <span class="kpi-value">{{ research_stats.strong_total | default(0) | int }}</span>
                 </div>
             </div>
-            <div class="backup-actions">
-                <a href="{{ url_for('admin.create_backup') }}" class="btn btn-sm btn-outline">下载备份</a>
-                <a href="{{ url_for('admin.restore_page') }}" class="btn btn-sm btn-outline">恢复数据</a>
-            </div>
+        </div>
+    </div>
+</div>
+
+<div class="card" style="margin-bottom: var(--spacing-lg);">
+    <div class="card-header">
+        <h3 class="card-title">
+            <span class="card-icon">👀</span>
+            自选股定时分析池
+            <span class="badge">{{ research_watchlist|length }} 条</span>
+        </h3>
+        <a href="{{ url_for('main.watchlist') }}" class="btn btn-link btn-sm">进入自选专页</a>
+    </div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>日期</th>
+                        <th>股票</th>
+                        <th>代码</th>
+                        <th>研究分</th>
+                        <th>预期</th>
+                        <th>研究结论</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for item in research_watchlist %}
+                    <tr>
+                        <td>{{ item.pick_date }}</td>
+                        <td class="font-medium">
+                            <a href="{{ url_for('main.watchlist', id=item.id) }}" class="stock-code-link">{{ item.name }}</a>
+                        </td>
+                        <td class="text-muted">
+                            <a href="{{ url_for('strategies.react_stock_chart') }}?code={{ item.code }}" class="stock-code-link" target="_blank">
+                                {{ item.code }}
+                            </a>
+                        </td>
+                        <td>
+                            <span class="grade grade-a">{{ item.research_score }}</span>
+                        </td>
+                        <td>{{ item.expectation or '-' }}</td>
+                        <td class="research-summary">{{ item.research_summary or '-' }}</td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="6" class="text-center text-muted py-8">暂无自选分析结果</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
         </div>
     </div>
 </div>
@@ -325,9 +388,9 @@
                         <th>代码</th>
                         <th>推荐价</th>
                         <th>渠道</th>
-                        <th>复盘状态</th>
-                        <th>评级</th>
-                        <th>成交</th>
+                        <th>研究分</th>
+                        <th>研究结论</th>
+                        <th>自选</th>
                         <th>截止今天 涨幅</th>
                         <th>操作</th>
                     </tr>
@@ -346,12 +409,16 @@
                         <td>{{ pick.pick_price }}</td>
                         <td><span class="tag">{{ pick.source_channel or '-' }}</span></td>
                         <td>
-                            <span class="status-badge status-{{ 'success' if pick.review_status == '值得复讲' else 'warning' if pick.review_status == '逻辑一般' else 'danger' if pick.review_status == '不建议再提' else 'default' }}">
-                                {{ pick.review_status or '未复盘' }}
-                            </span>
+                            <span class="grade grade-a">{{ pick.research_score or 0 }}</span>
                         </td>
-                        <td><span class="grade grade-{{ pick.result_grade | lower }}">{{ pick.result_grade or '待定' }}</span></td>
-                        <td>{{ pick.deal_status or '未成交' }}</td>
+                        <td class="research-summary">{{ pick.research_summary or '-' }}</td>
+                        <td>
+                            {% if pick.watch_flag %}
+                            <span class="status-badge status-success">已关注</span>
+                            {% else %}
+                            <span class="status-badge status-default">未关注</span>
+                            {% endif %}
+                        </td>
                         <td>
                             {% if pick.change_pct is not none %}
                                 <span class="{{ 'text-success' if pick.change_pct >= 0 else 'text-danger' }}">{{ pick.change_pct }}%</span>
@@ -362,7 +429,13 @@
                         <td>
                             <div class="action-btns">
                                 <a href="{{ url_for('main.edit', id=pick.id) }}" class="btn btn-link btn-sm">编辑</a>
-                                <button class="btn btn-link btn-sm text-danger" onclick="deletePick({{ pick.id }})")">删除</button>
+                                <button class="btn btn-link btn-sm" onclick="analyzePick({{ pick.id }})">分析</button>
+                                {% if pick.watch_flag %}
+                                <button class="btn btn-link btn-sm" onclick="toggleWatch({{ pick.id }}, false)">取消关注</button>
+                                {% else %}
+                                <button class="btn btn-link btn-sm" onclick="toggleWatch({{ pick.id }}, true)">加入自选</button>
+                                {% endif %}
+                                <button class="btn btn-link btn-sm text-danger" onclick="deletePick({{ pick.id }})">删除</button>
                             </div>
                         </td>
                     </tr>
@@ -374,13 +447,13 @@
                 </tbody>
             </table>
         </div>
-        
+
         {% if total_pages > 1 %}
         <div class="pagination">
             {% if page > 1 %}
             <a href="{{ url_for('main.dashboard', page=page-1, **request_args) }}" class="page-btn">上一页</a>
             {% endif %}
-            
+
             {% for p in range(1, total_pages + 1) %}
                 {% if p == page %}
                 <span class="page-btn active">{{ p }}</span>
@@ -388,7 +461,7 @@
                 <a href="{{ url_for('main.dashboard', page=p, **request_args) }}" class="page-btn">{{ p }}</a>
                 {% endif %}
             {% endfor %}
-            
+
             {% if page < total_pages %}
             <a href="{{ url_for('main.dashboard', page=page+1, **request_args) }}" class="page-btn">下一页</a>
             {% endif %}
@@ -529,7 +602,7 @@ function closeModal(id) {
 function submitAdd() {
     const form = document.getElementById('addForm');
     const data = new FormData(form);
-    
+
     fetch('/api/picks', {
         method: 'POST',
         body: data
@@ -547,7 +620,7 @@ function submitAdd() {
 function submitImport() {
     const form = document.getElementById('importForm');
     const data = new FormData(form);
-    
+
     fetch('/api/bulk-import', {
         method: 'POST',
         body: data
@@ -575,10 +648,10 @@ function updateBatchActions() {
     batchActions.style.display = checked.length > 0 ? 'flex' : 'none';
 }
 
-function batchUpdate(type) {
+function batchUpdate() {
     const ids = Array.from(document.querySelectorAll('.pick-checkbox:checked')).map(cb => parseInt(cb.value));
     const value = document.getElementById('batchStatus').value;
-    
+
     fetch('/api/picks/batch/review-status', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
@@ -592,9 +665,9 @@ function batchUpdate(type) {
 
 function batchDelete() {
     if (!confirm('确认删除所选记录？')) return;
-    
+
     const ids = Array.from(document.querySelectorAll('.pick-checkbox:checked')).map(cb => parseInt(cb.value));
-    
+
     fetch('/api/picks/batch/delete', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
@@ -608,7 +681,7 @@ function batchDelete() {
 
 function deletePick(id) {
     if (!confirm('确认删除此记录？')) return;
-    
+
     fetch(`/api/picks/${id}`, {
         method: 'DELETE'
     })
@@ -621,7 +694,7 @@ function deletePick(id) {
 function toggleFilter() {
     const filterBody = document.getElementById('filterBody');
     const filterButton = document.querySelector('.card-header .btn-link');
-    
+
     if (filterBody.style.display === 'none') {
         filterBody.style.display = 'block';
         filterButton.textContent = '收起';
@@ -629,6 +702,69 @@ function toggleFilter() {
         filterBody.style.display = 'none';
         filterButton.textContent = '展开';
     }
+}
+
+function analyzePick(id) {
+    fetch(`/api/picks/${id}/analyze`, {
+        method: 'POST'
+    })
+    .then(r => r.json())
+    .then(res => {
+        if (res.success) {
+            alert('分析完成');
+            location.reload();
+        } else {
+            alert(res.message || '分析失败');
+        }
+    });
+}
+
+function toggleWatch(id, watch) {
+    fetch(`/api/picks/${id}/${watch ? 'watch' : 'unwatch'}`, {
+        method: 'POST'
+    })
+    .then(r => r.json())
+    .then(res => {
+        if (res.success) {
+            location.reload();
+        } else {
+            alert('操作失败');
+        }
+    });
+}
+
+function analyzeRecentPicks() {
+    fetch('/api/research/recent/analyze', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({limit: 20})
+    })
+    .then(r => r.json())
+    .then(res => {
+        if (res.success) {
+            alert('已完成最近记录研究增强：' + res.count + ' 条');
+            location.reload();
+        } else {
+            alert('执行失败');
+        }
+    });
+}
+
+function analyzeWatchPool() {
+    fetch('/api/watch-pool/analyze', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({limit: 30})
+    })
+    .then(r => r.json())
+    .then(res => {
+        if (res.success) {
+            alert('已刷新自选分析：' + res.count + ' 条');
+            location.reload();
+        } else {
+            alert('刷新失败');
+        }
+    });
 }
 </script>
 {% endblock %}

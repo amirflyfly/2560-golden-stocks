@@ -14,19 +14,18 @@
         </div>
     </div>
     <div class="card-body">
-        <!-- 回测参数 -->
         <div class="mb-6">
             <h3 class="text-lg font-medium mb-3">回测参数</h3>
             <form id="backtestForm" class="space-y-4">
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div class="form-group">
                         <label class="form-label">开始日期</label>
-                        <input type="date" id="startDate" name="start_date" class="form-input" 
+                        <input type="date" id="startDate" name="start_date" class="form-input"
                                value="{{ backtest_start_date }}" required>
                     </div>
                     <div class="form-group">
                         <label class="form-label">结束日期</label>
-                        <input type="date" id="endDate" name="end_date" class="form-input" 
+                        <input type="date" id="endDate" name="end_date" class="form-input"
                                value="{{ today }}" required>
                     </div>
                 </div>
@@ -36,9 +35,47 @@
             </form>
         </div>
 
-        <!-- 回测结果 -->
+        <div id="latestBacktestSection" class="mb-6" style="display:none;">
+            <h3 class="text-lg font-medium mb-3">本次回测结果</h3>
+            <div class="card">
+                <div class="card-body">
+                    <div id="backtestMeta" class="mb-4 text-sm text-gray-600"></div>
+                    <div id="backtestSummary" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4"></div>
+                </div>
+            </div>
+            <div class="card mt-4">
+                <div class="card-header">
+                    <h4 class="text-md font-medium">交易明细</h4>
+                </div>
+                <div class="card-body">
+                    <div id="backtestTradesEmpty" class="empty-state" style="display:none;">
+                        <div class="empty-state-icon">📭</div>
+                        <div class="empty-state-text">本次回测没有生成交易</div>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="min-w-full text-sm" id="backtestTradesTable" style="display:none;">
+                            <thead>
+                                <tr>
+                                    <th class="text-left p-2">股票</th>
+                                    <th class="text-left p-2">信号日</th>
+                                    <th class="text-left p-2">买入日</th>
+                                    <th class="text-left p-2">卖出日</th>
+                                    <th class="text-right p-2">买入价</th>
+                                    <th class="text-right p-2">卖出价</th>
+                                    <th class="text-right p-2">收益率</th>
+                                    <th class="text-right p-2">持有天数</th>
+                                    <th class="text-right p-2">风险分</th>
+                                </tr>
+                            </thead>
+                            <tbody id="backtestTradesBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <div class="mb-6">
-            <h3 class="text-lg font-medium mb-3">回测结果</h3>
+            <h3 class="text-lg font-medium mb-3">历史回测结果</h3>
             {% if backtest_results %}
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {% for result in backtest_results %}
@@ -104,11 +141,99 @@
 <script>
 const backtestForm = document.getElementById('backtestForm');
 const backtestBtn = document.getElementById('backtestBtn');
+const latestBacktestSection = document.getElementById('latestBacktestSection');
+const backtestMeta = document.getElementById('backtestMeta');
+const backtestSummary = document.getElementById('backtestSummary');
+const backtestTradesBody = document.getElementById('backtestTradesBody');
+const backtestTradesTable = document.getElementById('backtestTradesTable');
+const backtestTradesEmpty = document.getElementById('backtestTradesEmpty');
+
+function formatPercent(value, digits = 2) {
+    const num = Number(value || 0) * 100;
+    const sign = num > 0 ? '+' : '';
+    return `${sign}${num.toFixed(digits)}%`;
+}
+
+function metricCard(label, value, extraClass = '') {
+    return `
+        <div class="card">
+            <div class="card-body">
+                <div class="text-sm text-gray-600">${label}</div>
+                <div class="font-medium text-lg ${extraClass}">${value}</div>
+            </div>
+        </div>
+    `;
+}
+
+function renderBacktestResult(payload) {
+    const results = payload.results || {};
+    const meta = payload.meta || {};
+    const trades = results.trades || [];
+
+    latestBacktestSection.style.display = 'block';
+    backtestMeta.innerHTML = `
+        回测区间：${meta.start_date || ''} 至 ${meta.end_date || ''}
+        <span class="mx-2">|</span>
+        持有周期：${meta.holding_days || 0} 个交易日
+        <span class="mx-2">|</span>
+        单日最多持仓：${meta.max_positions_per_day || 0}
+        <span class="mx-2">|</span>
+        覆盖交易日：${meta.trade_days || 0}
+    `;
+
+    const totalReturnClass = Number(results.total_return || 0) >= 0 ? 'text-green-600' : 'text-red-600';
+    const avgReturnClass = Number(results.avg_return || 0) >= 0 ? 'text-green-600' : 'text-red-600';
+    const maxLossClass = Number(results.max_loss || 0) >= 0 ? 'text-green-600' : 'text-red-600';
+
+    backtestSummary.innerHTML = [
+        metricCard('总交易次数', String(results.total_trades || 0)),
+        metricCard('胜率', formatPercent(results.win_rate, 1)),
+        metricCard('总收益', formatPercent(results.total_return, 2), totalReturnClass),
+        metricCard('平均收益', formatPercent(results.avg_return, 2), avgReturnClass),
+        metricCard('最大单笔收益', formatPercent(results.max_return, 2), 'text-green-600'),
+        metricCard('最大单笔亏损', formatPercent(results.max_loss, 2), maxLossClass),
+        metricCard('最大回撤', formatPercent(results.max_drawdown, 2), 'text-red-600'),
+        metricCard('夏普比率', Number(results.sharpe_ratio || 0).toFixed(2)),
+        metricCard('盈亏比', Number(results.profit_factor || 0).toFixed(2)),
+        metricCard('平均持有天数', Number(results.avg_holding_days || 0).toFixed(1)),
+        metricCard('平均盈利', formatPercent(results.avg_win_return, 2), 'text-green-600'),
+        metricCard('平均亏损', formatPercent(results.avg_loss_return, 2), 'text-red-600')
+    ].join('');
+
+    if (!trades.length) {
+        backtestTradesTable.style.display = 'none';
+        backtestTradesEmpty.style.display = 'block';
+        backtestTradesBody.innerHTML = '';
+        return;
+    }
+
+    backtestTradesEmpty.style.display = 'none';
+    backtestTradesTable.style.display = 'table';
+    backtestTradesBody.innerHTML = trades.map(trade => {
+        const returnClass = Number(trade.return_pct || 0) >= 0 ? 'text-green-600' : 'text-red-600';
+        return `
+            <tr class="border-t border-gray-200">
+                <td class="p-2">
+                    <div class="font-medium">${trade.name || ''}</div>
+                    <div class="text-xs text-gray-500">${trade.code || ''}</div>
+                </td>
+                <td class="p-2">${trade.signal_date || ''}</td>
+                <td class="p-2">${trade.entry_date || ''}</td>
+                <td class="p-2">${trade.exit_date || ''}</td>
+                <td class="p-2 text-right">${Number(trade.entry_price || 0).toFixed(2)}</td>
+                <td class="p-2 text-right">${Number(trade.exit_price || 0).toFixed(2)}</td>
+                <td class="p-2 text-right ${returnClass}">${formatPercent(trade.return_pct, 2)}</td>
+                <td class="p-2 text-right">${trade.holding_days || 0}</td>
+                <td class="p-2 text-right">${Number(trade.risk_score || 0).toFixed(1)}</td>
+            </tr>
+        `;
+    }).join('');
+}
 
 backtestBtn.addEventListener('click', function() {
     const startDate = document.getElementById('startDate').value;
     const endDate = document.getElementById('endDate').value;
-    
+
     if (!startDate || !endDate) {
         showToast('请选择起止日期');
         return;
@@ -135,10 +260,11 @@ backtestBtn.addEventListener('click', function() {
         backtestBtn.innerHTML = '运行回测';
 
         if (data.success) {
+            renderBacktestResult(data);
             showToast('回测完成');
             setTimeout(() => {
                 location.reload();
-            }, 1000);
+            }, 1500);
         } else {
             showToast(data.message || '回测失败');
         }

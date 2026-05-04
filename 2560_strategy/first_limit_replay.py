@@ -6,6 +6,10 @@ from datetime import datetime
 import akshare as ak
 import pandas as pd
 
+from scripts.maintenance.legacy_sqlite_guard import refuse_production
+
+refuse_production("first_limit_replay.py")
+
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / 'data'
 DB_PATH = DATA_DIR / 'picks.db'

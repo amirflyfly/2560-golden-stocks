@@ -6,7 +6,10 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta
 from typing import List
 
-import pandas as pd
+try:
+    import pandas as pd
+except ModuleNotFoundError:  # pragma: no cover - local test fallback
+    pd = None
 
 
 PROXY_ENV_KEYS = [
@@ -16,6 +19,36 @@ PROXY_ENV_KEYS = [
 
 
 REAL_DATA_MIN_DATE = '1990-01-01'
+
+
+class SimpleTable(list):
+    @property
+    def empty(self):
+        return len(self) == 0
+
+    @property
+    def columns(self):
+        return list(self[0].keys()) if self else []
+
+    def head(self, count):
+        return SimpleTable(self[:count])
+
+    def iterrows(self):
+        for index, row in enumerate(self):
+            yield index, row
+
+
+def fallback_stock_table():
+    rows = [
+        {'代码': '600000', '名称': '浦发银行'},
+        {'代码': '600519', '名称': '贵州茅台'},
+        {'代码': '000001', '名称': '平安银行'},
+        {'代码': '000002', '名称': '万科A'},
+        {'代码': '002594', '名称': '比亚迪'},
+    ]
+    if pd is not None:
+        return pd.DataFrame(rows)
+    return SimpleTable(rows)
 
 
 def ensure_directory(directory):
@@ -67,10 +100,10 @@ class StockDataSource:
     def __init__(self):
         self.name = "BaseDataSource"
 
-    def get_stock_list(self) -> pd.DataFrame:
+    def get_stock_list(self):
         raise NotImplementedError
 
-    def get_stock_hist(self, symbol: str, start_date: str, end_date: str, adjust: str = "qfq") -> pd.DataFrame:
+    def get_stock_hist(self, symbol: str, start_date: str, end_date: str, adjust: str = "qfq"):
         raise NotImplementedError
 
     def get_trading_dates(self, start_date: str, end_date: str) -> List[str]:
@@ -100,7 +133,7 @@ class AkShareDataSource(StockDataSource):
             return f'bj{symbol}'
         return f'sz{symbol}'
 
-    def get_stock_list(self) -> pd.DataFrame:
+    def get_stock_list(self):
         self._ensure_akshare()
 
         with proxy_disabled():
@@ -137,12 +170,9 @@ class AkShareDataSource(StockDataSource):
             merged = merged[['代码', '名称']].dropna().drop_duplicates()
             return merged
 
-        return pd.DataFrame({
-            '代码': ['600000', '600519', '000001', '000002', '002594'],
-            '名称': ['浦发银行', '贵州茅台', '平安银行', '万科A', '比亚迪']
-        })
+        return fallback_stock_table()
 
-    def _get_hist_from_eastmoney(self, symbol: str, start_date: str, end_date: str, adjust: str) -> pd.DataFrame:
+    def _get_hist_from_eastmoney(self, symbol: str, start_date: str, end_date: str, adjust: str):
         start_str = start_date.replace('-', '')
         end_str = end_date.replace('-', '')
         with proxy_disabled():
@@ -154,7 +184,7 @@ class AkShareDataSource(StockDataSource):
                 end_date=end_str
             )
 
-    def _get_hist_from_sina(self, symbol: str, start_date: str, end_date: str, adjust: str) -> pd.DataFrame:
+    def _get_hist_from_sina(self, symbol: str, start_date: str, end_date: str, adjust: str):
         sina_adjust = adjust if adjust in ('', 'qfq', 'hfq') else ''
         with proxy_disabled():
             return self._ak.stock_zh_a_daily(
@@ -164,7 +194,7 @@ class AkShareDataSource(StockDataSource):
                 adjust=sina_adjust,
             )
 
-    def get_stock_hist(self, symbol: str, start_date: str, end_date: str, adjust: str = "qfq") -> pd.DataFrame:
+    def get_stock_hist(self, symbol: str, start_date: str, end_date: str, adjust: str = "qfq"):
         self._ensure_akshare()
 
         errors = []
@@ -207,13 +237,10 @@ class MockDataSource(StockDataSource):
         super().__init__()
         self.name = "Mock"
 
-    def get_stock_list(self) -> pd.DataFrame:
-        return pd.DataFrame({
-            '代码': ['600000', '600519', '000001', '000002', '002594'],
-            '名称': ['浦发银行', '贵州茅台', '平安银行', '万科A', '比亚迪']
-        })
+    def get_stock_list(self):
+        return fallback_stock_table()
 
-    def get_stock_hist(self, symbol: str, start_date: str, end_date: str, adjust: str = "qfq") -> pd.DataFrame:
+    def get_stock_hist(self, symbol: str, start_date: str, end_date: str, adjust: str = "qfq"):
         end = datetime.strptime(end_date, '%Y-%m-%d')
         start = datetime.strptime(start_date, '%Y-%m-%d')
         dates = pd.date_range(start=start, end=end)
@@ -265,7 +292,7 @@ class StockDataService:
         }
         self.default_source = "akshare"
 
-    def get_stock_list(self, source: str = None) -> pd.DataFrame:
+    def get_stock_list(self, source: str = None):
         source = source or self.default_source
         cache_key = f"stock_list_{source}"
         cache_file = os.path.join(self.cache_dir, f"{cache_key}.pkl")
@@ -290,7 +317,7 @@ class StockDataService:
 
         return stock_list
 
-    def _looks_like_mock_cache(self, df: pd.DataFrame) -> bool:
+    def _looks_like_mock_cache(self, df) -> bool:
         if df is None or df.empty or 'date' not in df.columns:
             return False
 
@@ -311,14 +338,14 @@ class StockDataService:
 
         return False
 
-    def _is_cache_usable(self, df: pd.DataFrame, source: str) -> bool:
+    def _is_cache_usable(self, df, source: str) -> bool:
         if df is None or df.empty:
             return False
         if source == 'akshare' and self._looks_like_mock_cache(df):
             return False
         return True
 
-    def get_stock_hist(self, symbol: str, start_date: str, end_date: str, adjust: str = "qfq", source: str = None) -> pd.DataFrame:
+    def get_stock_hist(self, symbol: str, start_date: str, end_date: str, adjust: str = "qfq", source: str = None):
         source = source or self.default_source
         cache_key = f"stock_hist_{symbol}_{start_date}_{end_date}_{adjust}_{source}"
         cache_file = os.path.join(self.cache_dir, f"{cache_key}.pkl")
@@ -372,7 +399,7 @@ class StockDataService:
 
         return dates
 
-    def _normalize_data(self, df: pd.DataFrame) -> pd.DataFrame:
+    def _normalize_data(self, df):
         if df is None or df.empty:
             return df
 

@@ -7,6 +7,10 @@ import sys
 import os
 
 # 添加Werkzeug补丁
+from scripts.maintenance.legacy_sqlite_guard import refuse_production
+
+refuse_production("run_2560_backtest.py")
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
     import werkzeug_patch

@@ -2,6 +2,10 @@ import pandas as pd
 from pathlib import Path
 from datetime import datetime
 
+from scripts.maintenance.legacy_sqlite_guard import refuse_production
+
+refuse_production("leaderboards.py")
+
 BASE_DIR = Path(__file__).resolve().parent
 REVIEW_CSV = BASE_DIR / 'data' / 'review_metrics.csv'
 OUT_MD = BASE_DIR / 'data' / 'leaderboards.md'

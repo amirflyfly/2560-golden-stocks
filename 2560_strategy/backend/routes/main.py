@@ -1,8 +1,35 @@
+import os
+
 from flask import Blueprint, render_template, request, redirect, url_for, session, flash, jsonify
 from functools import wraps
 from datetime import datetime, timedelta
 
 bp = Blueprint('main', __name__)
+
+
+def _is_production() -> bool:
+    return any((os.getenv(name) or '').strip().lower() in {'prod', 'production'} for name in ('APP_ENV', 'FLASK_ENV'))
+
+
+def _legacy_main_frozen_response(successor='/app?page=dashboard'):
+    response = jsonify({
+        'success': False,
+        'message': 'legacy page write endpoint is frozen; use the React v1 workflow',
+        'successor': successor,
+    })
+    response.status_code = 410
+    return response
+
+
+@bp.before_request
+def freeze_production_legacy_main_writes_before_auth():
+    if not _is_production() or request.method not in {'POST', 'PUT', 'PATCH', 'DELETE'}:
+        return None
+    if request.endpoint == 'main.login':
+        return None
+    if request.endpoint == 'main.set_language':
+        return None
+    return _legacy_main_frozen_response()
 
 
 def login_required(f):
@@ -35,7 +62,6 @@ def get_current_user():
     if token:
         sess = get_session(token)
         if sess:
-            # Get user points from database
             from backend.repositories import users_repo
             user = users_repo.get_user_by_id(sess.get('user_id'))
             return {
@@ -55,6 +81,10 @@ def health():
 @bp.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
+        csrf_token = request.form.get('csrf_token', '')
+        if not csrf_token or csrf_token != session.get('_csrf_token'):
+            flash('请求校验失败，请刷新页面后重试', 'error')
+            return render_template('login.html'), 403
         from backend.services.multiuser_auth_service import login as do_login
         username = request.form.get('username', '').strip()
         password = request.form.get('password', '')
@@ -80,170 +110,44 @@ def logout():
 @bp.route('/')
 @login_required
 def dashboard():
-    from backend.services.dashboard_service import (
-        dashboard_overview, dashboard_kpi, dashboard_channels, dashboard_tags,
-        dashboard_review_status, dashboard_grades, dashboard_deals,
-        dashboard_trend_30d, dashboard_worthy_trend_30d, dashboard_deal_trend_30d,
-        recent_operation_logs, dashboard_strategy_summary, dashboard_strategy_panels,
-        dashboard_strategy_compare, dashboard_second_board_pool, dashboard_watch_pool,
-        dashboard_validate_rows, dashboard_validate_stats, dashboard_validate_rate,
-        dashboard_hit_compare, dashboard_strategy_names, dashboard_daily_strategy_matrix,
-        dashboard_daily_strategy_picks,
-    )
-    from backend.services.filters_service import get_saved_filters, get_dashboard_order
-    from backend.services.query_service import filter_where
-    from backend.services import strategy_service
+    return redirect('/app?page=dashboard')
+
+
+@bp.route('/watchlist')
+@login_required
+def watchlist():
     from backend.repositories import picks_repo
-    from backend.services import backup_service
-    from backend.app_config import PAGE_SIZE
-    
-    page = request.args.get('page', 1, type=int)
-    target_date = (request.args.get('target_date') or datetime.now().strftime('%Y-%m-%d')).strip()
-    selected_strategy = (request.args.get('strategy') or '').strip()
-    saved_filters = get_saved_filters()
-    dashboard_order = get_dashboard_order()
-    strategy_options = strategy_service.get_strategy_dropdown_options()
-    
-    overview = dashboard_overview()
-    kpi = dashboard_kpi()
-    by_channel = dashboard_channels()
-    by_tag = dashboard_tags()
-    by_status = dashboard_review_status()
-    by_grade = dashboard_grades()
-    by_deal = dashboard_deals()
-    trend_30d = dashboard_trend_30d()
-    worthy_trend = dashboard_worthy_trend_30d()
-    deal_trend = dashboard_deal_trend_30d()
-    recent_logs = recent_operation_logs(15)
-    bstats = backup_service.backup_stats()
-    strategy_summary = dashboard_strategy_summary()
-    strategy_panels = dashboard_strategy_panels()
-    strategy_compare = dashboard_strategy_compare()
-    strategy_names = dashboard_strategy_names()
-    daily_strategy_matrix = strategy_service.get_daily_strategy_summary(target_date)
-    daily_strategy_picks = dashboard_daily_strategy_picks(target_date, selected_strategy)
-    second_board_pool = dashboard_second_board_pool()
-    watch_pool = dashboard_watch_pool()
-    validate_rows = dashboard_validate_rows()
-    validate_stats = dashboard_validate_stats()
-    validate_rate = dashboard_validate_rate()
-    hit_compare = dashboard_hit_compare()
-    
-    params = {k: [v] for k, v in request.args.items() if k != 'page'}
-    where, args = filter_where(params)
-    filter_count = picks_repo.count_picks(where, args)
-    offset = (page - 1) * PAGE_SIZE
-    latest = picks_repo.list_picks(where, args, limit=PAGE_SIZE, offset=offset)
-    
-    # Calculate price change for each pick
-    from backend.services.stock_data_service import get_stock_data_service
-    stock_data = get_stock_data_service()
-    
-    for pick in latest:
-        if pick.get('pick_price') and pick.get('pick_date'):
-            try:
-                # Get price data from pick_date to today
-                df = stock_data.get_stock_hist(
-                    symbol=pick.get('code'),
-                    start_date=pick.get('pick_date'),
-                    end_date=datetime.now().strftime('%Y-%m-%d'),
-                    adjust='qfq'
-                )
-                if not df.empty:
-                    # Get the first price (pick_date) and last price (latest)
-                    first_price = df.iloc[0].get('open')  # Use open price on pick_date
-                    latest_price = df.iloc[-1].get('close')  # Use close price on latest date
-                    if first_price and first_price > 0 and latest_price and latest_price > 0:
-                        change_pct = ((latest_price - first_price) / first_price) * 100
-                        pick['change_pct'] = round(change_pct, 2)
-                    else:
-                        pick['change_pct'] = None
-                else:
-                    pick['change_pct'] = None
-            except Exception as e:
-                # If there's an error, set change_pct to None
-                pick['change_pct'] = None
-        else:
-            pick['change_pct'] = None
-    
-    total_pages = max(1, (filter_count + PAGE_SIZE - 1) // PAGE_SIZE)
-    
-    # Convert request.args to a regular dict with single values, excluding 'page'
-    request_args_dict = {k: v for k, v in request.args.items() if k != 'page'}
-    
-    return render_template('dashboard.html',
+    from backend.services.research_service import build_watchlist_detail, list_research_engines
+
+    watch_items = picks_repo.list_watch_picks(limit=100)
+    selected_id = request.args.get('id', type=int)
+    engine = request.args.get('engine', '').strip() or None
+    detail = None
+    if selected_id:
+        detail = build_watchlist_detail(selected_id, engine=engine)
+    elif watch_items:
+        detail = build_watchlist_detail(watch_items[0]['id'], engine=engine)
+    return render_template(
+        'watchlist.html',
         user=get_current_user(),
-        overview=overview,
-        kpi=kpi,
-        by_channel=by_channel,
-        by_tag=by_tag,
-        by_status=by_status,
-        by_grade=by_grade,
-        by_deal=by_deal,
-        trend_30d=trend_30d,
-        worthy_trend=worthy_trend,
-        deal_trend=deal_trend,
-        recent_logs=recent_logs,
-        bstats=bstats,
-        strategy_summary=strategy_summary,
-        strategy_panels=strategy_panels,
-        strategy_compare=strategy_compare,
-        strategy_names=strategy_names,
-        daily_strategy_matrix=daily_strategy_matrix,
-        daily_strategy_picks=daily_strategy_picks,
-        selected_strategy=selected_strategy,
-        target_date=target_date,
-        second_board_pool=second_board_pool,
-        watch_pool=watch_pool,
-        validate_rows=validate_rows,
-        validate_stats=validate_stats,
-        validate_rate=validate_rate,
-        hit_compare=hit_compare,
-        saved_filters=saved_filters,
-        dashboard_order=dashboard_order,
-        latest=latest,
-        page=page,
-        total_pages=total_pages,
-        filter_count=filter_count,
-        request_args=request_args_dict,
-        today=datetime.now().strftime('%Y-%m-%d'),
-        backtest_start_date=(datetime.now() - timedelta(days=90)).strftime('%Y-%m-%d'),
-        strategy_options=strategy_options,
+        watch_items=watch_items,
+        detail=detail,
+        research_engines=list_research_engines(),
+        current_engine=(detail or {}).get('engine', engine or 'rule'),
     )
 
 
 @bp.route('/edit')
 @login_required
 def edit():
-    from backend.repositories import picks_repo
-    rid = request.args.get('id')
-    pick = picks_repo.get_pick_by_id(rid) if rid else None
-    return render_template('edit.html', pick=pick, user=get_current_user())
+    suffix = f"&pick_id={request.args.get('id')}" if request.args.get('id') else ''
+    return redirect(f'/app?page=picks{suffix}')
 
 
 @bp.route('/deal-review')
 @login_required
 def deal_review():
-    from backend.services.leaderboard_service import leaderboards
-    from backend.services.dashboard_service import dashboard_deals
-    from backend.repositories import picks_repo
-    from backend.app_config import PAGE_SIZE, REVIEW_STATUS_OPTIONS, RESULT_GRADE_OPTIONS, DEAL_STATUS_OPTIONS
-    
-    page = request.args.get('page', 1, type=int)
-    where = "WHERE deal_status != '未成交'"
-    args = []
-    total = picks_repo.count_picks(where, args)
-    offset = (page - 1) * PAGE_SIZE
-    deals = picks_repo.list_picks(where, args, limit=PAGE_SIZE, offset=offset)
-    total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
-    
-    return render_template('deal_review.html',
-        user=get_current_user(),
-        deals=deals,
-        page=page,
-        total_pages=total_pages,
-        total=total,
-    )
+    return redirect('/app?page=picks&status=validated')
 
 
 @bp.route('/leaderboards')
@@ -253,7 +157,8 @@ def leaderboards():
     range_val = request.args.get('range', '30d')
     metric = request.args.get('metric', 'default')
     boards = leaderboards(range_val, metric)
-    return render_template('leaderboards.html',
+    return render_template(
+        'leaderboards.html',
         user=get_current_user(),
         boards=boards,
         current_range=range_val,
@@ -264,26 +169,17 @@ def leaderboards():
 @bp.route('/reports')
 @login_required
 def reports():
-    from backend.services.reports_service import report_summary_text, weekly_report_rows, monthly_report_rows
-    summary = report_summary_text()
-    weekly = list(weekly_report_rows())
-    monthly = list(monthly_report_rows())
-    return render_template('reports.html',
-        user=get_current_user(),
-        summary=summary,
-        weekly=weekly,
-        monthly=monthly,
-    )
+    return redirect('/app?page=reports')
 
 
 @bp.route('/user/profile')
 @login_required
 def user_profile():
-    """User profile page."""
     user = get_current_user()
     from backend.repositories import users_repo
     user_detail = users_repo.get_user_by_id(user['user_id'])
-    return render_template('user_profile.html',
+    return render_template(
+        'user_profile.html',
         user=user,
         user_detail=user_detail
     )
@@ -292,18 +188,15 @@ def user_profile():
 @bp.route('/user/checkin', methods=['GET', 'POST'])
 @login_required
 def checkin():
-    """User checkin."""
     user = get_current_user()
     if request.method == 'POST':
         from backend.repositories import users_repo
-        # Check if already checked in today
         today = datetime.now().strftime('%Y-%m-%d')
         last_checkin = users_repo.get_user_last_checkin(user['user_id'])
         if last_checkin == today:
             flash('今日已签到', 'info')
         else:
-            # Award points for checkin
-            points_awarded = 10  # 每日签到获得10积分
+            points_awarded = 10
             success = users_repo.update_user_points(user['user_id'], points_awarded)
             if success:
                 users_repo.update_user_last_checkin(user['user_id'], today)
@@ -311,31 +204,27 @@ def checkin():
             else:
                 flash('签到失败', 'error')
         return redirect(url_for('main.user_profile'))
-    return render_template('checkin.html',
+    return render_template(
+        'checkin.html',
         user=user
     )
 
 
 @bp.route('/api/set-language', methods=['POST'])
 def set_language():
-    """Set user language preference."""
     data = request.json
     language = data.get('language', 'zh-CN')
-    # Store language in session
     session['language'] = language
     return jsonify({'success': True})
 
 
 def get_current_language():
-    """Get current language."""
     return session.get('language', 'zh-CN')
 
 
 def get_dark_mode():
-    """Get dark mode preference."""
     return session.get('dark_mode', False)
 
 
 def get_sidebar_collapsed():
-    """Get sidebar collapsed preference."""
     return session.get('sidebar_collapsed', False)

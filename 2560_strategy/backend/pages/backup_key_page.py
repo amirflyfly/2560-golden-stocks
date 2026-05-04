@@ -4,7 +4,6 @@ This page allows exporting the current key for migration.
 Rotation is dangerous (old backups won't validate), so we only provide export.
 """
 
-from backend.repositories.db import DATA_DIR
 from backend.ui.html_helpers import esc, layout_page, render_nav
 
 

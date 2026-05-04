@@ -1,8 +1,8 @@
 :root {
-    /* 支付宝主题色 */
-    --primary-color: #1677ff;
-    --primary-hover: #4096ff;
-    --primary-light: #e6f4ff;
+    /* 微信风主题色 */
+    --primary-color: #07c160;
+    --primary-hover: #0b8f4d;
+    --primary-light: #e9f8ef;
     --success-color: #52c41a;
     --success-light: #f6ffed;
     --warning-color: #faad14;
@@ -10,18 +10,18 @@
     --danger-color: #ff4d4f;
     --danger-light: #fff2f0;
     
-    /* 支付宝文本颜色 */
-    --text-primary: #1f1f1f;
-    --text-secondary: #666666;
-    --text-muted: #999999;
+    /* 微信风文本颜色 */
+    --text-primary: #1f2329;
+    --text-secondary: #4e5969;
+    --text-muted: #86909c;
     
-    /* 支付宝背景色 */
+    /* 微信风背景色 */
     --bg-primary: #ffffff;
-    --bg-secondary: #f5f5f5;
-    --bg-tertiary: #fafafa;
-    --bg-light: #f7f8fa;
+    --bg-secondary: #f2f3f5;
+    --bg-tertiary: #fbfbfb;
+    --bg-light: #f7f7f7;
     
-    /* 支付宝边框颜色 */
+    /* 微信风边框颜色 */
     --border-color: #e5e5e5;
     --border-light: #f0f0f0;
     
@@ -1334,17 +1334,20 @@ body.dark-mode .modal-content {
     display: flex;
     align-items: center;
     justify-content: center;
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    background:
+        radial-gradient(circle at 18% 18%, rgba(7, 193, 96, 0.16), transparent 28%),
+        linear-gradient(135deg, #f7f7f7 0%, #e9f8ef 100%);
     padding: 20px;
 }
 
 .login-card {
-    background: var(--bg-primary);
-    border-radius: var(--border-radius-lg);
+    background: rgba(255, 255, 255, 0.96);
+    border: 1px solid #dcefe4;
+    border-radius: 24px;
     width: 100%;
-    max-width: 400px;
-    padding: 40px;
-    box-shadow: var(--shadow-lg);
+    max-width: 420px;
+    padding: 42px;
+    box-shadow: 0 24px 70px rgba(31, 35, 41, 0.10);
 }
 
 .login-header {
@@ -1353,15 +1356,24 @@ body.dark-mode .modal-content {
 }
 
 .login-logo {
-    font-size: 48px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 58px;
+    height: 58px;
+    border-radius: 20px;
     margin-bottom: 16px;
+    color: #fff;
+    background: var(--primary-color);
+    font-size: 28px;
 }
 
 .login-title {
-    font-size: 24px;
-    font-weight: 600;
+    font-size: 26px;
+    font-weight: 700;
     color: var(--text-primary);
     margin-bottom: 8px;
+    letter-spacing: -0.02em;
 }
 
 .login-subtitle {
@@ -1375,11 +1387,25 @@ body.dark-mode .modal-content {
     gap: 20px;
 }
 
+.login-form .form-input {
+    height: 42px;
+    border-radius: 12px;
+}
+
+.login-form .btn-primary {
+    height: 44px;
+    border-radius: 12px;
+    font-weight: 700;
+}
+
 .login-footer {
     margin-top: 24px;
+    padding: 12px;
+    border-radius: 12px;
     text-align: center;
     font-size: 12px;
     color: var(--text-muted);
+    background: var(--primary-light);
 }
 
 @media (max-width: 1200px) {
