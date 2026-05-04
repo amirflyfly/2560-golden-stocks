@@ -15,6 +15,12 @@ function percent(value) {
   return `${Number(value).toFixed(2)}%`;
 }
 
+function dataQualityLabel(item) {
+  const quality = item?.data_quality || 'unknown';
+  const source = item?.market_data_source || '-';
+  return item?.fallback_used ? `${quality} / ${source} / fallback` : `${quality} / ${source}`;
+}
+
 export function PicksPage({ authz, pagePayload = {} }) {
   const [items, setItems] = useState([]);
   const [selectedPick, setSelectedPick] = useState(null);
@@ -259,6 +265,7 @@ export function PicksPage({ authz, pagePayload = {} }) {
               { label: '股票', render: (item) => <strong>{item.symbol} {item.stock_name}</strong> },
               { label: '策略', render: (item) => item.strategy_code || '-' },
               { label: '来源', render: (item) => item.source || '-' },
+              { label: 'Data', render: (item) => <StatusBadge status={item.data_quality}>{dataQualityLabel(item)}</StatusBadge> },
               { label: '状态', render: (item) => <StatusBadge status={item.status}>{item.status || 'accepted'}</StatusBadge> },
               { label: '风险', render: (item) => <StatusBadge status={item.risk_level}>{item.risk_level || 'pending'}</StatusBadge> },
               {
@@ -281,6 +288,7 @@ export function PicksPage({ authz, pagePayload = {} }) {
           {selectedPick ? (
             <form className="scan-form" onSubmit={saveReview}>
               <div className="summary-row"><span>标的</span><strong>{selectedPick.symbol} {selectedPick.stock_name}</strong></div>
+              <div className="summary-row"><span>Data quality</span><strong>{dataQualityLabel(selectedPick)}</strong></div>
               <label className="form-field">
                 状态
                 <select className="scan-select" value={reviewForm.status} onChange={(event) => setReviewForm((prev) => ({ ...prev, status: event.target.value }))}>

@@ -297,6 +297,19 @@ class BacktestApiService:
                 "data_quality": benchmark["data_quality"],
                 "fallback_used": benchmark["fallback_used"],
                 "message": benchmark["message"],
+                "bars_total": benchmark.get("bars_total"),
+                "usable_bars": benchmark.get("usable_bars"),
+                "missing_bar_ratio": benchmark.get("missing_bar_ratio"),
+            },
+            "data_contract": {
+                "benchmark_code": benchmark_code,
+                "benchmark_source": benchmark["source"],
+                "benchmark_data_quality": benchmark["data_quality"],
+                "benchmark_fallback_used": benchmark["fallback_used"],
+                "adjust": "qfq",
+                "trading_calendar_source": benchmark["source"] if benchmark["source"] != "synthetic" else "strategy_sample",
+                "missing_bar_ratio": benchmark.get("missing_bar_ratio"),
+                "mock_or_fallback": benchmark["fallback_used"] or benchmark["data_quality"] == "mock",
             },
             "portfolio_curve": portfolio_curve,
             "risk_attribution": risk_attribution,
@@ -338,6 +351,9 @@ class BacktestApiService:
             "data_quality": "derived",
             "fallback_used": True,
             "message": "synthetic benchmark curve used",
+            "bars_total": None,
+            "usable_bars": None,
+            "missing_bar_ratio": None,
         }
         if not prefer_market_data:
             return fallback
@@ -348,7 +364,13 @@ class BacktestApiService:
             bars = provider.get_daily_bars(code, start_date, end_date)
             closes = [bar.close for bar in bars if bar.close is not None and Decimal(bar.close) > 0]
             if len(closes) < 2:
-                return {**fallback, "message": "benchmark provider returned insufficient bars"}
+                return {
+                    **fallback,
+                    "message": "benchmark provider returned insufficient bars",
+                    "bars_total": len(bars),
+                    "usable_bars": len(closes),
+                    "missing_bar_ratio": self._missing_bar_ratio(len(bars), len(closes)),
+                }
             first_close = Decimal(closes[0])
             curve = []
             target_points = max(2, points or len(closes))
@@ -365,9 +387,18 @@ class BacktestApiService:
                 "data_quality": usage.get("data_quality") or "primary",
                 "fallback_used": bool(usage.get("fallback_used", False)),
                 "message": "benchmark curve built from market data",
+                "bars_total": len(bars),
+                "usable_bars": len(closes),
+                "missing_bar_ratio": self._missing_bar_ratio(len(bars), len(closes)),
             }
         except Exception as exc:
             return {**fallback, "message": f"benchmark provider unavailable: {exc}"}
+
+    def _missing_bar_ratio(self, total_bars: int, usable_bars: int) -> float | None:
+        if total_bars <= 0:
+            return None
+        missing = max(0, total_bars - usable_bars)
+        return round(missing / total_bars, 6)
 
     def _build_equity_curve(self, returns: list[float]) -> list[dict[str, Any]]:
         curve = [{"step": 0, "equity": 1.0, "return_pct": 0.0}]

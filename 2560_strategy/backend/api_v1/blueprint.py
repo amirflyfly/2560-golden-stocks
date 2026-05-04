@@ -61,7 +61,10 @@ def readiness_check():
 def market_data_health_check():
     provider = create_fallback_market_data_provider()
     result = provider.health_check()
-    return success(result.to_dict())
+    data = result.to_dict()
+    if hasattr(provider, "usage_metadata"):
+        data.update(provider.usage_metadata())
+    return success(data)
 
 
 @api_v1_bp.get("/me")

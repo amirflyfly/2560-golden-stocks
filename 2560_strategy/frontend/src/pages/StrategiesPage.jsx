@@ -8,6 +8,13 @@ function percent(value) {
   return `${(Number(value) * 100).toFixed(2)}%`;
 }
 
+function benchmarkQualityLabel(benchmark) {
+  if (!benchmark) return '-';
+  const source = benchmark.source || benchmark.code || '-';
+  const quality = benchmark.data_quality || 'unknown';
+  return benchmark.fallback_used ? `${quality} / ${source} / fallback` : `${quality} / ${source}`;
+}
+
 function todayMinus(days) {
   const date = new Date();
   date.setDate(date.getDate() - days);
@@ -276,6 +283,11 @@ export function StrategiesPage({ authz, pagePayload = {} }) {
             <MetricCard label="累计收益" value={percent(summary.total_return)} />
             <MetricCard label="估算净收益" value={percent(summary.net_total_return)} />
             <MetricCard label="基准收益" value={percent(summary.benchmark?.total_return)} />
+            <MetricCard
+              label="基准数据"
+              value={benchmarkQualityLabel(summary.benchmark)}
+              danger={summary.benchmark?.fallback_used || summary.benchmark?.data_quality === 'mock'}
+            />
             <MetricCard label="超额收益" value={percent(summary.benchmark?.excess_return)} danger={Number(summary.benchmark?.excess_return || 0) < 0} />
             <MetricCard label="最大回撤" value={percent(summary.max_drawdown)} danger={Number(summary.max_drawdown) >= 0.12} />
             <MetricCard label="夏普比率" value={summary.sharpe_ratio ?? '-'} />

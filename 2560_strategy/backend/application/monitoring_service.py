@@ -11,6 +11,7 @@ from sqlalchemy import text
 
 from backend.core.config import effective_repository_backends, get_settings
 from backend.db.session import get_engine, session_scope
+from backend.application.task_api_service import task_lifecycle_status
 from backend.infrastructure.cache.redis_client import cache_health
 from backend.infrastructure.market_data.factory import create_fallback_market_data_provider
 from backend.infrastructure.tasks.queue import list_tasks, mark_stale_tasks
@@ -80,13 +81,23 @@ class MonitoringService:
     def task_summary(self, tenant_id: int) -> dict:
         mark_stale_tasks()
         tasks = [task for task in list_tasks(limit=200) if task.get("tenant_id") == tenant_id]
+        return self._summarize_tasks(tasks)
+
+    def all_task_summary(self) -> dict:
+        mark_stale_tasks()
+        return self._summarize_tasks(list_tasks(limit=200))
+
+    def _summarize_tasks(self, tasks: list[dict]) -> dict:
         by_status: dict[str, int] = {}
+        by_lifecycle_status: dict[str, int] = {}
         by_name: dict[str, int] = {}
         by_failure_category: dict[str, int] = {}
         for task in tasks:
             status = task.get("status") or "unknown"
+            lifecycle_status = task_lifecycle_status(status)
             name = task.get("name") or "unknown"
             by_status[status] = by_status.get(status, 0) + 1
+            by_lifecycle_status[lifecycle_status] = by_lifecycle_status.get(lifecycle_status, 0) + 1
             by_name[name] = by_name.get(name, 0) + 1
             category = task.get("failure_category")
             if category:
@@ -94,6 +105,7 @@ class MonitoringService:
         return {
             "total": len(tasks),
             "by_status": by_status,
+            "by_lifecycle_status": by_lifecycle_status,
             "by_name": by_name,
             "by_failure_category": by_failure_category,
             "recent": tasks[:5],
@@ -123,23 +135,36 @@ class MonitoringService:
         database = self.database_health()
         cache = cache_health().to_dict()
         schema_revision = self.schema_revision_health()
+        tasks = self.all_task_summary()
         repository_backends = effective_repository_backends(settings.environment)
         production = (settings.environment or "").strip().lower() in {"prod", "production"}
         repositories_ok = not production or all(value == "mysql" for value in repository_backends.values())
         cache_ok = bool(cache.get("ok")) and (not production or cache.get("backend") == "redis")
         schema_ok = (not production) or bool(schema_revision.get("ok"))
-        ready = bool(database.get("ok")) and cache_ok and repositories_ok and schema_ok
+        stale_tasks = tasks["by_lifecycle_status"].get("stale", 0)
+        running_tasks = tasks["by_lifecycle_status"].get("running", 0) + tasks["by_lifecycle_status"].get("queued", 0)
+        task_health_ok = not production or stale_tasks == 0
+        ready = bool(database.get("ok")) and cache_ok and repositories_ok and schema_ok and task_health_ok
         return {
             "ready": ready,
             "environment": settings.environment,
             "database": database,
             "schema_revision": schema_revision,
             "cache": cache,
+            "tasks": {
+                "total": tasks["total"],
+                "running_or_queued": running_tasks,
+                "failed": tasks["by_lifecycle_status"].get("failed", 0),
+                "stale": stale_tasks,
+                "by_lifecycle_status": tasks["by_lifecycle_status"],
+                "by_failure_category": tasks["by_failure_category"],
+            },
             "repository_backends": repository_backends,
             "checks": {
                 "database": bool(database.get("ok")),
                 "schema_revision": schema_ok,
                 "cache": cache_ok,
+                "tasks": task_health_ok,
                 "repository_backends": repositories_ok,
             },
         }
@@ -153,6 +178,7 @@ class MonitoringService:
             "tasks_running": status.get("running", 0),
             "tasks_pending": status.get("pending", 0),
             "tasks_completed": status.get("completed", 0),
+            "tasks_stale": status.get("stale", 0),
             "tasks_failed": status.get("failed", 0),
             "cache_ok": cache_health().ok,
             "database_ok": self.database_health()["ok"],

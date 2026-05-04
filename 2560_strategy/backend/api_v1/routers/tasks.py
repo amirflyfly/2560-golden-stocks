@@ -25,6 +25,8 @@ def list_background_tasks():
             pagination,
             name=request.args.get("name"),
             status=request.args.get("status"),
+            sort=request.args.get("sort"),
+            order=request.args.get("order"),
         )
     )
 

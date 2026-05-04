@@ -80,6 +80,21 @@ def test_api_v1_health_response_shape():
     assert data["data"]["status"] == "ok"
 
 
+def test_market_data_health_exposes_provider_usage_metadata():
+    app = create_app({"TESTING": True})
+    client = app.test_client()
+
+    response = client.get("/api/v1/market-data/health")
+    data = response.get_json()["data"]
+
+    assert response.status_code == 200
+    assert data["provider"]
+    assert data["actual_provider"]
+    assert isinstance(data["provider_chain"], list)
+    assert "fallback_used" in data
+    assert data["data_quality"] in {"primary", "fallback", "mock", "unknown"}
+
+
 
 def test_security_headers_and_cookie_attributes_are_set(client):
     response = client.get("/login")
@@ -323,16 +338,65 @@ def test_task_center_paginates_and_exposes_failure_summary(client):
             }
         )
 
-    response = authed.get("/api/v1/tasks?page=1&page_size=5&status=failed", headers=tenant_headers(authed))
+    response = authed.get(
+        "/api/v1/tasks?page=1&page_size=5&status=failed&sort=created_at&order=asc",
+        headers=tenant_headers(authed),
+    )
     data = response.get_json()["data"]
 
     assert response.status_code == 200
     assert data["total"] == 1
     assert data["page"] == 1
     assert data["page_size"] == 5
+    assert data["sort"] == {"field": "created_at", "order": "asc"}
+    assert data["filters"]["normalized_status"] == "failed"
     assert data["items"][0]["failure_category"] == "validation"
+    assert data["items"][0]["lifecycle_status"] == "failed"
     assert data["items"][0]["error_summary"] == "bad input"
     assert data["items"][0]["events"]
+
+
+def test_task_center_accepts_lifecycle_status_aliases_and_sorting(client):
+    from backend.infrastructure.tasks.queue import save_task
+
+    authed = login_as(client, "editor_task_aliases")
+    for task_id, status, created_at, duration in [
+        ("task-alias-old", "completed", "2026-05-04T09:00:00", 1.0),
+        ("task-alias-new", "completed", "2026-05-04T10:00:00", 2.0),
+        ("task-alias-cancelled", "cancelled", "2026-05-04T11:00:00", 3.0),
+    ]:
+        save_task(
+            {
+                "id": task_id,
+                "name": "alias.strategy",
+                "tenant_id": 1,
+                "status": status,
+                "payload": {},
+                "idempotency_key": task_id,
+                "retry_count": 0,
+                "max_retries": 0,
+                "failure_category": "cancelled" if status == "cancelled" else None,
+                "heartbeat_at": created_at,
+                "duration_seconds": duration,
+                "events": [{"status": status, "message": "done", "at": created_at}],
+                "created_at": created_at,
+                "started_at": created_at,
+                "finished_at": created_at,
+                "result": {"matched_count": 1},
+                "error": None,
+            }
+        )
+
+    succeeded = authed.get(
+        "/api/v1/tasks?page=1&page_size=10&name=alias.strategy&status=succeeded&sort=duration_seconds&order=desc",
+        headers=tenant_headers(authed),
+    ).get_json()["data"]
+    canceled = authed.get("/api/v1/tasks?name=alias.strategy&status=canceled", headers=tenant_headers(authed)).get_json()["data"]
+
+    assert [item["id"] for item in succeeded["items"][:2]] == ["task-alias-new", "task-alias-old"]
+    assert {item["lifecycle_status"] for item in succeeded["items"]} == {"succeeded"}
+    assert canceled["items"][0]["id"] == "task-alias-cancelled"
+    assert canceled["items"][0]["lifecycle_status"] == "canceled"
 
 
 def test_task_center_cancels_pending_task_and_marks_stale_task(client):
@@ -397,6 +461,40 @@ def test_task_center_cancels_pending_task_and_marks_stale_task(client):
     assert cancelled["finished_at"]
     assert stale_response.status_code == 200
     assert any(item["id"] == "task-stale-me" and item["failure_category"] == "stale" for item in stale_items)
+
+
+def test_readiness_includes_task_health_summary(client):
+    from backend.infrastructure.tasks.queue import save_task
+
+    save_task(
+        {
+            "id": "task-readiness-stale",
+            "name": "scan.strategy",
+            "tenant_id": 1,
+            "status": "running",
+            "payload": {},
+            "idempotency_key": "task-readiness-stale",
+            "retry_count": 0,
+            "max_retries": 0,
+            "failure_category": None,
+            "heartbeat_at": "2026-05-04T00:00:00",
+            "duration_seconds": None,
+            "events": [{"status": "running", "message": "worker started", "at": "2026-05-04T00:00:00"}],
+            "created_at": "2026-05-04T00:00:00",
+            "started_at": "2026-05-04T00:00:00",
+            "finished_at": None,
+            "result": None,
+            "error": None,
+        }
+    )
+
+    response = client.get("/api/v1/readiness")
+    data = response.get_json()["data"]
+
+    assert response.status_code in {200, 503}
+    assert data["checks"]["tasks"] is True
+    assert data["tasks"]["stale"] >= 1
+    assert data["tasks"]["by_failure_category"]["stale"] >= 1
 
 
 
@@ -956,6 +1054,9 @@ def test_strategy_backtest_api_returns_structured_summary_and_audit(client, monk
     assert data["data"]["summary"]["benchmark"]["total_return"] == 0.03
     assert data["data"]["summary"]["benchmark"]["excess_return"] == 0.09
     assert data["data"]["summary"]["benchmark"]["curve"]
+    assert data["data"]["summary"]["data_contract"]["benchmark_source"] == "synthetic"
+    assert data["data"]["summary"]["data_contract"]["adjust"] == "qfq"
+    assert data["data"]["summary"]["data_contract"]["mock_or_fallback"] is True
     assert data["data"]["summary"]["portfolio_curve"][0]["excess_return_pct"] == 0
     assert data["data"]["summary"]["risk_attribution"]["schema_version"] == "risk-attribution/v1"
     assert data["data"]["summary"]["experiment"]["params"]["benchmark_code"] == "000300"
@@ -1021,11 +1122,18 @@ def test_strategy_backtest_builds_real_benchmark_curve_from_market_data(client, 
         headers=tenant_headers(authed, include_csrf=True),
     )
     benchmark = response.get_json()["data"]["summary"]["benchmark"]
+    data_contract = response.get_json()["data"]["summary"]["data_contract"]
 
     assert response.status_code == 202
     assert benchmark["source"] == "akshare"
     assert benchmark["data_quality"] == "primary"
     assert benchmark["fallback_used"] is False
+    assert benchmark["bars_total"] == 3
+    assert benchmark["usable_bars"] == 3
+    assert benchmark["missing_bar_ratio"] == 0
+    assert data_contract["benchmark_source"] == "akshare"
+    assert data_contract["trading_calendar_source"] == "akshare"
+    assert data_contract["mock_or_fallback"] is False
     assert benchmark["total_return"] == 0.2
     assert benchmark["curve"][-1]["return_pct"] == 0.2
 

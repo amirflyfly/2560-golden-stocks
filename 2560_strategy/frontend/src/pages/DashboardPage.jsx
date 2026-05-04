@@ -14,6 +14,11 @@ function countByStatus(items, status) {
   return items.filter((item) => String(item.status || '').toLowerCase() === status).length;
 }
 
+function providerChainLabel(market) {
+  const chain = market?.provider_chain;
+  return Array.isArray(chain) && chain.length ? chain.join(' -> ') : market?.provider || '-';
+}
+
 export function DashboardPage({ onNavigate }) {
   const [state, setState] = useState({
     loading: true,
@@ -82,8 +87,13 @@ export function DashboardPage({ onNavigate }) {
       />
 
       {state.error ? <div className="alert">{state.error}</div> : null}
-      {!marketOk || state.market?.data_quality === 'mock' ? (
-        <div className="alert warning">Market data quality is {marketQualityLabel(state.market)}. Scan and backtest conclusions need review.</div>
+      {!marketOk || state.market?.data_quality === 'mock' || state.market?.fallback_used ? (
+        <div className="alert warning">
+          Market data quality is {marketQualityLabel(state.market)}.
+          {state.market?.fallback_used ? ` Fallback provider is active: ${state.market?.actual_provider || state.market?.provider || 'unknown'}.` : ''}
+          {state.market?.errors?.length ? ` Recent provider error: ${state.market.errors[0]}` : ''}
+          {' '}Scan and backtest conclusions need review.
+        </div>
       ) : null}
 
       <section className="grid">
@@ -133,6 +143,9 @@ export function DashboardPage({ onNavigate }) {
             <div className="summary-row"><span>Tenant</span><strong>{getTenantId()}</strong></div>
             <div className="summary-row"><span>Market status</span><strong>{marketQualityLabel(state.market)}</strong></div>
             <div className="summary-row"><span>Provider</span><strong>{state.market?.provider || '-'}</strong></div>
+            <div className="summary-row"><span>Actual provider</span><strong>{state.market?.actual_provider || state.market?.provider || '-'}</strong></div>
+            <div className="summary-row"><span>Provider chain</span><strong>{providerChainLabel(state.market)}</strong></div>
+            <div className="summary-row"><span>Fallback</span><strong>{state.market?.fallback_used ? 'yes' : 'no'}</strong></div>
             <div className="summary-row"><span>API</span><strong>{state.health?.status || '-'}</strong></div>
           </div>
         </article>

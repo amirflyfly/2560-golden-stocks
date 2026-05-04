@@ -94,11 +94,13 @@
 ## 9. 任务与运维
 
 - [x] 任务列表分页。
+- [x] 任务列表可筛选、排序，并返回统一生命周期状态 `queued/running/succeeded/failed/canceled/stale`。
 - [x] 任务状态准确。
 - [x] 失败任务展示 failure_category。
 - [x] 可取消任务。
 - [x] stale 任务可识别。
 - [x] 日志摘要可读。
+- [x] readiness 纳入任务健康摘要，生产环境存在 stale task 时不放行。
 
 ## 10. 上线前最终检查
 
@@ -132,9 +134,9 @@
 - [x] dry-run 覆盖字段映射、默认 `tenant_id=1`、重复 key 报告、归档跳过和策略 id 未解析报告。
 - [x] `scripts/validate_mysql_schema.py` 已检查 `0002_picks_v1_contract_fields`、picks v1 columns 和 `uk_picks_tenant_date_symbol_source`。
 - [x] `tests/test_sqlite_to_mysql_migration.py` 已覆盖 dry-run 不改 SQLite 源库。
-- [ ] staging MySQL 写入迁移已验证。
-- [ ] 迁移后源/目标行数、关键字段、tenant 默认映射和去重约束已对账。
-- [ ] 迁移幂等重跑、备份恢复和回滚演练已完成。
+- [x] staging MySQL 写入迁移已验证，证据见 `docs/product/STAGING_MIGRATION_REPORT.md`。
+- [x] 迁移后源/目标行数、关键字段、tenant 默认映射和去重约束已对账。
+- [x] staging 幂等重跑、SQLite isolated backup/restore 和 MySQL dump/restore check 已完成。
 ## P6 Staging Pipeline Acceptance Update - 2026-05-04
 
 - [x] staging 迁移顺序已固化为 `scripts/staging_mysql_migration.py`。
@@ -170,6 +172,13 @@
 - [x] dry-run/apply 报告包含 SQLite 源库 `sha256`、大小和修改时间，用于确认 apply 与 dry-run 使用同一份源数据。
 - [x] 单测覆盖 apply 门禁、对账缺失、字段 mismatch、SQLite 表名安全和缺表 count。
 - [x] MySQL schema validator 失败路径已纳入单测，覆盖缺表、缺索引、缺字段、缺唯一约束和 Alembic revision 不匹配。
-- [ ] staging MySQL 写入迁移已执行。
-- [ ] staging 写入后对账报告确认源/目标行数、关键字段、tenant 默认映射和去重结果一致。
-- [ ] 幂等重跑、备份恢复和回滚演练已完成。
+- [x] staging MySQL 写入迁移已执行，统一以 `P6 Staging Pipeline Acceptance Update` 和 `STAGING_MIGRATION_REPORT.md` 为准。
+- [x] staging 写入后对账报告确认源/目标行数、关键字段、tenant 默认映射和去重结果一致。
+- [x] staging 幂等重跑、备份恢复和回滚演练已完成。
+
+## P6 Production Soak Gates - 2026-05-04
+
+- [ ] 生产数据库备份已执行并完成恢复校验。
+- [ ] 生产 MySQL 主路径完成 soak，确认写入、备份恢复、迁移回滚演练稳定。
+- [ ] soak 通过后删除 SQLite 写路径。
+- [ ] SQLite 写路径删除后，再删除 `_repo_backend`、legacy repository 分支和 `legacy_payload_json` 兼容查询。
