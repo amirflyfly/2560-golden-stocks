@@ -26,6 +26,9 @@ def test_deploy_preflight_reports_required_production_baseline():
         "file:docs/refactor/BACKUP_RESTORE_RUNBOOK.md",
         "file:scripts/maintenance/mysql_restore_check.sh",
         "file:scripts/staging_mysql_migration.py",
+        "file:scripts/production_evidence.py",
+        "file:docs/product/PRODUCTION_EVIDENCE.md",
+        "file:docs/product/PRODUCTION_EVIDENCE.example.json",
         "git:critical-files-tracked",
     }:
         assert expected in names

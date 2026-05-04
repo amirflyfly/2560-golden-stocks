@@ -24,8 +24,11 @@ REQUIRED_FILES = [
     "scripts/maintenance/mysql_restore_check.sh",
     "scripts/bootstrap_mysql_seed.py",
     "scripts/staging_mysql_migration.py",
+    "scripts/production_evidence.py",
     "scripts/validate_mysql_schema.py",
     "docs/refactor/BACKUP_RESTORE_RUNBOOK.md",
+    "docs/product/PRODUCTION_EVIDENCE.md",
+    "docs/product/PRODUCTION_EVIDENCE.example.json",
 ]
 
 CRITICAL_TRACKED_FILES = [
@@ -67,6 +70,7 @@ CRITICAL_TRACKED_FILES = [
     "backend/repositories/audit_logs_repo.py",
     "backend/services/research_service.py",
     "scripts/deploy_preflight.py",
+    "scripts/production_evidence.py",
     "scripts/check_repo_hygiene.py",
     "scripts/clean_repo_index.py",
     "scripts/validate_mysql_schema.py",
@@ -80,6 +84,8 @@ CRITICAL_TRACKED_FILES = [
     "docs/refactor/BACKUP_RESTORE_RUNBOOK.md",
     "docs/refactor/PRODUCTION_DEPLOY_RUNBOOK.md",
     "docs/product/P6_READ_WRITE_CUTOVER.md",
+    "docs/product/PRODUCTION_EVIDENCE.md",
+    "docs/product/PRODUCTION_EVIDENCE.example.json",
 ]
 
 REPOSITORY_BACKEND_ENV_VARS = [

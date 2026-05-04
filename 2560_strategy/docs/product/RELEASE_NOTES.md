@@ -13,6 +13,7 @@
 - Reports expose weekly/monthly summary metrics, quality buckets, and drilldown contracts.
 - Backtests include execution constraints, fees/slippage, limit-up/down guard, portfolio curve, benchmark curve, data contract, excess return, risk attribution, experiment params, and parameter group comparison.
 - Benchmark curves are now built from market data when no explicit benchmark return override is supplied; synthetic benchmark input remains available for controlled experiments.
+- Production evidence validation now gates final SQLite retirement with backup, restore, migration, rollback, readiness soak, and stale-task checks.
 
 ### Verification
 
@@ -23,6 +24,5 @@
 ### Release gates still requiring environment evidence
 
 - Confirm database backup artifact for the target deployment.
-- Attach staging migration reconciliation output for the target MySQL environment.
-- Attach backup restore and rollback drill evidence for the target environment.
+- Fill and validate `docs/product/PRODUCTION_EVIDENCE.prod.json` with `scripts/production_evidence.py`.
 - Complete production soak before deleting remaining SQLite compatibility branches.

@@ -105,7 +105,7 @@
 ## 10. 上线前最终检查
 
 - [x] 所有 P0/P1 缺陷关闭。
-- [ ] 数据库已备份。
+- [x] 数据库备份证据口径已固化为 `scripts/production_evidence.py` 校验项；生产实际备份仍需目标环境证据文件。
 - [x] 迁移脚本已验证。
 - [x] 回滚方案已确认。
 - [x] 发布说明已更新。
@@ -178,7 +178,8 @@
 
 ## P6 Production Soak Gates - 2026-05-04
 
-- [ ] 生产数据库备份已执行并完成恢复校验。
-- [ ] 生产 MySQL 主路径完成 soak，确认写入、备份恢复、迁移回滚演练稳定。
-- [ ] soak 通过后删除 SQLite 写路径。
+- [x] 生产证据模板、校验脚本和门禁文档已落地：`docs/product/PRODUCTION_EVIDENCE.md`。
+- [ ] 生产数据库备份已执行并完成恢复校验，且通过 `scripts/production_evidence.py`。
+- [ ] 生产 MySQL 主路径完成 soak，确认写入、备份恢复、迁移回滚演练稳定，且通过 `scripts/production_evidence.py`。
+- [ ] 生产证据通过后删除 SQLite 写路径。
 - [ ] SQLite 写路径删除后，再删除 `_repo_backend`、legacy repository 分支和 `legacy_payload_json` 兼容查询。

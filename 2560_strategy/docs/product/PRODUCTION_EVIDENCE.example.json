@@ -1,0 +1,48 @@
+{
+  "schema_version": "production-evidence/v1",
+  "environment": "production",
+  "backup": {
+    "artifact": "mysql-dump-YYYYMMDDHHMM.sql.gz",
+    "created_at": "2026-05-04T00:00:00Z",
+    "sha256": "",
+    "size_bytes": 0,
+    "restore_verified": false,
+    "restore_target": "restore_check_prod_YYYYMMDD",
+    "restore_checked_at": ""
+  },
+  "migration": {
+    "alembic_revision": "0011_user_engagement_fields",
+    "schema_validation_ok": false,
+    "reconciliation_ok": false,
+    "idempotent_rerun_ok": false,
+    "rollback_drill_ok": false
+  },
+  "soak": {
+    "started_at": "2026-05-04T00:00:00Z",
+    "ended_at": "2026-05-04T02:00:00Z",
+    "readiness_samples": [
+      {
+        "at": "2026-05-04T00:00:00Z",
+        "ready": true,
+        "database_dialect": "mysql",
+        "cache_backend": "redis",
+        "repository_backends": {
+          "PICKS_REPOSITORY_BACKEND": "mysql",
+          "AUTH_REPOSITORY_BACKEND": "mysql",
+          "AUDIT_REPOSITORY_BACKEND": "mysql",
+          "SETTINGS_REPOSITORY_BACKEND": "mysql",
+          "LOGS_REPOSITORY_BACKEND": "mysql",
+          "STRATEGY_POOL_REPOSITORY_BACKEND": "mysql",
+          "STRATEGY_REPOSITORY_BACKEND": "mysql"
+        },
+        "tasks_stale": 0
+      }
+    ],
+    "errors": []
+  },
+  "sqlite_retirement": {
+    "delete_sqlite_write_path": false,
+    "delete_legacy_repo_branches": false,
+    "delete_legacy_payload_json_queries": false
+  }
+}
