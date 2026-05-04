@@ -1,10 +1,28 @@
 {% extends 'base.html' %}
 
-{% block title %}首页概览 - 2560战法复盘系统{% endblock %}
+{% block title %}首页概览 - 飞哥复盘{% endblock %}
+
+{% block extra_css %}
+<style>
+    .stock-code-link {
+        color: #007bff;
+        text-decoration: none;
+        font-weight: 500;
+    }
+    
+    .stock-code-link:hover {
+        text-decoration: underline;
+        color: #0056b3;
+    }
+</style>
+{% endblock %}
 
 {% block content %}
 <div class="page-header">
-    <h1 class="page-title">首页概览</h1>
+    <h1 class="page-title">
+        <span class="page-icon">📊</span>
+        首页概览
+    </h1>
     <div class="page-actions">
         <button class="btn btn-primary" onclick="showAddModal()">
             <span class="btn-icon">+</span>
@@ -49,9 +67,12 @@
 </div>
 
 <div class="dashboard-grid">
-    <div class="card card-kpi">
+    <div class="card">
         <div class="card-header">
-            <h3 class="card-title">关键指标</h3>
+            <h3 class="card-title">
+                <span class="card-icon">📈</span>
+                关键指标
+            </h3>
         </div>
         <div class="card-body">
             <div class="kpi-list">
@@ -71,9 +92,12 @@
         </div>
     </div>
     
-    <div class="card card-backup">
+    <div class="card">
         <div class="card-header">
-            <h3 class="card-title">备份状态</h3>
+            <h3 class="card-title">
+                <span class="card-icon">💾</span>
+                备份状态
+            </h3>
         </div>
         <div class="card-body">
             <div class="backup-info">
@@ -96,22 +120,25 @@
 
 <div class="card">
     <div class="card-header">
-        <h3 class="card-title">筛选条件</h3>
+        <h3 class="card-title">
+            <span class="card-icon">🔍</span>
+            筛选条件
+        </h3>
         <button class="btn btn-sm btn-link" onclick="toggleFilter()">展开/收起</button>
     </div>
-    <div class="card-body">
+    <div class="card-body" id="filterBody">
         <form id="filterForm" method="GET" action="{{ url_for('main.dashboard') }}">
             <div class="filter-grid">
                 <div class="form-group">
                     <label class="form-label">关键词</label>
-                    <input type="text" name="keyword" class="form-input" value="{{ request_args.get('keyword', [''])[0] }}" placeholder="股票代码/名称">
+                    <input type="text" name="keyword" class="form-input" value="{{ request_args.get('keyword', '') }}" placeholder="股票代码/名称">
                 </div>
                 <div class="form-group">
                     <label class="form-label">策略</label>
                     <select name="strategy" class="form-select">
                         <option value="">全部策略</option>
                         {% for item in strategy_options %}
-                        <option value="{{ item.code }}" {% if request_args.get('strategy', [''])[0] == item.code %}selected{% endif %}>{{ item.name }}</option>
+                        <option value="{{ item.code }}" {% if request_args.get('strategy', '') == item.code %}selected{% endif %}>{{ item.name }}</option>
                         {% endfor %}
                     </select>
                 </div>
@@ -120,7 +147,7 @@
                     <select name="channel" class="form-select">
                         <option value="">全部渠道</option>
                         {% for ch in by_channel %}
-                        <option value="{{ ch.name }}" {% if request_args.get('channel', [''])[0] == ch.name %}selected{% endif %}>{{ ch.name }}</option>
+                        <option value="{{ ch.name }}" {% if request_args.get('channel', '') == ch.name %}selected{% endif %}>{{ ch.name }}</option>
                         {% endfor %}
                     </select>
                 </div>
@@ -129,7 +156,7 @@
                     <select name="status" class="form-select">
                         <option value="">全部状态</option>
                         {% for st in by_status %}
-                        <option value="{{ st.name }}" {% if request_args.get('status', [''])[0] == st.name %}selected{% endif %}>{{ st.name }}</option>
+                        <option value="{{ st.name }}" {% if request_args.get('status', '') == st.name %}selected{% endif %}>{{ st.name }}</option>
                         {% endfor %}
                     </select>
                 </div>
@@ -138,17 +165,17 @@
                     <select name="grade" class="form-select">
                         <option value="">全部评级</option>
                         {% for g in ['S', 'A', 'B', 'C', '待定'] %}
-                        <option value="{{ g }}" {% if request_args.get('grade', [''])[0] == g %}selected{% endif %}>{{ g }}</option>
+                        <option value="{{ g }}" {% if request_args.get('grade', '') == g %}selected{% endif %}>{{ g }}</option>
                         {% endfor %}
                     </select>
                 </div>
                 <div class="form-group">
                     <label class="form-label">开始日期</label>
-                    <input type="date" name="date_from" class="form-input" value="{{ request_args.get('date_from', [''])[0] }}">
+                    <input type="date" name="date_from" class="form-input" value="{{ request_args.get('date_from', '') }}">
                 </div>
                 <div class="form-group">
                     <label class="form-label">结束日期</label>
-                    <input type="date" name="date_to" class="form-input" value="{{ request_args.get('date_to', [''])[0] }}">
+                    <input type="date" name="date_to" class="form-input" value="{{ request_args.get('date_to', '') }}">
                 </div>
             </div>
             <div class="filter-actions">
@@ -159,9 +186,13 @@
     </div>
 </div>
 
-<div class="card" style="margin-bottom: 24px;">
+<div class="card" style="margin-bottom: var(--spacing-lg);">
     <div class="card-header">
-        <h3 class="card-title">{{ target_date }} 策略入库概览 <span class="badge">{{ daily_strategy_matrix|selectattr('has_picks')|list|length }} / {{ daily_strategy_matrix|length }} 个策略有票</span></h3>
+        <h3 class="card-title">
+            <span class="card-icon">🎯</span>
+            {{ target_date }} 策略入库概览
+            <span class="badge">{{ daily_strategy_matrix|selectattr('has_picks')|list|length }} / {{ daily_strategy_matrix|length }} 个策略有票</span>
+        </h3>
     </div>
     <div class="card-body p-0">
         <div class="table-responsive">
@@ -209,9 +240,16 @@
     </div>
 </div>
 
-<div class="card" style="margin-bottom: 24px;">
+<div class="card" style="margin-bottom: var(--spacing-lg);">
     <div class="card-header">
-        <h3 class="card-title">{{ target_date }} 当日入库股票{% if selected_strategy %} · {{ strategy_options|selectattr('code','equalto',selected_strategy)|map(attribute='name')|first|default(selected_strategy) }}{% endif %} <span class="badge">{{ daily_strategy_picks|length }} 条</span></h3>
+        <h3 class="card-title">
+            <span class="card-icon">📋</span>
+            {{ target_date }} 当日入库股票
+            {% if selected_strategy %}
+            <span class="badge">· {{ strategy_options|selectattr('code','equalto',selected_strategy)|map(attribute='name')|first|default(selected_strategy) }}</span>
+            {% endif %}
+            <span class="badge">{{ daily_strategy_picks|length }} 条</span>
+        </h3>
     </div>
     <div class="card-body p-0">
         <div class="table-responsive">
@@ -233,7 +271,11 @@
                         <td>{{ pick.pick_date }}</td>
                         <td><span class="tag">{{ pick.strategy_name or '2560' }}</span></td>
                         <td class="font-medium">{{ pick.name }}</td>
-                        <td class="text-muted">{{ pick.code }}</td>
+                        <td class="text-muted">
+                            <a href="{{ url_for('strategies.react_stock_chart') }}?code={{ pick.code }}" class="stock-code-link" target="_blank">
+                                {{ pick.code }}
+                            </a>
+                        </td>
                         <td>{{ pick.pick_price }}</td>
                         <td>{{ pick.signal or '-' }}</td>
                         <td>{{ pick.review_status or '未复盘' }}</td>
@@ -257,7 +299,11 @@
 
 <div class="card">
     <div class="card-header">
-        <h3 class="card-title">最新记录 <span class="badge">{{ filter_count }} 条</span></h3>
+        <h3 class="card-title">
+            <span class="card-icon">📅</span>
+            最新记录
+            <span class="badge">{{ filter_count }} 条</span>
+        </h3>
         <div class="batch-actions" id="batchActions" style="display: none;">
             <select id="batchStatus" class="form-select form-select-sm">
                 <option value="值得复讲">值得复讲</option>
@@ -282,6 +328,7 @@
                         <th>复盘状态</th>
                         <th>评级</th>
                         <th>成交</th>
+                        <th>截止今天 涨幅</th>
                         <th>操作</th>
                     </tr>
                 </thead>
@@ -291,7 +338,11 @@
                         <td><input type="checkbox" class="pick-checkbox" value="{{ pick.id }}" onchange="updateBatchActions()"></td>
                         <td>{{ pick.pick_date }}</td>
                         <td class="font-medium">{{ pick.name }}</td>
-                        <td class="text-muted">{{ pick.code }}</td>
+                        <td class="text-muted">
+                            <a href="{{ url_for('strategies.react_stock_chart') }}?code={{ pick.code }}" class="stock-code-link" target="_blank">
+                                {{ pick.code }}
+                            </a>
+                        </td>
                         <td>{{ pick.pick_price }}</td>
                         <td><span class="tag">{{ pick.source_channel or '-' }}</span></td>
                         <td>
@@ -302,15 +353,22 @@
                         <td><span class="grade grade-{{ pick.result_grade | lower }}">{{ pick.result_grade or '待定' }}</span></td>
                         <td>{{ pick.deal_status or '未成交' }}</td>
                         <td>
+                            {% if pick.change_pct is not none %}
+                                <span class="{{ 'text-success' if pick.change_pct >= 0 else 'text-danger' }}">{{ pick.change_pct }}%</span>
+                            {% else %}
+                                <span class="text-muted">-</span>
+                            {% endif %}
+                        </td>
+                        <td>
                             <div class="action-btns">
                                 <a href="{{ url_for('main.edit', id=pick.id) }}" class="btn btn-link btn-sm">编辑</a>
-                                <button class="btn btn-link btn-sm text-danger" onclick="deletePick({{ pick.id }})">删除</button>
+                                <button class="btn btn-link btn-sm text-danger" onclick="deletePick({{ pick.id }})")">删除</button>
                             </div>
                         </td>
                     </tr>
                     {% else %}
                     <tr>
-                        <td colspan="10" class="text-center text-muted py-8">暂无数据</td>
+                        <td colspan="11" class="text-center text-muted py-8">暂无数据</td>
                     </tr>
                     {% endfor %}
                 </tbody>
@@ -342,7 +400,10 @@
 <div id="addModal" class="modal">
     <div class="modal-content">
         <div class="modal-header">
-            <h3 class="modal-title">新增记录</h3>
+            <h3 class="modal-title">
+                <span class="modal-icon">+</span>
+                新增记录
+            </h3>
             <button class="modal-close" onclick="closeModal('addModal')">×</button>
         </div>
         <form id="addForm" class="modal-body">
@@ -427,7 +488,10 @@
 <div id="importModal" class="modal">
     <div class="modal-content">
         <div class="modal-header">
-            <h3 class="modal-title">批量导入</h3>
+            <h3 class="modal-title">
+                <span class="modal-icon">📥</span>
+                批量导入
+            </h3>
             <button class="modal-close" onclick="closeModal('importModal')">×</button>
         </div>
         <form id="importForm" class="modal-body">
@@ -555,7 +619,7 @@ function deletePick(id) {
 }
 
 function toggleFilter() {
-    const filterBody = document.querySelector('.card-body');
+    const filterBody = document.getElementById('filterBody');
     const filterButton = document.querySelector('.card-header .btn-link');
     
     if (filterBody.style.display === 'none') {

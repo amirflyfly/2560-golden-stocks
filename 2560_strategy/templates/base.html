@@ -5,6 +5,228 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}飞哥复盘{% endblock %}</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/main.css') }}">
+    <style>
+        .top-bar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 20px;
+            background: var(--bg-primary);
+            border-bottom: 1px solid var(--border-color);
+            margin-bottom: 20px;
+        }
+        
+        .top-actions {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+        
+        .theme-toggle {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            padding: 6px 12px;
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+            cursor: pointer;
+        }
+        
+        .language-selector select {
+            padding: 6px 12px;
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+        }
+        
+        .user-menu {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+        }
+        
+        .user-info {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .user-avatar {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            background: var(--primary-color);
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 600;
+        }
+        
+        .user-details {
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .user-name {
+            font-weight: 500;
+            color: var(--text-primary);
+        }
+        
+        .user-points {
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+        
+        .user-actions {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .action-btn {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            padding: 6px 12px;
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+            text-decoration: none;
+            font-size: 14px;
+            transition: all 0.3s ease;
+        }
+        
+        .action-btn:hover {
+            background: var(--bg-tertiary);
+        }
+        
+        .action-btn.logout-btn {
+            color: #dc3545;
+            border-color: #dc3545;
+        }
+        
+        .action-btn.logout-btn:hover {
+            background: #dc3545;
+            color: white;
+        }
+        
+        .action-icon {
+            font-size: 14px;
+        }
+        
+        .action-text {
+            font-size: 14px;
+        }
+        
+        .user-dropdown {
+            position: relative;
+        }
+        
+        .user-info {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            cursor: pointer;
+            padding: 6px 12px;
+            border-radius: 4px;
+            transition: background-color 0.3s ease;
+        }
+        
+        .user-info:hover {
+            background-color: var(--bg-tertiary);
+        }
+        
+        .dropdown-arrow {
+            font-size: 12px;
+            color: var(--text-secondary);
+            transition: transform 0.3s ease;
+        }
+        
+        .user-info.open .dropdown-arrow {
+            transform: rotate(180deg);
+        }
+        
+        .user-dropdown-menu {
+            position: absolute;
+            top: 100%;
+            right: 0;
+            background: var(--bg-primary);
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+            min-width: 180px;
+            z-index: 1000;
+            display: none;
+            margin-top: 5px;
+        }
+        
+        .user-dropdown-menu.show {
+            display: block;
+        }
+        
+        .dropdown-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 15px;
+            color: var(--text-primary);
+            text-decoration: none;
+            transition: background-color 0.3s ease;
+        }
+        
+        .dropdown-item:hover {
+            background-color: var(--bg-secondary);
+        }
+        
+        .dropdown-icon {
+            font-size: 14px;
+        }
+        
+        .dropdown-text {
+            font-size: 14px;
+        }
+        
+        .dropdown-divider {
+            height: 1px;
+            background-color: var(--border-color);
+            margin: 5px 0;
+        }
+        
+        .dropdown-item.logout-item {
+            color: #dc3545;
+        }
+        
+        .dropdown-item.logout-item:hover {
+            background-color: #dc3545;
+            color: white;
+        }
+        
+        @media (max-width: 768px) {
+            .top-bar {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 10px;
+            }
+            
+            .user-menu {
+                width: 100%;
+                justify-content: flex-end;
+            }
+            
+            .user-details {
+                display: none;
+            }
+            
+            .user-dropdown-menu {
+                min-width: 150px;
+            }
+        }
+    </style>
     {% block extra_css %}{% endblock %}
 </head>
 <body class="{{ 'dark-mode' if dark_mode else '' }}">
@@ -39,9 +261,13 @@
                 </a>
                 <div class="nav-divider"></div>
                 <div class="nav-section-title">{{ _('策略中心') }}</div>
-                <a href="{{ url_for('strategies.index') }}" class="nav-item {% if request.endpoint and request.endpoint.startswith('strategies.') %}active{% endif %}">
+                <a href="{{ url_for('strategies.index') }}" class="nav-item {% if request.endpoint and request.endpoint.startswith('strategies.') and not request.endpoint.endswith('react_stock_chart') %}active{% endif %}">
                     <span class="nav-icon">🎯</span>
                     <span class="nav-text">{{ _('策略管理') }}</span>
+                </a>
+                <a href="{{ url_for('strategies.react_stock_chart') }}" class="nav-item {% if request.endpoint and request.endpoint.endswith('react_stock_chart') %}active{% endif %}">
+                    <span class="nav-icon">📊</span>
+                    <span class="nav-text">股票K线</span>
                 </a>
                 {% if user.role == 'admin' %}
                 <div class="nav-divider"></div>
@@ -56,32 +282,7 @@
                 </a>
                 {% endif %}
             </nav>
-            <div class="sidebar-footer">
-                <div class="user-info">
-                    <div class="user-avatar">{{ user.username[0] | upper }}</div>
-                    <div class="user-details">
-                        <div class="user-name">{{ user.username }}</div>
-                        <div class="user-role">{{ user.role }}</div>
-                        {% if user.points %}
-                        <div class="user-points">{{ _('积分') }}: {{ user.points }}</div>
-                        {% endif %}
-                    </div>
-                </div>
-                <div class="user-actions">
-                    <a href="{{ url_for('main.user_profile') }}" class="action-btn">
-                        <span class="action-icon">👤</span>
-                        <span class="action-text">{{ _('个人信息') }}</span>
-                    </a>
-                    <a href="{{ url_for('main.checkin') }}" class="action-btn">
-                        <span class="action-icon">📅</span>
-                        <span class="action-text">{{ _('签到') }}</span>
-                    </a>
-                    <a href="{{ url_for('main.logout') }}" class="action-btn logout-btn">
-                        <span class="action-icon">🚪</span>
-                        <span class="action-text">{{ _('退出登录') }}</span>
-                    </a>
-                </div>
-            </div>
+
         </aside>
         {% endif %}
         
@@ -98,6 +299,35 @@
                             <option value="zh-CN" {% if current_language == 'zh-CN' %}selected{% endif %}>中文</option>
                             <option value="en-US" {% if current_language == 'en-US' %}selected{% endif %}>English</option>
                         </select>
+                    </div>
+                </div>
+                <div class="user-menu">
+                    <div class="user-dropdown">
+                        <div class="user-info" id="userDropdownToggle" onclick="toggleUserDropdown()">
+                            <div class="user-avatar">{{ user.username[0] | upper }}</div>
+                            <div class="user-details">
+                                <div class="user-name">{{ user.username }}</div>
+                                {% if user.points %}
+                                <div class="user-points">{{ _('积分') }}: {{ user.points }}</div>
+                                {% endif %}
+                            </div>
+                            <span class="dropdown-arrow">▼</span>
+                        </div>
+                        <div class="user-dropdown-menu" id="userDropdownMenu">
+                            <a href="{{ url_for('main.user_profile') }}" class="dropdown-item">
+                                <span class="dropdown-icon">👤</span>
+                                <span class="dropdown-text">{{ _('个人信息') }}</span>
+                            </a>
+                            <a href="{{ url_for('main.checkin') }}" class="dropdown-item">
+                                <span class="dropdown-icon">📅</span>
+                                <span class="dropdown-text">{{ _('签到') }}</span>
+                            </a>
+                            <div class="dropdown-divider"></div>
+                            <a href="{{ url_for('main.logout') }}" class="dropdown-item logout-item">
+                                <span class="dropdown-icon">🚪</span>
+                                <span class="dropdown-text">{{ _('退出登录') }}</span>
+                            </a>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -187,6 +417,28 @@
                 const themeText = document.querySelector('.theme-text');
                 if (themeIcon) themeIcon.textContent = '☀️';
                 if (themeText) themeText.textContent = '{{ _('明亮模式') }}';
+            }
+        });
+        
+        // User dropdown toggle
+        function toggleUserDropdown() {
+            const dropdownToggle = document.getElementById('userDropdownToggle');
+            const dropdownMenu = document.getElementById('userDropdownMenu');
+            
+            if (dropdownToggle && dropdownMenu) {
+                dropdownToggle.classList.toggle('open');
+                dropdownMenu.classList.toggle('show');
+            }
+        }
+        
+        // Close dropdown when clicking outside
+        document.addEventListener('click', function(event) {
+            const dropdownToggle = document.getElementById('userDropdownToggle');
+            const dropdownMenu = document.getElementById('userDropdownMenu');
+            
+            if (dropdownToggle && dropdownMenu && !dropdownToggle.contains(event.target) && !dropdownMenu.contains(event.target)) {
+                dropdownToggle.classList.remove('open');
+                dropdownMenu.classList.remove('show');
             }
         });
     </script>

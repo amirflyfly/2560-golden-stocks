@@ -1,0 +1,2 @@
+﻿code,name,pick_price,signal,signal_strength,ma25,vol_ratio,price_to_ma25,risk_score,price_change_5d,price_change_20d,volume,turnover,date,reason_tag,note
+000001,平安银行,10.99,缩量回踩,3,10.8688,1.07,1.12,33.2,5.17,1.29,63252210,0.0032594822047016386,2026-03-30,缩量回踩,"MA25: 10.87, 量比: 1.07, 风险分: 33.2"

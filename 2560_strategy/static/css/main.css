@@ -1,4 +1,5 @@
 :root {
+    /* 支付宝主题色 */
     --primary-color: #1677ff;
     --primary-hover: #4096ff;
     --primary-light: #e6f4ff;
@@ -8,21 +9,63 @@
     --warning-light: #fffbe6;
     --danger-color: #ff4d4f;
     --danger-light: #fff2f0;
+    
+    /* 支付宝文本颜色 */
     --text-primary: #1f1f1f;
     --text-secondary: #666666;
     --text-muted: #999999;
-    --border-color: #e5e5e5;
+    
+    /* 支付宝背景色 */
     --bg-primary: #ffffff;
     --bg-secondary: #f5f5f5;
     --bg-tertiary: #fafafa;
+    --bg-light: #f7f8fa;
+    
+    /* 支付宝边框颜色 */
+    --border-color: #e5e5e5;
+    --border-light: #f0f0f0;
+    
+    /* 布局 */
     --sidebar-width: 220px;
+    --sidebar-collapsed: 64px;
     --header-height: 56px;
+    
+    /* 圆角 */
     --border-radius: 8px;
     --border-radius-lg: 12px;
-    --shadow-sm: 0 1px 2px rgba(0,0,0,0.03);
+    --border-radius-xl: 16px;
+    --border-radius-full: 9999px;
+    
+    /* 阴影 */
+    --shadow-sm: 0 1px 2px rgba(0,0,0,0.05);
     --shadow-md: 0 4px 12px rgba(0,0,0,0.08);
     --shadow-lg: 0 8px 24px rgba(0,0,0,0.12);
-    --transition: all 0.2s ease;
+    --shadow-xl: 0 12px 32px rgba(0,0,0,0.15);
+    
+    /* 过渡 */
+    --transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    --transition-fast: all 0.2s ease;
+    
+    /* 间距 */
+    --spacing-xs: 4px;
+    --spacing-sm: 8px;
+    --spacing-md: 16px;
+    --spacing-lg: 24px;
+    --spacing-xl: 32px;
+    
+    /* 字体 */
+    --font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+    --font-size-xs: 12px;
+    --font-size-sm: 14px;
+    --font-size-md: 16px;
+    --font-size-lg: 18px;
+    --font-size-xl: 24px;
+    
+    /* 高度 */
+    --btn-height-sm: 28px;
+    --btn-height-md: 36px;
+    --btn-height-lg: 44px;
+    --input-height: 36px;
 }
 
 * {
@@ -32,11 +75,136 @@
 }
 
 body {
-    font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
-    font-size: 14px;
+    font-family: var(--font-family);
+    font-size: var(--font-size-sm);
     line-height: 1.5;
     color: var(--text-primary);
-    background: var(--bg-secondary);
+    background: var(--bg-light);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
+
+/* 通用容器 */
+.container {
+    width: 100%;
+    max-width: 1280px;
+    margin: 0 auto;
+    padding: 0 var(--spacing-md);
+}
+
+/* 通用按钮样式 */
+.btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--spacing-xs);
+    padding: 0 var(--spacing-lg);
+    font-size: var(--font-size-sm);
+    font-weight: 500;
+    border: none;
+    border-radius: var(--border-radius);
+    cursor: pointer;
+    transition: var(--transition);
+    text-decoration: none;
+    height: var(--btn-height-md);
+    min-width: 80px;
+}
+
+.btn:hover {
+    transform: translateY(-1px);
+    box-shadow: var(--shadow-md);
+}
+
+.btn:active {
+    transform: translateY(0);
+}
+
+.btn-primary {
+    background: var(--primary-color);
+    color: #fff;
+}
+
+.btn-primary:hover {
+    background: var(--primary-hover);
+}
+
+.btn-secondary {
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+}
+
+.btn-secondary:hover {
+    background: var(--bg-tertiary);
+    border-color: var(--primary-color);
+}
+
+.btn-outline {
+    background: transparent;
+    color: var(--primary-color);
+    border: 1px solid var(--primary-color);
+}
+
+.btn-outline:hover {
+    background: var(--primary-light);
+}
+
+.btn-sm {
+    height: var(--btn-height-sm);
+    padding: 0 var(--spacing-md);
+    font-size: var(--font-size-xs);
+    min-width: 60px;
+}
+
+.btn-lg {
+    height: var(--btn-height-lg);
+    padding: 0 var(--spacing-xl);
+    font-size: var(--font-size-md);
+    min-width: 100px;
+}
+
+/* 输入框样式 */
+.form-input,
+.form-select,
+.form-textarea {
+    padding: 0 var(--spacing-md);
+    font-size: var(--font-size-sm);
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius);
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    transition: var(--transition);
+    height: var(--input-height);
+    width: 100%;
+}
+
+.form-input:focus,
+.form-select:focus,
+.form-textarea:focus {
+    outline: none;
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 3px var(--primary-light);
+}
+
+.form-input::placeholder,
+.form-textarea::placeholder {
+    color: var(--text-muted);
+}
+
+.form-textarea {
+    resize: vertical;
+    min-height: 80px;
+    padding: var(--spacing-sm) var(--spacing-md);
+    height: auto;
+}
+
+.form-select {
+    cursor: pointer;
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23666' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right var(--spacing-md) center;
+    background-size: 16px;
 }
 
 .app-container {
@@ -44,10 +212,11 @@ body {
     min-height: 100vh;
 }
 
+/* 支付宝风格侧边栏 */
 .sidebar {
     width: var(--sidebar-width);
-    background: linear-gradient(180deg, #1a1f36 0%, #0d1117 100%);
-    color: #fff;
+    background: var(--bg-primary);
+    color: var(--text-primary);
     display: flex;
     flex-direction: column;
     position: fixed;
@@ -55,35 +224,43 @@ body {
     top: 0;
     bottom: 0;
     z-index: 100;
-    transition: width 0.3s ease;
+    transition: var(--transition);
+    box-shadow: 0 0 20px rgba(0,0,0,0.05);
+    border-right: 1px solid var(--border-light);
 }
 
 .sidebar.collapsed {
-    width: 64px;
+    width: var(--sidebar-collapsed);
 }
 
 .sidebar-header {
-    padding: 20px;
-    border-bottom: 1px solid rgba(255,255,255,0.1);
+    padding: var(--spacing-lg);
+    border-bottom: 1px solid var(--border-light);
     display: flex;
     justify-content: space-between;
     align-items: center;
 }
 
 .sidebar-toggle {
-    background: transparent;
-    border: none;
-    color: rgba(255,255,255,0.7);
-    font-size: 16px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    color: var(--text-secondary);
+    font-size: 14px;
     cursor: pointer;
-    padding: 4px;
-    border-radius: 4px;
+    padding: var(--spacing-xs);
+    border-radius: var(--border-radius);
     transition: var(--transition);
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
 }
 
 .sidebar-toggle:hover {
-    background: rgba(255,255,255,0.1);
-    color: #fff;
+    background: var(--primary-light);
+    border-color: var(--primary-color);
+    color: var(--primary-color);
 }
 
 .sidebar.collapsed .logo-text {
@@ -113,59 +290,69 @@ body {
 
 .sidebar.collapsed .action-btn {
     justify-content: center;
-    padding: 8px;
+    padding: var(--spacing-sm);
 }
 
 .sidebar.collapsed .action-icon {
     font-size: 16px;
 }
 
-.sidebar-header {
-    padding: 20px;
-    border-bottom: 1px solid rgba(255,255,255,0.1);
-}
-
 .logo {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: var(--spacing-sm);
 }
 
 .logo-icon {
-    font-size: 28px;
+    font-size: 24px;
 }
 
 .logo-text {
-    font-size: 18px;
+    font-size: var(--font-size-md);
     font-weight: 600;
-    color: #fff;
+    color: var(--text-primary);
 }
 
 .sidebar-nav {
     flex: 1;
-    padding: 12px 0;
+    padding: var(--spacing-md) 0;
     overflow-y: auto;
 }
 
 .nav-item {
     display: flex;
     align-items: center;
-    gap: 12px;
-    padding: 12px 20px;
-    color: rgba(255,255,255,0.7);
+    gap: var(--spacing-sm);
+    padding: var(--spacing-md) var(--spacing-lg);
+    color: var(--text-secondary);
     text-decoration: none;
     transition: var(--transition);
+    border-radius: 0 var(--border-radius-full) var(--border-radius-full) 0;
+    margin-right: var(--spacing-md);
 }
 
 .nav-item:hover {
-    background: rgba(255,255,255,0.08);
-    color: #fff;
+    background: var(--primary-light);
+    color: var(--primary-color);
 }
 
 .nav-item.active {
-    background: linear-gradient(90deg, var(--primary-color), transparent);
-    color: #fff;
-    border-left: 3px solid var(--primary-color);
+    background: var(--primary-light);
+    color: var(--primary-color);
+    font-weight: 500;
+    position: relative;
+}
+
+.nav-item.active::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 3px;
+    height: 20px;
+    background: var(--primary-color);
+    border-radius: 0 3px 3px 0;
 }
 
 .nav-icon {
@@ -175,33 +362,34 @@ body {
 }
 
 .nav-text {
-    font-size: 14px;
+    font-size: var(--font-size-sm);
+    flex: 1;
 }
 
 .nav-divider {
     height: 1px;
-    background: rgba(255,255,255,0.1);
-    margin: 12px 20px;
+    background: var(--border-light);
+    margin: var(--spacing-md) var(--spacing-lg);
 }
 
 .nav-section-title {
-    padding: 12px 20px 8px;
-    font-size: 12px;
-    color: rgba(255,255,255,0.4);
+    padding: var(--spacing-md) var(--spacing-lg) var(--spacing-sm);
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
     text-transform: uppercase;
-    letter-spacing: 1px;
+    letter-spacing: 0.5px;
 }
 
 .sidebar-footer {
-    padding: 16px;
-    border-top: 1px solid rgba(255,255,255,0.1);
+    padding: var(--spacing-md);
+    border-top: 1px solid var(--border-light);
 }
 
 .user-info {
     display: flex;
     align-items: center;
-    gap: 12px;
-    margin-bottom: 12px;
+    gap: var(--spacing-sm);
+    margin-bottom: var(--spacing-md);
 }
 
 .user-avatar {
@@ -222,41 +410,46 @@ body {
 }
 
 .user-name {
-    font-size: 14px;
+    font-size: var(--font-size-sm);
     font-weight: 500;
-    color: #fff;
+    color: var(--text-primary);
 }
 
 .user-role {
-    font-size: 12px;
-    color: rgba(255,255,255,0.5);
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
 }
 
 .logout-btn {
     display: block;
-    padding: 10px;
+    padding: var(--spacing-sm);
     text-align: center;
-    color: rgba(255,255,255,0.6);
+    color: var(--text-secondary);
     text-decoration: none;
     border-radius: var(--border-radius);
     transition: var(--transition);
+    border: 1px solid var(--border-color);
+    margin-top: var(--spacing-sm);
 }
 
 .logout-btn:hover {
-    background: rgba(255,255,255,0.1);
-    color: #fff;
+    background: var(--bg-tertiary);
+    color: var(--danger-color);
+    border-color: var(--danger-color);
 }
 
+/* 主内容区域 */
 .main-content {
     flex: 1;
     margin-left: var(--sidebar-width);
-    padding: 24px;
+    padding: var(--spacing-lg);
     min-height: 100vh;
-    transition: margin-left 0.3s ease;
+    transition: var(--transition);
+    background: var(--bg-light);
 }
 
 .sidebar.collapsed ~ .main-content {
-    margin-left: 64px;
+    margin-left: var(--sidebar-collapsed);
 }
 
 /* Dark mode */
@@ -301,72 +494,84 @@ body.dark-mode .modal-content {
     box-shadow: 0 8px 32px rgba(0,0,0,0.5);
 }
 
-/* Top bar */
+/* 支付宝风格顶部栏 */
 .top-bar {
     display: flex;
     justify-content: flex-end;
     align-items: center;
-    margin-bottom: 24px;
-    padding: 16px 0;
-    border-bottom: 1px solid var(--border-color);
+    margin-bottom: var(--spacing-lg);
+    padding: var(--spacing-md) 0;
+    border-bottom: 1px solid var(--border-light);
+    background: var(--bg-primary);
+    border-radius: var(--border-radius-lg);
+    padding: var(--spacing-md) var(--spacing-lg);
+    box-shadow: var(--shadow-sm);
 }
 
 .top-actions {
     display: flex;
     align-items: center;
-    gap: 16px;
+    gap: var(--spacing-md);
 }
 
 .theme-toggle {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 8px 16px;
-    background: var(--bg-primary);
+    gap: var(--spacing-xs);
+    padding: var(--spacing-sm) var(--spacing-md);
+    background: var(--bg-tertiary);
     border: 1px solid var(--border-color);
     border-radius: var(--border-radius);
     cursor: pointer;
     transition: var(--transition);
     color: var(--text-primary);
+    height: var(--btn-height-sm);
+    font-size: var(--font-size-xs);
 }
 
 .theme-toggle:hover {
-    background: var(--bg-secondary);
+    background: var(--primary-light);
     border-color: var(--primary-color);
+    color: var(--primary-color);
 }
 
 .language-selector select {
-    padding: 8px 12px;
-    background: var(--bg-primary);
+    padding: var(--spacing-sm) var(--spacing-md);
+    background: var(--bg-tertiary);
     border: 1px solid var(--border-color);
     border-radius: var(--border-radius);
     color: var(--text-primary);
     cursor: pointer;
+    height: var(--btn-height-sm);
+    font-size: var(--font-size-xs);
 }
 
-/* User actions */
+/* 支付宝风格用户操作 */
 .user-actions {
     display: flex;
     flex-direction: column;
-    gap: 8px;
-    margin-top: 12px;
+    gap: var(--spacing-sm);
+    margin-top: var(--spacing-md);
 }
 
 .action-btn {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 8px 12px;
-    color: rgba(255,255,255,0.7);
+    gap: var(--spacing-sm);
+    padding: var(--spacing-sm) var(--spacing-md);
+    color: var(--text-secondary);
     text-decoration: none;
     border-radius: var(--border-radius);
     transition: var(--transition);
-    font-size: 12px;
+    font-size: var(--font-size-xs);
+    border: 1px solid var(--border-light);
+    background: var(--bg-primary);
 }
 
 .action-btn:hover {
-    background: rgba(255,255,255,0.1);
-    color: #fff;
+    background: var(--primary-light);
+    color: var(--primary-color);
+    border-color: var(--primary-color);
 }
 
 .action-icon {
@@ -380,54 +585,79 @@ body.dark-mode .modal-content {
 }
 
 .user-points {
-    font-size: 12px;
-    color: rgba(255,255,255,0.5);
-    margin-top: 4px;
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+    margin-top: var(--spacing-xs);
+    text-align: center;
 }
 
-/* Checkin button */
+/* 支付宝风格签到按钮 */
 .checkin-btn {
     background: linear-gradient(135deg, #ff6b6b, #4ecdc4);
     color: #fff;
     font-weight: 600;
+    border: none;
 }
 
 .checkin-btn:hover {
     background: linear-gradient(135deg, #ff5252, #45b7aa);
     color: #fff;
+    transform: translateY(-1px);
+    box-shadow: var(--shadow-md);
 }
 
+/* 支付宝风格页面头部 */
 .page-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 24px;
+    margin-bottom: var(--spacing-lg);
+    padding: var(--spacing-lg);
+    background: var(--bg-primary);
+    border-radius: var(--border-radius-xl);
+    box-shadow: var(--shadow-sm);
+    border: 1px solid var(--border-light);
 }
 
 .page-title {
-    font-size: 24px;
+    font-size: var(--font-size-xl);
     font-weight: 600;
     color: var(--text-primary);
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
 }
 
 .page-actions {
     display: flex;
-    gap: 12px;
+    gap: var(--spacing-md);
 }
 
+/* 支付宝风格按钮 */
 .btn {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 6px;
-    padding: 10px 20px;
-    font-size: 14px;
+    gap: var(--spacing-xs);
+    padding: 0 var(--spacing-lg);
+    font-size: var(--font-size-sm);
     font-weight: 500;
     border: none;
     border-radius: var(--border-radius);
     cursor: pointer;
     transition: var(--transition);
     text-decoration: none;
+    height: var(--btn-height-md);
+    min-width: 80px;
+}
+
+.btn:hover {
+    transform: translateY(-1px);
+    box-shadow: var(--shadow-md);
+}
+
+.btn:active {
+    transform: translateY(0);
 }
 
 .btn-primary {
@@ -440,13 +670,14 @@ body.dark-mode .modal-content {
 }
 
 .btn-secondary {
-    background: var(--bg-tertiary);
+    background: var(--bg-primary);
     color: var(--text-primary);
     border: 1px solid var(--border-color);
 }
 
 .btn-secondary:hover {
-    background: var(--bg-secondary);
+    background: var(--bg-tertiary);
+    border-color: var(--primary-color);
 }
 
 .btn-outline {
@@ -471,16 +702,22 @@ body.dark-mode .modal-content {
 .btn-link {
     background: transparent;
     color: var(--primary-color);
-    padding: 4px 8px;
+    padding: var(--spacing-xs) var(--spacing-sm);
+    height: auto;
+    min-width: auto;
 }
 
 .btn-link:hover {
     background: var(--primary-light);
+    transform: none;
+    box-shadow: none;
 }
 
 .btn-sm {
-    padding: 6px 12px;
-    font-size: 12px;
+    height: var(--btn-height-sm);
+    padding: 0 var(--spacing-md);
+    font-size: var(--font-size-xs);
+    min-width: 60px;
 }
 
 .btn-block {
@@ -491,22 +728,26 @@ body.dark-mode .modal-content {
     font-size: 16px;
 }
 
+/* 支付宝风格统计卡片 */
 .stats-grid {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 16px;
-    margin-bottom: 24px;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: var(--spacing-md);
+    margin-bottom: var(--spacing-lg);
 }
 
 .stat-card {
     background: var(--bg-primary);
-    border-radius: var(--border-radius-lg);
-    padding: 20px;
+    border-radius: var(--border-radius-xl);
+    padding: var(--spacing-lg);
     display: flex;
     align-items: center;
-    gap: 16px;
+    gap: var(--spacing-md);
     box-shadow: var(--shadow-sm);
     transition: var(--transition);
+    border: 1px solid var(--border-light);
+    position: relative;
+    overflow: hidden;
 }
 
 .stat-card:hover {
@@ -514,14 +755,25 @@ body.dark-mode .modal-content {
     transform: translateY(-2px);
 }
 
+.stat-card::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 4px;
+    background: linear-gradient(90deg, var(--primary-color), var(--primary-hover));
+}
+
 .stat-icon {
     width: 48px;
     height: 48px;
-    border-radius: 12px;
+    border-radius: var(--border-radius-lg);
     display: flex;
     align-items: center;
     justify-content: center;
     font-size: 24px;
+    flex-shrink: 0;
 }
 
 .stat-icon-primary {
@@ -544,17 +796,21 @@ body.dark-mode .modal-content {
     color: #722ed1;
 }
 
+.stat-content {
+    flex: 1;
+}
+
 .stat-value {
-    font-size: 28px;
+    font-size: var(--font-size-xl);
     font-weight: 700;
     color: var(--text-primary);
     line-height: 1.2;
+    margin-bottom: var(--spacing-xs);
 }
 
 .stat-label {
-    font-size: 14px;
+    font-size: var(--font-size-sm);
     color: var(--text-secondary);
-    margin-top: 4px;
 }
 
 .dashboard-grid {
@@ -1171,4 +1427,40 @@ body.dark-mode .modal-content {
         gap: 16px;
         align-items: flex-start;
     }
+}
+
+/* 空状态样式 */
+.empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: var(--spacing-xl) var(--spacing-lg);
+    text-align: center;
+}
+
+.empty-state-icon {
+    font-size: 48px;
+    margin-bottom: var(--spacing-md);
+    opacity: 0.6;
+}
+
+.empty-state-text {
+    font-size: var(--font-size-md);
+    font-weight: 500;
+    color: var(--text-primary);
+    margin-bottom: var(--spacing-xs);
+}
+
+.empty-state-subtext {
+    font-size: var(--font-size-sm);
+    color: var(--text-muted);
+}
+
+/* 卡片图标样式 */
+.page-icon,
+.card-icon,
+.modal-icon {
+    margin-right: var(--spacing-sm);
+    font-size: var(--font-size-lg);
 }

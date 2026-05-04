@@ -2,6 +2,21 @@
 
 {% block title %}成交复盘 - 2560战法复盘系统{% endblock %}
 
+{% block extra_css %}
+<style>
+    .stock-code-link {
+        color: #007bff;
+        text-decoration: none;
+        font-weight: 500;
+    }
+    
+    .stock-code-link:hover {
+        text-decoration: underline;
+        color: #0056b3;
+    }
+</style>
+{% endblock %}
+
 {% block content %}
 <div class="page-header">
     <h1 class="page-title">成交复盘</h1>
@@ -32,7 +47,11 @@
                     <tr>
                         <td>{{ deal.pick_date }}</td>
                         <td class="font-medium">{{ deal.name }}</td>
-                        <td class="text-muted">{{ deal.code }}</td>
+                        <td class="text-muted">
+                            <a href="{{ url_for('strategies.react_stock_chart') }}?code={{ deal.code }}" class="stock-code-link" target="_blank">
+                                {{ deal.code }}
+                            </a>
+                        </td>
                         <td>{{ deal.pick_price }}</td>
                         <td><span class="tag">{{ deal.source_channel or '-' }}</span></td>
                         <td>

@@ -4,7 +4,10 @@
 
 {% block content %}
 <div class="page-header">
-    <h1 class="page-title">个人信息</h1>
+    <h1 class="page-title">
+        <span class="page-icon">👤</span>
+        个人信息
+    </h1>
     <div class="page-actions">
         <a href="{{ url_for('main.dashboard') }}" class="btn btn-secondary">
             <span class="btn-icon">←</span>
@@ -17,35 +20,70 @@
     </div>
 </div>
 
-<div class="card">
-    <div class="card-header">
-        <h3 class="card-title">账户信息</h3>
+<div class="dashboard-grid">
+    <div class="card">
+        <div class="card-header">
+            <h3 class="card-title">
+                <span class="card-icon">🏷️</span>
+                账户信息
+            </h3>
+        </div>
+        <div class="card-body">
+            <div class="form-grid">
+                <div class="form-group">
+                    <label class="form-label">用户名</label>
+                    <input type="text" class="form-input" value="{{ user.username }}" disabled>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">用户角色</label>
+                    <input type="text" class="form-input" value="{{ user.role }}" disabled>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">积分</label>
+                    <input type="text" class="form-input" value="{{ user.points }}" disabled>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">最后签到</label>
+                    <input type="text" class="form-input" value="{{ user_detail.last_checkin or '从未签到' }}" disabled>
+                </div>
+            </div>
+        </div>
     </div>
-    <div class="card-body">
-        <div class="form-grid">
-            <div class="form-group">
-                <label class="form-label">用户名</label>
-                <input type="text" class="form-input" value="{{ user.username }}" disabled>
-            </div>
-            <div class="form-group">
-                <label class="form-label">用户角色</label>
-                <input type="text" class="form-input" value="{{ user.role }}" disabled>
-            </div>
-            <div class="form-group">
-                <label class="form-label">积分</label>
-                <input type="text" class="form-input" value="{{ user.points }}" disabled>
-            </div>
-            <div class="form-group">
-                <label class="form-label">最后签到</label>
-                <input type="text" class="form-input" value="{{ user_detail.last_checkin or '从未签到' }}" disabled>
+    
+    <div class="card">
+        <div class="card-header">
+            <h3 class="card-title">
+                <span class="card-icon">🎯</span>
+                签到统计
+            </h3>
+        </div>
+        <div class="card-body">
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-icon stat-icon-primary">📅</div>
+                    <div class="stat-content">
+                        <div class="stat-value">{{ user_detail.checkin_days or 0 }}</div>
+                        <div class="stat-label">连续签到</div>
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-icon stat-icon-success">⭐</div>
+                    <div class="stat-content">
+                        <div class="stat-value">{{ user_detail.total_checkins or 0 }}</div>
+                        <div class="stat-label">总签到次数</div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
 </div>
 
-<div class="card mt-4">
+<div class="card" style="margin-top: var(--spacing-lg);">
     <div class="card-header">
-        <h3 class="card-title">积分记录</h3>
+        <h3 class="card-title">
+            <span class="card-icon">📊</span>
+            积分记录
+        </h3>
     </div>
     <div class="card-body">
         <div class="empty-state">

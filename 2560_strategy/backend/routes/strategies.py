@@ -104,3 +104,19 @@ def api_list():
     from backend.services import strategy_service
     strategies = strategy_service.get_strategy_dropdown_options()
     return jsonify(strategies)
+
+
+@bp.route('/stock-chart')
+def stock_chart():
+    """股票K线图表页面"""
+    return render_template('strategies/stock_chart.html',
+        user=get_current_user()
+    )
+
+
+@bp.route('/react-stock-chart')
+def react_stock_chart():
+    """React股票K线图表页面"""
+    from flask import redirect, url_for, request
+    # 重定向到新的股票K线图表页面
+    return redirect(f"/stock-chart{ '?' + request.query_string.decode('utf-8') if request.query_string else '' }")

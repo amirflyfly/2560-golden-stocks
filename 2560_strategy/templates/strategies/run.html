@@ -1,10 +1,13 @@
 {% extends 'base.html' %}
 
-{% block title %}{{ strategy.name }} - 手动运行 - 2560战法复盘系统{% endblock %}
+{% block title %}{{ strategy.name }} - 手动运行 - 飞哥复盘{% endblock %}
 
 {% block content %}
 <div class="page-header">
-    <h1 class="page-title">{{ strategy.name }} - 手动运行</h1>
+    <h1 class="page-title">
+        <span class="page-icon">🚀</span>
+        {{ strategy.name }} - 手动运行
+    </h1>
     <div class="page-actions">
         <a href="{{ url_for('strategies.index') }}" class="btn btn-secondary">
             <span class="btn-icon">←</span>
@@ -17,81 +20,173 @@
     </div>
 </div>
 
-<div class="card">
-    <div class="card-header">
-        <h3 class="card-title">运行参数</h3>
-    </div>
-    <div class="card-body">
-        <!-- 运行参数 -->
-        <div class="mb-6">
-            <form id="runForm" class="space-y-4">
-                <div class="form-group">
-                    <label class="form-label">选择日期</label>
-                    <div class="relative">
-                        <input type="date" id="targetDate" name="target_date" class="form-input pr-10" 
-                               value="{{ today }}" required>
-                        <div class="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400">
-                            📅
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+    <!-- 运行参数 -->
+    <div class="lg:col-span-1">
+        <div class="card">
+            <div class="card-header">
+                <h3 class="card-title">
+                    <span class="card-icon">⚙️</span>
+                    运行参数
+                </h3>
+            </div>
+            <div class="card-body">
+                <form id="runForm" class="space-y-4">
+                    <div class="form-group">
+                        <label class="form-label required">选择日期</label>
+                        <div class="relative">
+                            <input type="date" id="targetDate" name="target_date" class="form-input pr-10" 
+                                   value="{{ today }}" required>
+                            <div class="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400">
+                                📅
+                            </div>
+                        </div>
+                        <div class="mt-2 flex space-x-2">
+                            <button type="button" class="btn btn-sm btn-outline" onclick="setDate('today')">今天</button>
+                            <button type="button" class="btn btn-sm btn-outline" onclick="setDate('yesterday')">昨天</button>
+                            <button type="button" class="btn btn-sm btn-outline" onclick="setDate('last_week')">上周</button>
                         </div>
                     </div>
-                    <div class="mt-2 flex space-x-2">
-                        <button type="button" class="btn btn-sm btn-outline" onclick="setDate('today')">今天</button>
-                        <button type="button" class="btn btn-sm btn-outline" onclick="setDate('yesterday')">昨天</button>
-                        <button type="button" class="btn btn-sm btn-outline" onclick="setDate('last_week')">上周</button>
+                    <div class="flex space-x-2">
+                        <button type="button" id="runBtn" class="btn btn-primary">
+                            <span id="runBtnText">运行策略</span>
+                            <span id="runBtnLoading" class="hidden">
+                                <span class="loading-spinner mr-2"></span>运行中...
+                            </span>
+                        </button>
+                        <button type="button" id="addAllBtn" class="btn btn-success" disabled>
+                            <span id="addAllBtnText">全部加入股票池子</span>
+                            <span id="addAllBtnLoading" class="hidden">
+                                <span class="loading-spinner mr-2"></span>加入中...
+                            </span>
+                        </button>
                     </div>
-                </div>
-                <div class="flex space-x-2">
-                    <button type="button" id="runBtn" class="btn btn-primary">
-                        <span id="runBtnText">运行策略</span>
-                        <span id="runBtnLoading" class="hidden">
-                            <span class="loading-spinner mr-2"></span>运行中...
-                        </span>
-                    </button>
-                    <button type="button" id="addAllBtn" class="btn btn-success" disabled>
-                        <span id="addAllBtnText">全部加入股票池子</span>
-                        <span id="addAllBtnLoading" class="hidden">
-                            <span class="loading-spinner mr-2"></span>加入中...
-                        </span>
-                    </button>
-                </div>
-            </form>
+                </form>
+            </div>
         </div>
 
-        <!-- 运行结果 -->
-        <div class="mb-6">
-            <h3 class="text-lg font-medium mb-3">运行结果</h3>
-            <div id="resultContainer" class="hidden">
-                <div class="mb-4">
-                    <div class="text-sm text-gray-600">运行时间</div>
-                    <div id="runTime" class="font-medium"></div>
-                </div>
-                <div class="mb-4">
-                    <div class="text-sm text-gray-600">选出股票数量</div>
-                    <div id="stockCount" class="font-medium"></div>
-                </div>
-                <div class="overflow-x-auto">
-                    <table class="table" id="resultTable">
-                        <thead>
-                            <tr>
-                                <th>股票代码</th>
-                                <th>股票名称</th>
-                                <th>选择日期</th>
-                                <th>选择价格</th>
-                                <th>信号类型</th>
-                                <th>25日均线</th>
-                                <th>量比</th>
-                                <th>操作</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                        </tbody>
-                    </table>
+        <!-- 运行状态 -->
+        <div class="card mt-6">
+            <div class="card-header">
+                <h3 class="card-title">
+                    <span class="card-icon">📊</span>
+                    运行状态
+                </h3>
+            </div>
+            <div class="card-body">
+                <div id="runStatus" class="space-y-4">
+                    <div class="status-item">
+                        <div class="flex justify-between items-center">
+                            <span>运行状态</span>
+                            <span id="statusText" class="status-badge status-info">就绪</span>
+                        </div>
+                    </div>
+                    <div class="status-item">
+                        <div class="flex justify-between items-center">
+                            <span>上次运行</span>
+                            <span id="lastRunTime" class="text-gray-600">未运行</span>
+                        </div>
+                    </div>
+                    <div class="status-item">
+                        <div class="flex justify-between items-center">
+                            <span>运行次数</span>
+                            <span id="runCount" class="text-gray-600">0</span>
+                        </div>
+                    </div>
+                    <div class="status-item">
+                        <div class="flex justify-between items-center">
+                            <span>成功率</span>
+                            <span id="successRate" class="text-gray-600">0%</span>
+                        </div>
+                    </div>
                 </div>
             </div>
-            <div id="emptyResult" class="empty-state">
-                <div class="empty-state-icon">🚀</div>
-                <div class="empty-state-text">请选择日期并运行策略</div>
-                <div class="empty-state-subtext">系统将按照策略规则筛选股票</div>
+        </div>
+    </div>
+
+    <!-- 运行结果 -->
+    <div class="lg:col-span-2">
+        <div class="card">
+            <div class="card-header">
+                <h3 class="card-title">
+                    <span class="card-icon">📈</span>
+                    运行结果
+                </h3>
+            </div>
+            <div class="card-body">
+                <div id="resultContainer" class="hidden">
+                    <!-- 结果概览 -->
+                    <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+                        <div class="stat-card">
+                            <div class="stat-label">运行时间</div>
+                            <div id="runTime" class="stat-value"></div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">选出股票</div>
+                            <div id="stockCount" class="stat-value"></div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">导入数量</div>
+                            <div id="importedCount" class="stat-value"></div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">运行状态</div>
+                            <div id="runStatusText" class="stat-value"></div>
+                        </div>
+                    </div>
+
+                    <!-- 结果图表 -->
+                    <div class="mb-6">
+                        <h4 class="text-md font-medium mb-3">选股分布</h4>
+                        <div id="resultChart" class="h-64 bg-gray-50 rounded-lg flex items-center justify-center">
+                            <div class="text-gray-400">图表加载中...</div>
+                        </div>
+                    </div>
+
+                    <!-- 股票列表 -->
+                    <div class="overflow-x-auto">
+                        <table class="table" id="resultTable">
+                            <thead>
+                                <tr>
+                                    <th>股票代码</th>
+                                    <th>股票名称</th>
+                                    <th>选择日期</th>
+                                    <th>选择价格</th>
+                                    <th>信号类型</th>
+                                    <th>25日均线</th>
+                                    <th>量比</th>
+                                    <th>操作</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                <div id="emptyResult" class="empty-state">
+                    <div class="empty-state-icon">🚀</div>
+                    <div class="empty-state-text">请选择日期并运行策略</div>
+                    <div class="empty-state-subtext">系统将按照策略规则筛选股票</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 运行历史 -->
+        <div class="card mt-6">
+            <div class="card-header">
+                <h3 class="card-title">
+                    <span class="card-icon">📋</span>
+                    运行历史
+                </h3>
+            </div>
+            <div class="card-body">
+                <div id="historyContainer">
+                    <div class="empty-state">
+                        <div class="empty-state-icon">📊</div>
+                        <div class="empty-state-text">暂无运行历史</div>
+                        <div class="empty-state-subtext">运行策略后将显示历史记录</div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -110,9 +205,21 @@ const emptyResult = document.getElementById('emptyResult');
 const resultTable = document.getElementById('resultTable').querySelector('tbody');
 const runTime = document.getElementById('runTime');
 const stockCount = document.getElementById('stockCount');
+const importedCount = document.getElementById('importedCount');
+const runStatusText = document.getElementById('runStatusText');
 const targetDateInput = document.getElementById('targetDate');
+const statusText = document.getElementById('statusText');
+const lastRunTime = document.getElementById('lastRunTime');
+const runCount = document.getElementById('runCount');
+const successRate = document.getElementById('successRate');
+const historyContainer = document.getElementById('historyContainer');
 
 let scanResults = [];
+let runHistory = [];
+let runStats = {
+    count: 0,
+    success: 0
+};
 
 // 日期选择快捷按钮
 function setDate(type) {
@@ -150,6 +257,8 @@ runBtn.addEventListener('click', function() {
     runBtn.disabled = true;
     runBtnText.classList.add('hidden');
     runBtnLoading.classList.remove('hidden');
+    statusText.className = 'status-badge status-warning';
+    statusText.textContent = '运行中';
 
     // 显示运行中的提示
     const loadingToast = showToast('策略正在运行中，请稍候...', 'info', 10000);
@@ -183,8 +292,28 @@ runBtn.addEventListener('click', function() {
         }
 
         if (data.success) {
+            // 更新运行状态
+            statusText.className = 'status-badge status-success';
+            statusText.textContent = '成功';
+            lastRunTime.textContent = new Date().toLocaleString();
+            runStats.count++;
+            runStats.success++;
+            runCount.textContent = runStats.count;
+            successRate.textContent = Math.round((runStats.success / runStats.count) * 100) + '%';
+
+            // 保存运行历史
+            const runRecord = {
+                date: targetDate,
+                time: new Date().toLocaleString(),
+                count: data.data.count || 0,
+                imported: data.data.imported || 0,
+                success: true
+            };
+            runHistory.unshift(runRecord);
+            updateHistory();
+
             scanResults = data.data.picks || [];
-            displayResults(scanResults);
+            displayResults(scanResults, data.data);
             addAllBtn.disabled = scanResults.length === 0;
             
             if (scanResults.length === 0) {
@@ -193,6 +322,26 @@ runBtn.addEventListener('click', function() {
                 showToast(`策略运行成功，选出 ${scanResults.length} 只股票`, 'success');
             }
         } else {
+            // 更新运行状态
+            statusText.className = 'status-badge status-danger';
+            statusText.textContent = '失败';
+            lastRunTime.textContent = new Date().toLocaleString();
+            runStats.count++;
+            runCount.textContent = runStats.count;
+            successRate.textContent = Math.round((runStats.success / runStats.count) * 100) + '%';
+
+            // 保存运行历史
+            const runRecord = {
+                date: targetDate,
+                time: new Date().toLocaleString(),
+                count: 0,
+                imported: 0,
+                success: false,
+                error: data.message
+            };
+            runHistory.unshift(runRecord);
+            updateHistory();
+
             showToast(data.message || '运行失败', 'error');
         }
     })
@@ -203,7 +352,15 @@ runBtn.addEventListener('click', function() {
         runBtn.disabled = false;
         runBtnText.classList.remove('hidden');
         runBtnLoading.classList.add('hidden');
+        statusText.className = 'status-badge status-danger';
+        statusText.textContent = '失败';
         
+        // 更新运行状态
+        lastRunTime.textContent = new Date().toLocaleString();
+        runStats.count++;
+        runCount.textContent = runStats.count;
+        successRate.textContent = Math.round((runStats.success / runStats.count) * 100) + '%';
+
         showToast('网络请求失败，请检查网络连接', 'error');
     });
 });
@@ -267,13 +424,15 @@ addAllBtn.addEventListener('click', function() {
 });
 
 // 显示结果
-function displayResults(results) {
+function displayResults(results, data) {
     resultTable.innerHTML = '';
     
     if (!results || results.length === 0) {
         resultContainer.classList.add('hidden');
         emptyResult.classList.remove('hidden');
         stockCount.textContent = '0';
+        importedCount.textContent = '0';
+        runStatusText.textContent = '成功';
         return;
     }
 
@@ -282,6 +441,11 @@ function displayResults(results) {
     
     runTime.textContent = new Date().toLocaleString();
     stockCount.textContent = results.length;
+    importedCount.textContent = data.imported || 0;
+    runStatusText.textContent = '成功';
+
+    // 渲染图表
+    renderResultChart(results);
 
     results.forEach(stock => {
         const row = document.createElement('tr');
@@ -294,13 +458,105 @@ function displayResults(results) {
             <td>${stock.ma25 ? stock.ma25.toFixed(2) : '-'}</td>
             <td>${stock.vol_ratio ? stock.vol_ratio.toFixed(2) : '-'}</td>
             <td>
-                <button class="btn btn-sm btn-primary" onclick="addStock('${stock.code || ''}', '${stock.name || ''}', ${stock.pick_price || 0})">
+                <button class="btn btn-sm btn-primary" onclick="addStock('${stock.code || ''}', '${stock.name || ''}', ${stock.pick_price || 0})")">
                     加入池子
                 </button>
             </td>
         `;
         resultTable.appendChild(row);
     });
+}
+
+// 渲染结果图表
+function renderResultChart(results) {
+    const chartContainer = document.getElementById('resultChart');
+    
+    // 统计信号类型分布
+    const signalStats = {};
+    results.forEach(stock => {
+        const signal = stock.signal || '未知';
+        signalStats[signal] = (signalStats[signal] || 0) + 1;
+    });
+
+    // 生成图表HTML
+    let chartHTML = '';
+    if (Object.keys(signalStats).length > 0) {
+        const total = results.length;
+        chartHTML = '<div class="grid grid-cols-2 md:grid-cols-4 gap-4">';
+        
+        Object.entries(signalStats).forEach(([signal, count]) => {
+            const percentage = Math.round((count / total) * 100);
+            chartHTML += `
+                <div class="chart-item p-4 bg-white rounded-lg shadow-sm">
+                    <div class="text-sm font-medium">${signal}</div>
+                    <div class="text-2xl font-bold mt-1">${count}</div>
+                    <div class="text-xs text-gray-500 mt-1">${percentage}%</div>
+                    <div class="mt-2 h-2 bg-gray-100 rounded-full overflow-hidden">
+                        <div class="h-full bg-blue-500 rounded-full" style="width: ${percentage}%"></div>
+                    </div>
+                </div>
+            `;
+        });
+        
+        chartHTML += '</div>';
+    } else {
+        chartHTML = '<div class="text-gray-400">暂无数据</div>';
+    }
+
+    chartContainer.innerHTML = chartHTML;
+}
+
+// 更新运行历史
+function updateHistory() {
+    if (runHistory.length === 0) {
+        historyContainer.innerHTML = `
+            <div class="empty-state">
+                <div class="empty-state-icon">📊</div>
+                <div class="empty-state-text">暂无运行历史</div>
+                <div class="empty-state-subtext">运行策略后将显示历史记录</div>
+            </div>
+        `;
+        return;
+    }
+
+    let historyHTML = `
+        <div class="overflow-x-auto">
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>运行日期</th>
+                        <th>运行时间</th>
+                        <th>选出股票</th>
+                        <th>导入数量</th>
+                        <th>状态</th>
+                    </tr>
+                </thead>
+                <tbody>
+    `;
+
+    runHistory.forEach(record => {
+        historyHTML += `
+            <tr>
+                <td>${record.date}</td>
+                <td>${record.time}</td>
+                <td>${record.count}</td>
+                <td>${record.imported}</td>
+                <td>
+                    <span class="status-badge status-${record.success ? 'success' : 'danger'}">
+                        ${record.success ? '成功' : '失败'}
+                    </span>
+                </td>
+            </tr>
+        `;
+    });
+
+    historyHTML += `
+                </tbody>
+            </table>
+        </div>
+    `;
+
+    historyContainer.innerHTML = historyHTML;
 }
 
 // 单个添加股票

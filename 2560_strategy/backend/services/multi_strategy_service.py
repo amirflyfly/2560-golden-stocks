@@ -132,7 +132,13 @@ def run_single_strategy(strategy_code: str, date: str = None) -> Dict[str, Any]:
     #     }
     
     # Run scan
-    picks = strategy.scan(date)
+    try:
+        picks = strategy.scan(date)
+    except Exception as e:
+        print(f"扫描失败: {e}")
+        import traceback
+        traceback.print_exc()
+        picks = []
     
     # Import to database
     imported = 0

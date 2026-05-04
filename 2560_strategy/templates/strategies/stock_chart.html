@@ -1,0 +1,400 @@
+{% extends "base.html" %}
+
+{% block title %}股票K线图表{% endblock %}
+
+{% block extra_css %}
+<style>
+    .chart-container {
+        width: 100%;
+        height: 600px;
+        margin: 20px 0;
+        border: 1px solid #e0e0e0;
+        border-radius: 8px;
+        overflow: hidden;
+    }
+    
+    .chart-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 10px 20px;
+        background: #f8f9fa;
+        border-bottom: 1px solid #e0e0e0;
+        flex-wrap: wrap;
+        gap: 15px;
+    }
+    
+    .stock-selector {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+    }
+    
+    .stock-selector select {
+        padding: 8px 12px;
+        border: 1px solid #ced4da;
+        border-radius: 4px;
+        font-size: 14px;
+    }
+    
+    .chart-controls {
+        display: flex;
+        align-items: center;
+        gap: 15px;
+        flex-wrap: wrap;
+    }
+    
+    .chart-type-selector {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+    }
+    
+    .chart-type-selector select {
+        padding: 6px 10px;
+        border: 1px solid #ced4da;
+        border-radius: 4px;
+        font-size: 14px;
+    }
+    
+    .indicator-selector {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+    }
+    
+    .indicator-selector select {
+        padding: 6px 10px;
+        border: 1px solid #ced4da;
+        border-radius: 4px;
+        font-size: 14px;
+        min-width: 150px;
+    }
+    
+    .time-range {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+    }
+    
+    .time-range button {
+        padding: 6px 12px;
+        border: 1px solid #ced4da;
+        border-radius: 4px;
+        background: white;
+        cursor: pointer;
+        font-size: 14px;
+        transition: all 0.3s ease;
+    }
+    
+    .time-range button:hover {
+        background: #f8f9fa;
+    }
+    
+    .time-range button.active {
+        background: #007bff;
+        color: white;
+        border-color: #007bff;
+    }
+    
+    @media (max-width: 768px) {
+        .chart-header {
+            flex-direction: column;
+            align-items: flex-start;
+        }
+        
+        .chart-controls {
+            width: 100%;
+            justify-content: space-between;
+        }
+    }
+    
+    .loading-overlay {
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(255, 255, 255, 0.8);
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        z-index: 1000;
+    }
+    
+    .loading-spinner {
+        width: 40px;
+        height: 40px;
+        border: 4px solid #f3f3f3;
+        border-top: 4px solid #3498db;
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+    }
+    
+    @keyframes spin {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container">
+    <h1 class="page-title">股票K线图表</h1>
+    
+    <div class="chart-container">
+        <div class="chart-header">
+            <div class="stock-selector">
+                <label for="stock-code">股票代码:</label>
+                <select id="stock-code">
+                    <option value="600519">贵州茅台 (600519)</option>
+                    <option value="600000">浦发银行 (600000)</option>
+                    <option value="000001">平安银行 (000001)</option>
+                    <option value="000002">万科A (000002)</option>
+                    <option value="002594">比亚迪 (002594)</option>
+                </select>
+            </div>
+            <div class="chart-controls">
+                <div class="chart-type-selector">
+                    <label for="chart-type">图表类型:</label>
+                    <select id="chart-type">
+                        <option value="kline">K线图</option>
+                        <option value="time">分时图</option>
+                    </select>
+                </div>
+                <div class="indicator-selector">
+                    <label for="indicators">技术指标:</label>
+                    <select id="indicators" multiple>
+                        <option value="MA" selected>MA</option>
+                        <option value="VOL" selected>VOL</option>
+                        <option value="MACD" selected>MACD</option>
+                        <option value="KDJ" selected>KDJ</option>
+                        <option value="RSI" selected>RSI</option>
+                    </select>
+                </div>
+                <div class="time-range">
+                    <button class="active" data-range="1d">1天</button>
+                    <button data-range="1w">1周</button>
+                    <button data-range="1m">1月</button>
+                    <button data-range="3m">3月</button>
+                    <button data-range="1y">1年</button>
+                </div>
+            </div>
+        </div>
+        <div id="kline-chart" style="width: 100%; height: 500px;"></div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="https://cdn.jsdelivr.net/npm/klinecharts/dist/klinecharts.min.js"></script>
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        let klineChart = null;
+        // 从URL参数中获取股票代码，如果没有则使用默认值
+        let currentStockCode = new URLSearchParams(window.location.search).get('code') || '600519';
+        let currentTimeRange = '1m';
+        let currentChartType = 'kline'; // kline, time
+        let currentIndicators = ['MA', 'VOL', 'MACD', 'KDJ', 'RSI'];
+        
+        // 初始化图表
+        function initChart(data) {
+            if (klineChart) {
+                klineChart.destroy();
+            }
+            
+            klineChart = new KLineChart('kline-chart', {
+                width: document.getElementById('kline-chart').clientWidth,
+                height: 500,
+                data: data,
+                grid: {
+                    show: true,
+                    horizontalLines: true,
+                    verticalLines: true
+                },
+                yAxis: {
+                    position: 'right',
+                    scale: true
+                },
+                xAxis: {
+                    tickCount: 8
+                },
+                crosshair: {
+                    show: true,
+                    mode: 'single'
+                },
+                tooltip: {
+                    show: true,
+                    formatter: function(data) {
+                        return {
+                            name: data.name,
+                            value: [
+                                ['日期', data.time],
+                                ['开盘', data.open.toFixed(2)],
+                                ['收盘', data.close.toFixed(2)],
+                                ['最高', data.high.toFixed(2)],
+                                ['最低', data.low.toFixed(2)],
+                                ['成交量', data.volume.toFixed(0)]
+                            ]
+                        };
+                    }
+                },
+                indicators: [
+                    {
+                        name: 'MA',
+                        params: {
+                            periods: [5, 10, 20, 30]
+                        }
+                    },
+                    {
+                        name: 'VOL',
+                        params: {}
+                    },
+                    {
+                        name: 'MACD',
+                        params: {}
+                    },
+                    {
+                        name: 'KDJ',
+                        params: {}
+                    },
+                    {
+                        name: 'RSI',
+                        params: {
+                            period: 14
+                        }
+                    }
+                ],
+                zoom: {
+                    enabled: true,
+                    type: 'wheel',
+                    sensitivity: 1
+                },
+                pan: {
+                    enabled: true
+                },
+                crossHair: {
+                    show: true,
+                    mode: 'multi'
+                },
+                timeScale: {
+                    visible: true,
+                    timeVisible: true,
+                    secondsVisible: false
+                },
+                priceScale: {
+                    visible: true,
+                    autoScale: true,
+                    invertScale: false
+                },
+                candle: {
+                    upColor: '#ff4d4f',
+                    downColor: '#52c41a',
+                    borderColor: '#ff4d4f',
+                    borderDownColor: '#52c41a',
+                    wickColor: '#ff4d4f',
+                    wickDownColor: '#52c41a',
+                    bodyWidth: 6,
+                    wickWidth: 1,
+                    borderWidth: 1
+                }
+            });
+        }
+        
+        // 获取股票数据
+        function fetchStockData(stockCode, timeRange) {
+            showLoading();
+            
+            const now = new Date();
+            const endDate = now.toISOString().split('T')[0];
+            
+            let startDate;
+            switch (timeRange) {
+                case '1d':
+                    startDate = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+                    break;
+                case '1w':
+                    startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+                    break;
+                case '1m':
+                    startDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+                    break;
+                case '3m':
+                    startDate = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+                    break;
+                case '1y':
+                    startDate = new Date(now.getTime() - 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+                    break;
+                default:
+                    startDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+            }
+            
+            fetch(`/api/stock-data?code=${stockCode}&start_date=${startDate}&end_date=${endDate}`)
+                .then(response => response.json())
+                .then(data => {
+                    hideLoading();
+                    if (data.success) {
+                        initChart(data.data);
+                    } else {
+                        showToast('获取数据失败: ' + data.message, 'error');
+                    }
+                })
+                .catch(error => {
+                    hideLoading();
+                    showToast('获取数据失败: ' + error.message, 'error');
+                });
+        }
+        
+        // 股票代码选择事件
+        document.getElementById('stock-code').addEventListener('change', function(e) {
+            currentStockCode = e.target.value;
+            fetchStockData(currentStockCode, currentTimeRange);
+        });
+        
+        // 初始化股票代码选择器
+        const stockCodeSelect = document.getElementById('stock-code');
+        for (let i = 0; i < stockCodeSelect.options.length; i++) {
+            if (stockCodeSelect.options[i].value === currentStockCode) {
+                stockCodeSelect.selectedIndex = i;
+                break;
+            }
+        }
+        
+        // 时间范围选择事件
+        document.querySelectorAll('.time-range button').forEach(button => {
+            button.addEventListener('click', function() {
+                document.querySelectorAll('.time-range button').forEach(btn => btn.classList.remove('active'));
+                this.classList.add('active');
+                currentTimeRange = this.getAttribute('data-range');
+                fetchStockData(currentStockCode, currentTimeRange);
+            });
+        });
+        
+        // 图表类型选择事件
+        if (document.getElementById('chart-type')) {
+            document.getElementById('chart-type').addEventListener('change', function(e) {
+                currentChartType = e.target.value;
+                fetchStockData(currentStockCode, currentTimeRange);
+            });
+        }
+        
+        // 指标选择事件
+        if (document.getElementById('indicators')) {
+            document.getElementById('indicators').addEventListener('change', function(e) {
+                currentIndicators = Array.from(this.selectedOptions).map(option => option.value);
+                fetchStockData(currentStockCode, currentTimeRange);
+            });
+        }
+        
+        // 初始化图表
+        fetchStockData(currentStockCode, currentTimeRange);
+        
+        // 窗口大小变化时重新调整图表大小
+        window.addEventListener('resize', function() {
+            if (klineChart) {
+                klineChart.resize();
+            }
+        });
+    });
+</script>
+{% endblock %}

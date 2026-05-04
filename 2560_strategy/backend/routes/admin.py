@@ -97,7 +97,7 @@ def reset_password():
 @admin_required
 def backups():
     from backend.services import backup_service
-    backups_list = backup_service.list_backup_files()
+    backups_list = backup_service.list_backups()
     stats = backup_service.backup_stats()
     return render_template('admin/backups.html', 
         backups=backups_list, 

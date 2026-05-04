@@ -1,14 +1,26 @@
 {% extends 'base.html' %}
 
-{% block title %}策略管理 - 2560战法复盘系统{% endblock %}
+{% block title %}策略管理 - 飞哥复盘{% endblock %}
 
 {% block content %}
 <div class="page-header">
-    <h1 class="page-title">策略管理</h1>
-    <button class="btn btn-primary" onclick="showCreateModal()">新增策略</button>
+    <h1 class="page-title">
+        <span class="page-icon">🎯</span>
+        策略管理
+    </h1>
+    <button class="btn btn-primary" onclick="showCreateModal()">
+        <span class="btn-icon">+</span>
+        新增策略
+    </button>
 </div>
 
 <div class="card">
+    <div class="card-header">
+        <h3 class="card-title">
+            <span class="card-icon">📋</span>
+            策略列表
+        </h3>
+    </div>
     <div class="card-body p-0">
         <div class="table-responsive">
             <table class="table">
@@ -60,7 +72,10 @@
 <div id="createModal" class="modal">
     <div class="modal-content">
         <div class="modal-header">
-            <h3 class="modal-title">新增策略</h3>
+            <h3 class="modal-title">
+                <span class="modal-icon">+</span>
+                新增策略
+            </h3>
             <button class="modal-close" onclick="closeModal('createModal')">×</button>
         </div>
         <form method="POST" action="{{ url_for('strategies.create') }}" class="modal-body">
@@ -92,7 +107,10 @@
 <div id="editModal" class="modal">
     <div class="modal-content">
         <div class="modal-header">
-            <h3 class="modal-title">编辑策略</h3>
+            <h3 class="modal-title">
+                <span class="modal-icon">✏️</span>
+                编辑策略
+            </h3>
             <button class="modal-close" onclick="closeModal('editModal')">×</button>
         </div>
         <form id="editForm" method="POST" class="modal-body">

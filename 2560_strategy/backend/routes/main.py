@@ -135,7 +135,41 @@ def dashboard():
     offset = (page - 1) * PAGE_SIZE
     latest = picks_repo.list_picks(where, args, limit=PAGE_SIZE, offset=offset)
     
+    # Calculate price change for each pick
+    from backend.services.stock_data_service import get_stock_data_service
+    stock_data = get_stock_data_service()
+    
+    for pick in latest:
+        if pick.get('pick_price') and pick.get('pick_date'):
+            try:
+                # Get price data from pick_date to today
+                df = stock_data.get_stock_hist(
+                    symbol=pick.get('code'),
+                    start_date=pick.get('pick_date'),
+                    end_date=datetime.now().strftime('%Y-%m-%d'),
+                    adjust='qfq'
+                )
+                if not df.empty:
+                    # Get the first price (pick_date) and last price (latest)
+                    first_price = df.iloc[0].get('open')  # Use open price on pick_date
+                    latest_price = df.iloc[-1].get('close')  # Use close price on latest date
+                    if first_price and first_price > 0 and latest_price and latest_price > 0:
+                        change_pct = ((latest_price - first_price) / first_price) * 100
+                        pick['change_pct'] = round(change_pct, 2)
+                    else:
+                        pick['change_pct'] = None
+                else:
+                    pick['change_pct'] = None
+            except Exception as e:
+                # If there's an error, set change_pct to None
+                pick['change_pct'] = None
+        else:
+            pick['change_pct'] = None
+    
     total_pages = max(1, (filter_count + PAGE_SIZE - 1) // PAGE_SIZE)
+    
+    # Convert request.args to a regular dict with single values, excluding 'page'
+    request_args_dict = {k: v for k, v in request.args.items() if k != 'page'}
     
     return render_template('dashboard.html',
         user=get_current_user(),
@@ -171,7 +205,7 @@ def dashboard():
         page=page,
         total_pages=total_pages,
         filter_count=filter_count,
-        request_args=request.args,
+        request_args=request_args_dict,
         today=datetime.now().strftime('%Y-%m-%d'),
         backtest_start_date=(datetime.now() - timedelta(days=90)).strftime('%Y-%m-%d'),
         strategy_options=strategy_options,

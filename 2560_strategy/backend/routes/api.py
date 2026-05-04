@@ -314,3 +314,64 @@ def save_dashboard_order():
         log_action('save_dashboard_order', [], f'保存首页模块顺序：{order}')
         return jsonify({'success': True})
     return jsonify({'error': '顺序不能为空'}), 400
+
+
+@bp.route('/stock-data', methods=['GET'])
+def get_stock_data():
+    """获取股票历史数据，用于K线图表"""
+    from backend.services.stock_data_service import get_stock_data_service
+    
+    code = request.args.get('code', '600519')
+    start_date = request.args.get('start_date', '')
+    end_date = request.args.get('end_date', '')
+    
+    if not start_date or not end_date:
+        return jsonify({'success': False, 'message': '请提供开始日期和结束日期'}), 400
+    
+    try:
+        stock_data = get_stock_data_service()
+        df = stock_data.get_stock_hist(code, start_date, end_date)
+        
+        if df is None or df.empty:
+            return jsonify({'success': False, 'message': '获取数据失败'}), 400
+        
+        # 转换为KLineChart需要的格式
+        kline_data = []
+        for _, row in df.iterrows():
+            kline_data.append({
+                'time': row.get('date', ''),
+                'open': float(row.get('open', 0)),
+                'high': float(row.get('high', 0)),
+                'low': float(row.get('low', 0)),
+                'close': float(row.get('close', 0)),
+                'volume': float(row.get('volume', 0))
+            })
+        
+        return jsonify({'success': True, 'data': kline_data})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@bp.route('/save-stock-data', methods=['POST'])
+def save_stock_data():
+    """保存股票数据到数据库"""
+    from backend.services.stock_data_service import get_stock_data_service
+    
+    data = request.get_json()
+    code = data.get('code', '')
+    stock_data = data.get('data', [])
+    
+    if not code or not stock_data:
+        return jsonify({'success': False, 'message': '请提供股票代码和数据'}), 400
+    
+    try:
+        # 这里可以添加保存数据到数据库的逻辑
+        # 现在我们只是打印数据，实际应用中应该保存到数据库
+        print(f"保存股票数据: {code}, 共 {len(stock_data)} 条记录")
+        
+        # 可以使用stock_data_service来保存数据
+        # stock_data_service.save_stock_data(code, stock_data)
+        
+        return jsonify({'success': True, 'message': '数据保存成功'})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500

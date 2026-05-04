@@ -67,7 +67,7 @@
                     <div class="stat-label">股票数量</div>
                 </div>
                 <div class="stat-item">
-                    <div class="stat-value">{{ strategy.is_active ? '是' : '否' }}</div>
+                    <div class="stat-value">{{ '是' if strategy.is_active else '否' }}</div>
                     <div class="stat-label">是否启用</div>
                 </div>
             </div>

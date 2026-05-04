@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+
+{% block title %}React股票K线图表{% endblock %}
+
+{% block content %}
+<div class="container">
+    <h1 class="page-title">React股票K线图表</h1>
+    
+    <div class="react-chart-container">
+        <iframe 
+                src="/stock-chart{{ '?' ~ request.query_string.decode('utf-8') if request.query_string else '' }}" 
+                width="100%" 
+                height="800px" 
+                frameborder="0" 
+                allowfullscreen>
+            </iframe>
+    </div>
+</div>
+{% endblock %}

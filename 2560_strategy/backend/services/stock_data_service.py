@@ -1,0 +1,439 @@
+"""Stock data service for multiple data sources with unified interface."""
+
+import os
+import pickle
+from contextlib import contextmanager
+from datetime import datetime, timedelta
+from typing import List
+
+import pandas as pd
+
+
+PROXY_ENV_KEYS = [
+    'http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY',
+    'all_proxy', 'ALL_PROXY', 'no_proxy', 'NO_PROXY'
+]
+
+
+REAL_DATA_MIN_DATE = '1990-01-01'
+
+
+def ensure_directory(directory):
+    if not os.path.exists(directory):
+        os.makedirs(directory, exist_ok=True)
+
+
+@contextmanager
+def proxy_disabled():
+    original = {}
+    for key in PROXY_ENV_KEYS:
+        if key in os.environ:
+            original[key] = os.environ.pop(key)
+
+    try:
+        try:
+            from akshare.utils.context import set_proxies as ak_set_proxies
+            ak_set_proxies(None)
+        except Exception:
+            pass
+
+        try:
+            import requests
+            original_merge = requests.sessions.Session.merge_environment_settings
+
+            def merge_environment_settings(self, url, proxies, stream, verify, cert):
+                settings = original_merge(self, url, proxies, stream, verify, cert)
+                settings['proxies'] = {}
+                return settings
+
+            requests.sessions.Session.merge_environment_settings = merge_environment_settings
+        except Exception:
+            original_merge = None
+
+        yield
+    finally:
+        try:
+            import requests
+            if 'original_merge' in locals() and original_merge is not None:
+                requests.sessions.Session.merge_environment_settings = original_merge
+        except Exception:
+            pass
+
+        for key, value in original.items():
+            os.environ[key] = value
+
+
+class StockDataSource:
+    def __init__(self):
+        self.name = "BaseDataSource"
+
+    def get_stock_list(self) -> pd.DataFrame:
+        raise NotImplementedError
+
+    def get_stock_hist(self, symbol: str, start_date: str, end_date: str, adjust: str = "qfq") -> pd.DataFrame:
+        raise NotImplementedError
+
+    def get_trading_dates(self, start_date: str, end_date: str) -> List[str]:
+        raise NotImplementedError
+
+
+class AkShareDataSource(StockDataSource):
+    def __init__(self):
+        super().__init__()
+        self.name = "AkShare"
+        self._ak = None
+
+    def _ensure_akshare(self):
+        if self._ak is None:
+            with proxy_disabled():
+                import akshare as ak
+                self._ak = ak
+
+    def _to_sina_symbol(self, symbol: str) -> str:
+        if symbol.startswith(('sh', 'sz', 'bj')):
+            return symbol
+        if symbol.startswith(('600', '601', '603', '605', '688', '689', '900')):
+            return f'sh{symbol}'
+        if symbol.startswith(('000', '001', '002', '003', '200', '300', '301')):
+            return f'sz{symbol}'
+        if symbol.startswith(('430', '830', '831', '832', '833', '835', '836', '837', '838', '839', '870', '871', '872', '873', '874', '875', '876', '877', '878', '879', '880', '881', '882', '883', '884', '885', '886', '887', '888', '889')):
+            return f'bj{symbol}'
+        return f'sz{symbol}'
+
+    def get_stock_list(self) -> pd.DataFrame:
+        self._ensure_akshare()
+
+        with proxy_disabled():
+            try:
+                df = self._ak.stock_info_a_code_name()
+                if isinstance(df, pd.DataFrame) and not df.empty:
+                    return df
+            except Exception as e:
+                print(f"stock_info_a_code_name failed: {e}")
+
+            try:
+                df2 = self._ak.stock_zh_a_spot_em()
+                if isinstance(df2, pd.DataFrame) and not df2.empty:
+                    return df2[[c for c in df2.columns if c in ('代码', '名称', 'code', 'name')]]
+            except Exception as e:
+                print(f"stock_zh_a_spot_em failed: {e}")
+
+            try:
+                sh = self._ak.stock_info_sh_name_code()
+            except Exception:
+                sh = pd.DataFrame()
+            try:
+                sz = self._ak.stock_info_sz_name_code()
+            except Exception:
+                sz = pd.DataFrame()
+
+        if isinstance(sh, pd.DataFrame) and not sh.empty:
+            sh = sh.rename(columns={'证券代码': '代码', '证券简称': '名称'})
+        if isinstance(sz, pd.DataFrame) and not sz.empty:
+            sz = sz.rename(columns={'A股代码': '代码', 'A股简称': '名称'})
+
+        merged = pd.concat([d for d in [sh, sz] if isinstance(d, pd.DataFrame)], ignore_index=True)
+        if not merged.empty and '代码' in merged.columns and '名称' in merged.columns:
+            merged = merged[['代码', '名称']].dropna().drop_duplicates()
+            return merged
+
+        return pd.DataFrame({
+            '代码': ['600000', '600519', '000001', '000002', '002594'],
+            '名称': ['浦发银行', '贵州茅台', '平安银行', '万科A', '比亚迪']
+        })
+
+    def _get_hist_from_eastmoney(self, symbol: str, start_date: str, end_date: str, adjust: str) -> pd.DataFrame:
+        start_str = start_date.replace('-', '')
+        end_str = end_date.replace('-', '')
+        with proxy_disabled():
+            return self._ak.stock_zh_a_hist(
+                symbol=symbol,
+                period="daily",
+                adjust=adjust,
+                start_date=start_str,
+                end_date=end_str
+            )
+
+    def _get_hist_from_sina(self, symbol: str, start_date: str, end_date: str, adjust: str) -> pd.DataFrame:
+        sina_adjust = adjust if adjust in ('', 'qfq', 'hfq') else ''
+        with proxy_disabled():
+            return self._ak.stock_zh_a_daily(
+                symbol=self._to_sina_symbol(symbol),
+                start_date=start_date.replace('-', ''),
+                end_date=end_date.replace('-', ''),
+                adjust=sina_adjust,
+            )
+
+    def get_stock_hist(self, symbol: str, start_date: str, end_date: str, adjust: str = "qfq") -> pd.DataFrame:
+        self._ensure_akshare()
+
+        errors = []
+        for loader in (self._get_hist_from_eastmoney, self._get_hist_from_sina):
+            try:
+                df = loader(symbol, start_date, end_date, adjust)
+                if isinstance(df, pd.DataFrame) and not df.empty:
+                    return df
+            except Exception as e:
+                errors.append(str(e))
+
+        if errors:
+            print(f"Failed to get historical data for {symbol}: {' | '.join(errors)}")
+        return pd.DataFrame()
+
+    def get_trading_dates(self, start_date: str, end_date: str) -> List[str]:
+        self._ensure_akshare()
+
+        try:
+            with proxy_disabled():
+                cal = self._ak.tool_trade_date_hist_sina()
+            trade_dates = cal[cal['trade_date'] >= start_date]['trade_date'].tolist()
+            trade_dates = [d for d in trade_dates if d <= end_date]
+            return trade_dates
+        except Exception as e:
+            print(f"Failed to get trading dates: {e}")
+            start = datetime.strptime(start_date, '%Y-%m-%d')
+            end = datetime.strptime(end_date, '%Y-%m-%d')
+            trade_dates = []
+            current = start
+            while current <= end:
+                if current.weekday() < 5:
+                    trade_dates.append(current.strftime('%Y-%m-%d'))
+                current += timedelta(days=1)
+            return trade_dates
+
+
+class MockDataSource(StockDataSource):
+    def __init__(self):
+        super().__init__()
+        self.name = "Mock"
+
+    def get_stock_list(self) -> pd.DataFrame:
+        return pd.DataFrame({
+            '代码': ['600000', '600519', '000001', '000002', '002594'],
+            '名称': ['浦发银行', '贵州茅台', '平安银行', '万科A', '比亚迪']
+        })
+
+    def get_stock_hist(self, symbol: str, start_date: str, end_date: str, adjust: str = "qfq") -> pd.DataFrame:
+        end = datetime.strptime(end_date, '%Y-%m-%d')
+        start = datetime.strptime(start_date, '%Y-%m-%d')
+        dates = pd.date_range(start=start, end=end)
+        data = []
+        base_price = 15.0
+        base_volume = 800000
+
+        for i, date in enumerate(dates):
+            price_increase = 0.003 * (1 + i / len(dates))
+            base_price *= (1 + price_increase)
+            base_price = min(29.9, base_price)
+            volume_increase = 0.005 * (1 + i / len(dates))
+            base_volume *= (1 + volume_increase)
+            base_volume = max(1000000, base_volume)
+            open_price = base_price * 0.995
+            high_price = base_price * 1.02
+            low_price = base_price * 0.98
+            close_price = base_price
+            data.append({
+                '日期': date.strftime('%Y-%m-%d'),
+                '开盘': open_price,
+                '收盘': close_price,
+                '最高': high_price,
+                '最低': low_price,
+                '成交量': base_volume
+            })
+
+        return pd.DataFrame(data)
+
+    def get_trading_dates(self, start_date: str, end_date: str) -> List[str]:
+        start = datetime.strptime(start_date, '%Y-%m-%d')
+        end = datetime.strptime(end_date, '%Y-%m-%d')
+        trade_dates = []
+        current = start
+        while current <= end:
+            if current.weekday() < 5:
+                trade_dates.append(current.strftime('%Y-%m-%d'))
+            current += timedelta(days=1)
+        return trade_dates
+
+
+class StockDataService:
+    def __init__(self, cache_dir: str = "data/cache"):
+        self.cache_dir = cache_dir
+        ensure_directory(self.cache_dir)
+        self.data_sources = {
+            "akshare": AkShareDataSource(),
+            "mock": MockDataSource()
+        }
+        self.default_source = "akshare"
+
+    def get_stock_list(self, source: str = None) -> pd.DataFrame:
+        source = source or self.default_source
+        cache_key = f"stock_list_{source}"
+        cache_file = os.path.join(self.cache_dir, f"{cache_key}.pkl")
+
+        if os.path.exists(cache_file):
+            mtime = os.path.getmtime(cache_file)
+            if datetime.now().timestamp() - mtime < 86400:
+                try:
+                    with open(cache_file, 'rb') as f:
+                        return pickle.load(f)
+                except Exception:
+                    pass
+
+        data_source = self.data_sources.get(source, self.data_sources[self.default_source])
+        stock_list = data_source.get_stock_list()
+
+        try:
+            with open(cache_file, 'wb') as f:
+                pickle.dump(stock_list, f)
+        except Exception as e:
+            print(f"Failed to save stock list cache: {e}")
+
+        return stock_list
+
+    def _looks_like_mock_cache(self, df: pd.DataFrame) -> bool:
+        if df is None or df.empty or 'date' not in df.columns:
+            return False
+
+        temp_df = df.copy()
+        temp_df['date'] = pd.to_datetime(temp_df['date'], errors='coerce')
+        temp_df = temp_df.dropna(subset=['date']).sort_values('date').reset_index(drop=True)
+        if len(temp_df) < 5:
+            return False
+
+        weekday_series = temp_df['date'].dt.weekday
+        if ((weekday_series == 5) | (weekday_series == 6)).any():
+            return True
+
+        if 'close' in temp_df.columns:
+            pct = pd.to_numeric(temp_df['close'], errors='coerce').pct_change().dropna().round(6)
+            if len(pct) >= 5 and pct.nunique() <= 2:
+                return True
+
+        return False
+
+    def _is_cache_usable(self, df: pd.DataFrame, source: str) -> bool:
+        if df is None or df.empty:
+            return False
+        if source == 'akshare' and self._looks_like_mock_cache(df):
+            return False
+        return True
+
+    def get_stock_hist(self, symbol: str, start_date: str, end_date: str, adjust: str = "qfq", source: str = None) -> pd.DataFrame:
+        source = source or self.default_source
+        cache_key = f"stock_hist_{symbol}_{start_date}_{end_date}_{adjust}_{source}"
+        cache_file = os.path.join(self.cache_dir, f"{cache_key}.pkl")
+
+        if os.path.exists(cache_file):
+            mtime = os.path.getmtime(cache_file)
+            if datetime.now().timestamp() - mtime < 7 * 86400:
+                try:
+                    with open(cache_file, 'rb') as f:
+                        df = pickle.load(f)
+                        if self._is_cache_usable(df, source):
+                            return df
+                except Exception:
+                    pass
+
+        data_source = self.data_sources.get(source, self.data_sources[self.default_source])
+        df = data_source.get_stock_hist(symbol, start_date, end_date, adjust)
+        df = self._normalize_data(df)
+
+        if self._is_cache_usable(df, source):
+            try:
+                with open(cache_file, 'wb') as f:
+                    pickle.dump(df, f)
+            except Exception as e:
+                print(f"Failed to save stock hist cache: {e}")
+
+        return df
+
+    def get_trading_dates(self, start_date: str, end_date: str, source: str = None) -> List[str]:
+        source = source or self.default_source
+        cache_key = f"trading_dates_{start_date}_{end_date}_{source}"
+        cache_file = os.path.join(self.cache_dir, f"{cache_key}.pkl")
+
+        if os.path.exists(cache_file):
+            mtime = os.path.getmtime(cache_file)
+            if datetime.now().timestamp() - mtime < 30 * 86400:
+                try:
+                    with open(cache_file, 'rb') as f:
+                        return pickle.load(f)
+                except Exception:
+                    pass
+
+        data_source = self.data_sources.get(source, self.data_sources[self.default_source])
+        dates = data_source.get_trading_dates(start_date, end_date)
+
+        try:
+            with open(cache_file, 'wb') as f:
+                pickle.dump(dates, f)
+        except Exception as e:
+            print(f"Failed to save trading dates cache: {e}")
+
+        return dates
+
+    def _normalize_data(self, df: pd.DataFrame) -> pd.DataFrame:
+        if df is None or df.empty:
+            return df
+
+        mapping = {
+            '日期': 'date',
+            '开盘': 'open',
+            '收盘': 'close',
+            '最高': 'high',
+            '最低': 'low',
+            '成交量': 'volume',
+            '成交额': 'amount',
+            '振幅': 'amplitude',
+            '涨跌幅': 'pct_chg',
+            '涨跌额': 'chg_amt',
+            '换手率': 'turnover'
+        }
+
+        for old_col, new_col in mapping.items():
+            if old_col in df.columns:
+                df = df.rename(columns={old_col: new_col})
+
+        essential_cols = ['date', 'open', 'close', 'high', 'low', 'volume']
+        for col in essential_cols:
+            if col not in df.columns:
+                df[col] = 0
+
+        if 'date' in df.columns:
+            df['date'] = pd.to_datetime(df['date'], errors='coerce')
+            df = df.dropna(subset=['date'])
+            df = df[df['date'] >= pd.Timestamp(REAL_DATA_MIN_DATE)]
+            df['date'] = df['date'].dt.strftime('%Y-%m-%d')
+            df = df.sort_values('date').drop_duplicates(subset=['date'])
+
+        numeric_cols = ['open', 'close', 'high', 'low', 'volume', 'amount', 'amplitude', 'pct_chg', 'chg_amt', 'turnover']
+        for col in numeric_cols:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+
+        return df.reset_index(drop=True)
+
+    def add_data_source(self, name: str, data_source: StockDataSource):
+        self.data_sources[name] = data_source
+
+    def set_default_source(self, source: str):
+        if source in self.data_sources:
+            self.default_source = source
+        else:
+            print(f"Data source {source} not found, using default")
+
+    def clear_cache(self):
+        try:
+            for file in os.listdir(self.cache_dir):
+                if file.endswith('.pkl'):
+                    os.remove(os.path.join(self.cache_dir, file))
+            print("Cache cleared successfully")
+        except Exception as e:
+            print(f"Failed to clear cache: {e}")
+
+
+stock_data_service = StockDataService()
+
+
+def get_stock_data_service() -> StockDataService:
+    return stock_data_service
