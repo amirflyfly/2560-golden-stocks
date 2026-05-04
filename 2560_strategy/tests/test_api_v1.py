@@ -974,6 +974,62 @@ def test_strategy_backtest_api_returns_structured_summary_and_audit(client, monk
     assert logs["items"][0]["integrity_hash"]
 
 
+def test_strategy_backtest_builds_real_benchmark_curve_from_market_data(client, monkeypatch):
+    from datetime import date
+    from decimal import Decimal
+
+    from backend.application import backtest_api_service
+    from backend.infrastructure.market_data.provider import DailyBar
+
+    class FakeBenchmarkProvider:
+        name = "akshare"
+
+        def usage_metadata(self):
+            return {
+                "actual_provider": "akshare",
+                "data_quality": "primary",
+                "fallback_used": False,
+            }
+
+        def get_daily_bars(self, symbol, start_date, end_date, adjust="qfq"):
+            return [
+                DailyBar(symbol=symbol, trade_date=date(2026, 1, 1), open=Decimal("10"), high=Decimal("10"), low=Decimal("10"), close=Decimal("10"), volume=1, amount=Decimal("10"), source="akshare"),
+                DailyBar(symbol=symbol, trade_date=date(2026, 1, 2), open=Decimal("11"), high=Decimal("11"), low=Decimal("11"), close=Decimal("11"), volume=1, amount=Decimal("11"), source="akshare"),
+                DailyBar(symbol=symbol, trade_date=date(2026, 1, 5), open=Decimal("12"), high=Decimal("12"), low=Decimal("12"), close=Decimal("12"), volume=1, amount=Decimal("12"), source="akshare"),
+            ]
+
+    def fake_run_backtest(strategy_code, start_date, end_date, *, holding_days=5, max_positions_per_day=3):
+        return {
+            "success": True,
+            "results": {
+                "total_trades": 1,
+                "win_rate": 1.0,
+                "total_return": 0.1,
+                "max_drawdown": 0.0,
+                "trades": [{"code": "000001", "entry_price": 10, "exit_price": 11, "return_pct": 0.1}],
+            },
+            "meta": {"strategy_code": strategy_code, "start_date": start_date, "end_date": end_date},
+        }
+
+    monkeypatch.setattr(backtest_api_service, "run_backtest", fake_run_backtest)
+    monkeypatch.setattr(backtest_api_service, "create_fallback_market_data_provider", lambda: FakeBenchmarkProvider())
+    authed = login_as(client, "editor_real_benchmark")
+
+    response = authed.post(
+        "/api/v1/strategies/2560/backtest",
+        json={"start_date": "2026-01-01", "end_date": "2026-01-31", "benchmark_code": "000300"},
+        headers=tenant_headers(authed, include_csrf=True),
+    )
+    benchmark = response.get_json()["data"]["summary"]["benchmark"]
+
+    assert response.status_code == 202
+    assert benchmark["source"] == "akshare"
+    assert benchmark["data_quality"] == "primary"
+    assert benchmark["fallback_used"] is False
+    assert benchmark["total_return"] == 0.2
+    assert benchmark["curve"][-1]["return_pct"] == 0.2
+
+
 def test_strategy_backtest_rejects_invalid_date(client):
     authed = login_as(client, "editor_backtest_bad_date")
 
