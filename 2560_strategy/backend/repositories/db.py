@@ -356,10 +356,17 @@ def ensure_schema():
             ('2560', '2560战法', '趋势策略', '25日均线+60日均量选股策略', 1, 10),
             ('first_limit_up', '首板涨停', '打板策略', '首板涨停识别与次日预期跟踪策略', 1, 20),
             ('LIMIT_UP_RETURN', '涨停回马枪', '短线策略', '涨停锚点、缩量回踩、支撑不破、放量再攻策略', 1, 30),
+            ('CONVERTIBLE_BOND_LOW_PREMIUM', '可转债低价低溢价', '可转债策略', '低价低溢价+三低打分+强赎信用过滤策略', 1, 40),
         ]
         cur.executemany(
             'INSERT OR IGNORE INTO strategies (code, name, category, description, is_active, sort_order) VALUES (?, ?, ?, ?, ?, ?)',
             default_strategies,
+        )
+        cur.execute(
+            """UPDATE strategies
+            SET config_json='{"target_security_type":"convertible_bond","security_type":"convertible_bond","bar_interval":"1d","interval":"1d","adjust":"none","allow_t0":true}'
+            WHERE code='CONVERTIBLE_BOND_LOW_PREMIUM'
+              AND (config_json IS NULL OR config_json='' OR config_json='{}')"""
         )
 
         cur.execute(

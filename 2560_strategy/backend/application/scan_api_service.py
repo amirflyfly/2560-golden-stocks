@@ -28,6 +28,10 @@ class ScanApiService:
             "limit_up_return": "LIMIT_UP_RETURN",
             "limitup_return": "LIMIT_UP_RETURN",
             "LIMIT_UP_RETURN": "LIMIT_UP_RETURN",
+            "convertible_bond": "CONVERTIBLE_BOND_LOW_PREMIUM",
+            "convertible_bond_low_premium": "CONVERTIBLE_BOND_LOW_PREMIUM",
+            "cb_low_premium": "CONVERTIBLE_BOND_LOW_PREMIUM",
+            "CONVERTIBLE_BOND_LOW_PREMIUM": "CONVERTIBLE_BOND_LOW_PREMIUM",
             "涨停回马枪": "LIMIT_UP_RETURN",
             "2560": "2560",
             "all": "all",
@@ -40,6 +44,7 @@ class ScanApiService:
             "FIRST_LIMIT_UP": "first_limit_up",
             "first_board": "first_limit_up",
             "LIMIT_UP_RETURN": "limit_up_return",
+            "CONVERTIBLE_BOND_LOW_PREMIUM": "convertible_bond_low_premium",
         }
         normalized = (strategy_code or "all").strip()
         return aliases.get(normalized, normalized)
@@ -142,7 +147,7 @@ class ScanApiService:
 
     def _build_explanation(self, item: dict, usage: dict, strategy_code: str) -> dict:
         score = 70
-        reasons = ["进入统一行情样本池", "行情数据通过 provider 健康检查"]
+        reasons = []
         risk_tags = []
         indicators_section = self._dict_value(item.get("indicators"))
         phase_section = self._dict_value(item.get("phase"))
@@ -175,6 +180,10 @@ class ScanApiService:
         price_to_ma25 = self._first_present(item.get("price_to_ma25"), indicators_section.get("price_to_ma25"))
         risk_level = self._risk_level(risk_score, bool(usage.get("fallback_used")), usage.get("data_quality"))
 
+        primary_reason = item.get("recommend_reason") or item.get("prediction_reason") or note
+        if primary_reason:
+            reasons.append(f"策略理由：{primary_reason}")
+        reasons.extend(["进入统一行情样本池", "行情数据通过 provider 健康检查"])
         if signal:
             reasons.append(f"策略信号：{signal}")
         if signal_subtype:
@@ -218,6 +227,10 @@ class ScanApiService:
             "price_change_5d": item.get("price_change_5d"),
             "price_change_20d": item.get("price_change_20d"),
             "turnover": item.get("turnover"),
+            "preselect_score": item.get("preselect_score"),
+            "auction_score": item.get("auction_score"),
+            "second_board_score": item.get("second_board_score"),
+            "second_board_expectation": item.get("second_board_expectation"),
             "security_type": item.get("security_type"),
             "bar_interval": item.get("bar_interval") or item.get("interval"),
             "adjust": item.get("adjust"),
@@ -249,6 +262,9 @@ class ScanApiService:
                     "price_to_ma25": price_to_ma25,
                     "price_change_5d": item.get("price_change_5d"),
                     "price_change_20d": item.get("price_change_20d"),
+                    "preselect_score": item.get("preselect_score"),
+                    "auction_score": item.get("auction_score"),
+                    "second_board_score": item.get("second_board_score"),
                 },
                 "risk": {
                     "risk_score": risk_score,
@@ -374,6 +390,12 @@ class ScanApiService:
             "price_change_5d": item.get("price_change_5d"),
             "price_change_20d": item.get("price_change_20d"),
             "turnover": item.get("turnover"),
+            "preselect_score": item.get("preselect_score"),
+            "auction_score": item.get("auction_score"),
+            "second_board_score": item.get("second_board_score"),
+            "second_board_expectation": item.get("second_board_expectation"),
+            "recommend_reason": item.get("recommend_reason"),
+            "prediction_reason": item.get("prediction_reason"),
             "indicators": item.get("indicators"),
             "phase": item.get("phase"),
             "risk": item.get("risk"),
@@ -407,6 +429,8 @@ class ScanApiService:
     def _bounded_strategy_scan(self, strategy, params: dict):
         config = getattr(strategy, "config", None)
         strategy_config = config.get("strategy") if isinstance(config, dict) else None
+        if not isinstance(strategy_config, dict) and isinstance(config, dict) and "scan_limit" in config:
+            strategy_config = config
         if not isinstance(strategy_config, dict):
             yield
             return

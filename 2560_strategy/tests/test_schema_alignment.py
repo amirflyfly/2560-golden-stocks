@@ -439,7 +439,7 @@ class _FakeConnection:
     def __init__(self, version, *, tenant_id=1, strategy_codes=None):
         self.version = version
         self.tenant_id = tenant_id
-        self.strategy_codes = strategy_codes or {"2560", "first_limit_up", "LIMIT_UP_RETURN"}
+        self.strategy_codes = strategy_codes or {"2560", "first_limit_up", "LIMIT_UP_RETURN", "CONVERTIBLE_BOND_LOW_PREMIUM"}
 
     def execute(self, statement, _params=None):
         sql = str(statement)

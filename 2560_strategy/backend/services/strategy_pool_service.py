@@ -191,6 +191,8 @@ def _last_row(hist_df):
 
 
 def _limit_threshold(code: str) -> float:
+    if str(code).startswith(("110", "111", "113", "118", "123", "127", "128")):
+        return 0.198
     return 0.198 if str(code).startswith(("300", "301", "688", "689")) else 0.098
 
 
@@ -323,6 +325,34 @@ def run_backtest(
 
     holding_days = max(1, int(holding_days))
     max_positions_per_day = max(1, int(max_positions_per_day))
+
+    custom_backtest = getattr(strategy, "run_model_backtest", None)
+    if callable(custom_backtest):
+        custom_results = custom_backtest(
+            start_date,
+            end_date,
+            trading_dates=trading_dates,
+            holding_days=holding_days,
+            max_positions_per_day=max_positions_per_day,
+        )
+        results = _build_summary(custom_results.get("trades", []))
+        results["skipped_trades"] = custom_results.get("skipped_trades", [])
+        results["execution_summary"] = custom_results.get("execution_summary", {})
+        save_backtest_result(strategy_code, start_date, end_date, results)
+        return {
+            "success": True,
+            "results": results,
+            "meta": {
+                "strategy_code": strategy_code,
+                "strategy_name": strategy.name,
+                "start_date": start_date,
+                "end_date": end_date,
+                "holding_days": holding_days,
+                "max_positions_per_day": max_positions_per_day,
+                "trade_days": len(trading_dates),
+            },
+        }
+
     trades = []
     skipped_trades = []
 

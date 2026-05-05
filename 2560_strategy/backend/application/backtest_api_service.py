@@ -153,6 +153,28 @@ class BacktestApiService:
                 "market_mood",
                 "risk_level",
             ),
+            "premium_rate": (
+                "premium_rate",
+                "conversion_premium_rate",
+                "premium_pct",
+            ),
+            "double_low": (
+                "double_low",
+                "double_low_score",
+            ),
+            "remaining_size_yi": (
+                "remaining_size_yi",
+                "remaining_size",
+                "outstanding_yi",
+            ),
+            "exit_reason": (
+                "exit_reason",
+                "sell_reason",
+            ),
+            "allow_t0": (
+                "allow_t0",
+                "t0_enabled",
+            ),
         }
         extracted = {}
         for field, keys in fields.items():
