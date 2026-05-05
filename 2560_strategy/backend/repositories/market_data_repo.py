@@ -154,6 +154,7 @@ def _public_stock(item: StockInfo | dict) -> dict:
         "name": name,
         "market": str(data.get("market") or "A").strip() or "A",
         "security_type": security_type,
+        "industry": str(data.get("industry") or "").strip() or None,
         "status": str(data.get("status") or "active").strip() or "active",
         "listing_date": _date_text(data.get("listing_date")) if data.get("listing_date") else None,
         "is_st": is_st,
@@ -184,7 +185,11 @@ def upsert_stocks(items: list[StockInfo | dict]) -> int:
                 status=excluded.status,
                 is_st=excluded.is_st,
                 board_type=excluded.board_type,
-                limit_rule_profile=excluded.limit_rule_profile,
+                limit_rule_profile=CASE
+                    WHEN excluded.limit_rule_profile IS NULL OR excluded.limit_rule_profile='' OR excluded.limit_rule_profile='{}'
+                    THEN stocks.limit_rule_profile
+                    ELSE excluded.limit_rule_profile
+                END,
                 is_suspended=excluded.is_suspended,
                 is_delisting=excluded.is_delisting,
                 updated_at=CURRENT_TIMESTAMP""",
@@ -237,7 +242,7 @@ def upsert_stocks(items: list[StockInfo | dict]) -> int:
                 model.status = item["status"]
                 model.is_st = bool(item.get("is_st"))
                 model.board_type = item.get("board_type")
-                model.limit_rule_profile = item.get("limit_rule_profile") or {}
+                model.limit_rule_profile = item.get("limit_rule_profile") or model.limit_rule_profile or {}
                 model.is_suspended = bool(item.get("is_suspended"))
                 model.is_delisting = bool(item.get("is_delisting"))
             count += 1
@@ -1100,7 +1105,7 @@ def list_stocks(*, keyword: str | None = None, limit: int = 20, security_type: s
             params.extend([like, like])
         where = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
         rows = sqlite_q(
-            f"""SELECT symbol, name, exchange, market, security_type, listing_date, status,
+            f"""SELECT symbol, name, exchange, market, security_type, industry, listing_date, status,
                 is_st, board_type, limit_rule_profile, is_suspended, is_delisting
             FROM stocks
             {where}
@@ -1131,6 +1136,7 @@ def list_stocks(*, keyword: str | None = None, limit: int = 20, security_type: s
                         "exchange": row.exchange,
                         "market": row.market,
                         "security_type": row.security_type,
+                        "industry": row.industry,
                         "listing_date": row.listing_date,
                         "status": row.status,
                         "is_st": row.is_st,

@@ -67,6 +67,15 @@ class StrategyRegistry:
     
     def __init__(self):
         self._strategies: Dict[str, BaseStrategy] = {}
+        self._aliases = {
+            "first_limit_up": "FIRST_LIMIT_UP",
+            "first_board": "FIRST_LIMIT_UP",
+            "limit_up_return": "LIMIT_UP_RETURN",
+            "limitup_return": "LIMIT_UP_RETURN",
+            "convertible_bond": "CONVERTIBLE_BOND_LOW_PREMIUM",
+            "convertible_bond_low_premium": "CONVERTIBLE_BOND_LOW_PREMIUM",
+            "cb_low_premium": "CONVERTIBLE_BOND_LOW_PREMIUM",
+        }
     
     def register(self, strategy: BaseStrategy):
         """Register a strategy."""
@@ -74,7 +83,12 @@ class StrategyRegistry:
     
     def get(self, code: str) -> BaseStrategy:
         """Get strategy by code."""
-        return self._strategies.get(code)
+        text = str(code or "").strip()
+        return (
+            self._strategies.get(text)
+            or self._strategies.get(self._aliases.get(text, ""))
+            or self._strategies.get(text.upper())
+        )
     
     def list_all(self) -> List[BaseStrategy]:
         """List all registered strategies."""
@@ -99,4 +113,7 @@ def register_strategy(strategy_class):
 
 
 # Import builtin strategies that should be registered at package import time.
+from backend.strategies.strategy_2560 import Strategy2560  # noqa: E402,F401
 from backend.strategies.strategy_limit_up_return import StrategyLimitUpReturn  # noqa: E402,F401
+from backend.strategies.strategy_first_limit_up import StrategyFirstLimitUp  # noqa: E402,F401
+from backend.strategies.strategy_convertible_bond import ConvertibleBondLowPremiumStrategy  # noqa: E402,F401

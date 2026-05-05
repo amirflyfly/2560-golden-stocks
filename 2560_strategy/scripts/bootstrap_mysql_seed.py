@@ -40,16 +40,23 @@ DEFAULT_PERMISSIONS = [
 ]
 
 DEFAULT_STRATEGIES = [
-    ("2560", "2560 Strategy", "trend", "25-day moving average and 60-day volume strategy"),
-    ("first_limit_up", "First Limit Up", "limit-up", "First limit-up discovery and follow-up strategy"),
-    ("LIMIT_UP_RETURN", "Limit-up Pullback Return", "limit-up", "Limit-up anchor, shrinking pullback, support hold and re-attack strategy"),
+    ("2560", "2560 Strategy", "trend", "25-day moving average and 60-day volume strategy", {}),
+    ("first_limit_up", "First Limit Up", "limit-up", "First limit-up discovery and follow-up strategy", {}),
+    ("LIMIT_UP_RETURN", "Limit-up Pullback Return", "limit-up", "Limit-up anchor, shrinking pullback, support hold and re-attack strategy", {}),
+    (
+        "CONVERTIBLE_BOND_LOW_PREMIUM",
+        "Convertible Bond Low Premium",
+        "convertible-bond",
+        "Low-price low-premium convertible bond rotation with forced redemption and credit filters",
+        {"target_security_type": "convertible_bond", "security_type": "convertible_bond", "bar_interval": "1d", "interval": "1d", "adjust": "none", "allow_t0": True},
+    ),
 ]
 
 
 def seed_default_strategies(session, tenant: Tenant, now: datetime) -> dict[str, int]:
     created = 0
     existing = 0
-    for code, name, category, description in DEFAULT_STRATEGIES:
+    for code, name, category, description, config in DEFAULT_STRATEGIES:
         strategy = session.execute(
             select(Strategy).where(Strategy.tenant_id == tenant.id, Strategy.code == code)
         ).scalar_one_or_none()
@@ -61,7 +68,7 @@ def seed_default_strategies(session, tenant: Tenant, now: datetime) -> dict[str,
                     name=name,
                     category=category,
                     description=description,
-                    config_json={},
+                    config_json=config,
                     enabled=True,
                     created_at=now,
                     updated_at=now,
@@ -70,6 +77,9 @@ def seed_default_strategies(session, tenant: Tenant, now: datetime) -> dict[str,
             created += 1
             print(f"created strategy: {code}")
         else:
+            if code == "CONVERTIBLE_BOND_LOW_PREMIUM" and not (strategy.config_json or {}):
+                strategy.config_json = config
+                strategy.updated_at = now
             existing += 1
             print(f"strategy exists: {code}")
     return {"created": created, "existing": existing}
