@@ -4,6 +4,10 @@ import akshare as ak
 import pandas as pd
 from datetime import datetime
 
+from scripts.maintenance.legacy_sqlite_guard import refuse_production
+
+refuse_production("review_metrics.py")
+
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = BASE_DIR / 'data' / 'picks.db'
 OUT_CSV = BASE_DIR / 'data' / 'review_metrics.csv'

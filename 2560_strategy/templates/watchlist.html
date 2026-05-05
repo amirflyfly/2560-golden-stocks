@@ -1,0 +1,1208 @@
+{% extends 'base.html' %}
+
+{% block title %}自选专页 - 飞哥复盘{% endblock %}
+
+{% block extra_css %}
+<style>
+    .watchlist-layout {
+        display: grid;
+        grid-template-columns: 320px minmax(0, 1fr);
+        gap: 20px;
+        align-items: start;
+    }
+
+    .watch-sidebar {
+        position: sticky;
+        top: 20px;
+    }
+
+    .watch-items {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+    }
+
+    .watch-item {
+        display: block;
+        padding: 14px 16px;
+        border: 1px solid var(--border-color);
+        border-radius: var(--border-radius-lg);
+        background: var(--bg-primary);
+        color: var(--text-primary);
+        text-decoration: none;
+        transition: var(--transition);
+        cursor: pointer;
+    }
+
+    .watch-item:hover {
+        border-color: var(--primary-color);
+        box-shadow: var(--shadow-sm);
+        transform: translateY(-1px);
+    }
+
+    .watch-item.active {
+        border-color: var(--primary-color);
+        background: var(--primary-light);
+    }
+
+    .watch-item.loading {
+        opacity: 0.7;
+        pointer-events: none;
+    }
+
+    .watch-item-top,
+    .watch-item-bottom,
+    .detail-topline,
+    .detail-subline,
+    .consensus-grid,
+    .action-row,
+    .detail-meta,
+    .empty-box,
+    .detail-header-row,
+    .snapshot-grid,
+    .timeline-role-grid,
+    .debate-columns,
+    .archive-score-grid,
+    .archive-topline,
+    .archive-tags,
+    .archive-actions,
+    .toolbar-row,
+    .engine-switcher {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+    }
+
+    .watch-item-top,
+    .watch-item-bottom,
+    .detail-subline,
+    .consensus-grid,
+    .action-row,
+    .detail-meta,
+    .snapshot-grid,
+    .timeline-role-grid,
+    .debate-columns,
+    .archive-score-grid,
+    .archive-topline,
+    .archive-tags,
+    .archive-actions,
+    .toolbar-row,
+    .engine-switcher {
+        flex-wrap: wrap;
+    }
+
+    .watch-item-name,
+    .detail-name {
+        font-size: 16px;
+        font-weight: 600;
+    }
+
+    .watch-item-code,
+    .detail-code {
+        color: var(--text-secondary);
+        font-family: Consolas, 'Courier New', monospace;
+    }
+
+    .engine-select {
+        min-width: 180px;
+        padding: 8px 12px;
+        border: 1px solid var(--border-color);
+        border-radius: var(--border-radius-md);
+        background: var(--bg-primary);
+        color: var(--text-primary);
+    }
+
+    .metric-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 16px;
+    }
+
+    .metric-card,
+    .role-card,
+    .timeline-item,
+    .summary-box,
+    .snapshot-card,
+    .timeline-role-card,
+    .debate-card,
+    .archive-score-card,
+    .archive-panel {
+        border: 1px solid var(--border-color);
+        border-radius: var(--border-radius-lg);
+        background: var(--bg-primary);
+        padding: 16px;
+    }
+
+    .metric-label,
+    .timeline-label,
+    .snapshot-label,
+    .debate-label,
+    .archive-label {
+        color: var(--text-secondary);
+        font-size: 12px;
+        margin-bottom: 8px;
+    }
+
+    .metric-value {
+        font-size: 24px;
+        font-weight: 700;
+    }
+
+    .metric-hint,
+    .summary-text,
+    .timeline-text,
+    .role-view,
+    .snapshot-text,
+    .debate-text,
+    .archive-text {
+        color: var(--text-secondary);
+        line-height: 1.7;
+    }
+
+    .metric-hint {
+        margin-top: 8px;
+        font-size: 12px;
+    }
+
+    .detail-main {
+        display: flex;
+        flex-direction: column;
+        gap: 20px;
+    }
+
+    .role-grid,
+    .timeline-grid,
+    .archive-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 16px;
+    }
+
+    .role-head,
+    .archive-head {
+        display: flex;
+        justify-content: space-between;
+        gap: 10px;
+        margin-bottom: 10px;
+        align-items: center;
+    }
+
+    .role-name,
+    .archive-title {
+        font-size: 15px;
+        font-weight: 600;
+    }
+
+    .role-meta,
+    .archive-meta {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        align-items: center;
+    }
+
+    .score-chip,
+    .stance-chip,
+    .timeline-score,
+    .timeline-action,
+    .badge-neutral,
+    .badge-high,
+    .badge-medium,
+    .badge-low,
+    .badge-bull,
+    .badge-bear,
+    .badge-mid {
+        display: inline-flex;
+        align-items: center;
+        padding: 4px 10px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 600;
+    }
+
+    .score-chip,
+    .badge-neutral {
+        background: var(--bg-tertiary);
+        color: var(--text-primary);
+    }
+
+    .stance-chip {
+        background: var(--primary-light);
+        color: var(--primary-color);
+    }
+
+    .badge-high,
+    .badge-bull {
+        background: var(--success-light);
+        color: var(--success-color);
+    }
+
+    .badge-medium,
+    .badge-mid {
+        background: var(--warning-light);
+        color: var(--warning-color);
+    }
+
+    .badge-low,
+    .badge-bear {
+        background: var(--danger-light);
+        color: var(--danger-color);
+    }
+
+    .timeline-top,
+    .archive-topline {
+        display: flex;
+        justify-content: space-between;
+        gap: 10px;
+        align-items: center;
+        flex-wrap: wrap;
+        margin-bottom: 8px;
+    }
+
+    .timeline-date,
+    .archive-date {
+        font-size: 14px;
+        font-weight: 600;
+    }
+
+    .timeline-tags,
+    .archive-tags {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+    }
+
+    .snapshot-grid,
+    .archive-score-grid,
+    .debate-columns {
+        align-items: stretch;
+    }
+
+    .snapshot-card,
+    .archive-score-card,
+    .debate-card {
+        flex: 1;
+        min-width: 200px;
+    }
+
+    .timeline-role-grid {
+        margin-top: 12px;
+        align-items: stretch;
+    }
+
+    .timeline-role-card {
+        flex: 1;
+        min-width: 160px;
+        padding: 12px;
+        background: var(--bg-tertiary);
+    }
+
+    .timeline-role-head {
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+        align-items: center;
+        margin-bottom: 6px;
+    }
+
+    .timeline-role-name {
+        font-size: 13px;
+        font-weight: 600;
+    }
+
+    .debate-list,
+    .archive-list {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+    }
+
+    .debate-item,
+    .archive-item {
+        padding: 10px 12px;
+        border-radius: 12px;
+        background: var(--bg-tertiary);
+        color: var(--text-secondary);
+        line-height: 1.6;
+    }
+
+    .archive-card {
+        border: 1px solid var(--border-color);
+        border-radius: var(--border-radius-lg);
+        background: var(--bg-primary);
+        overflow: hidden;
+    }
+
+    .archive-trigger {
+        width: 100%;
+        border: none;
+        background: transparent;
+        padding: 16px;
+        text-align: left;
+        cursor: pointer;
+    }
+
+    .archive-trigger:hover {
+        background: var(--bg-tertiary);
+    }
+
+    .archive-trigger.active {
+        background: var(--primary-light);
+    }
+
+    .archive-panel {
+        display: none;
+        border-top: 1px solid var(--border-color);
+        border-radius: 0;
+        background: var(--bg-secondary);
+    }
+
+    .archive-panel.open {
+        display: block;
+    }
+
+    .archive-actions {
+        justify-content: flex-end;
+        margin-top: 12px;
+    }
+
+    .empty-box,
+    .detail-skeleton {
+        min-height: 260px;
+        justify-content: center;
+        flex-direction: column;
+        border: 1px dashed var(--border-color);
+        border-radius: var(--border-radius-lg);
+        background: var(--bg-primary);
+        padding: 32px;
+        text-align: center;
+        color: var(--text-secondary);
+    }
+
+    .detail-skeleton {
+        display: none;
+    }
+
+    .detail-skeleton.show {
+        display: flex;
+    }
+
+    .detail-content.hidden {
+        display: none;
+    }
+
+    .stock-code-link {
+        color: #007bff;
+        text-decoration: none;
+        font-weight: 500;
+    }
+
+    .stock-code-link:hover {
+        text-decoration: underline;
+        color: #0056b3;
+    }
+
+    @media (max-width: 1200px) {
+        .metric-grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+    }
+
+    @media (max-width: 980px) {
+        .watchlist-layout,
+        .role-grid,
+        .timeline-grid,
+        .archive-grid {
+            grid-template-columns: 1fr;
+        }
+
+        .watch-sidebar {
+            position: static;
+        }
+    }
+
+    @media (max-width: 640px) {
+        .metric-grid {
+            grid-template-columns: 1fr;
+        }
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div class="toolbar-row" style="width: 100%;">
+        <h1 class="page-title">自选专页</h1>
+        <div class="engine-switcher">
+            <span class="text-muted">研究引擎</span>
+            <select id="engineSelect" class="engine-select" onchange="switchResearchEngine(this.value)">
+                {% for engine in research_engines %}
+                <option value="{{ engine.name }}" {% if current_engine == engine.name %}selected{% endif %}>{{ engine.display_name }}</option>
+                {% endfor %}
+            </select>
+        </div>
+    </div>
+    <div class="page-actions">
+        <a href="{{ url_for('main.dashboard') }}" class="btn btn-secondary">返回首页</a>
+        <button class="btn btn-outline" disabled title="legacy 页面已只读，请到 React 选股池更新复盘">刷新自选分析</button>
+        {% if detail and detail.pick %}
+        <button class="btn btn-primary" id="pageAnalyzeButton" disabled title="legacy 页面已只读，请到 React 选股池更新复盘">重新分析当前标的</button>
+        {% endif %}
+    </div>
+</div>
+<div class="flash-message flash-info">
+    <span class="flash-icon">ℹ</span>
+    <span class="flash-text">自选专页已进入 legacy 只读模式。复盘、观察状态和写操作请使用 React 选股池。</span>
+</div>
+
+<div class="watchlist-layout">
+    <aside class="watch-sidebar">
+        <div class="card">
+            <div class="card-header">
+                <h3 class="card-title">重点观察池 <span class="badge">{{ watch_items|length }} 条</span></h3>
+            </div>
+            <div class="card-body">
+                <div class="watch-items" id="watchItemsList">
+                    {% for item in watch_items %}
+                    <a href="{{ url_for('main.watchlist', id=item.id, engine=current_engine) }}" data-id="{{ item.id }}" class="watch-item {% if detail and detail.pick and detail.pick.id == item.id %}active{% endif %}" onclick="selectWatchItem(event, {{ item.id }})">
+                        <div class="watch-item-top">
+                            <span class="watch-item-name">{{ item.name or '-' }}</span>
+                            <span class="score-chip">{{ item.second_board_score or 0 }} 分</span>
+                        </div>
+                        <div class="watch-item-bottom">
+                            <span class="watch-item-code">{{ item.code }}</span>
+                            <span class="text-muted">{{ item.pick_date }}</span>
+                        </div>
+                        <div class="metric-hint">{{ item.prediction_reason or '暂无研究摘要' }}</div>
+                    </a>
+                    {% else %}
+                    <div class="empty-box">
+                        <div>当前没有已加入自选池的标的</div>
+                        <div>可先在首页对记录执行研究增强并加入观察池</div>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+    </aside>
+
+    <section class="detail-main">
+        <div class="detail-skeleton" id="detailSkeleton">
+            <div>正在加载自选详情…</div>
+        </div>
+        <div id="detailContainer" class="detail-content{% if not (detail and detail.success and detail.pick) %} hidden{% endif %}"></div>
+        {% if not (detail and detail.success and detail.pick) %}
+        <div class="empty-box" id="emptyState">
+            <div>暂未选中自选标的</div>
+            <div>请从左侧观察池中选择一只股票查看多角色研究详情</div>
+        </div>
+        {% else %}
+        <div id="emptyState" class="empty-box hidden">
+            <div>暂未选中自选标的</div>
+            <div>请从左侧观察池中选择一只股票查看多角色研究详情</div>
+        </div>
+        {% endif %}
+    </section>
+</div>
+
+<script id="initialDetailData" type="application/json">{{ (detail or {}) | tojson }}</script>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    let currentDetail = null;
+    let currentPickId = null;
+    let currentEngine = {{ current_engine | tojson }};
+    let currentAgentStream = null;
+    let currentAgentStreamJobId = null;
+    let currentAgentLiveState = null;
+    const LEGACY_READ_ONLY = true;
+
+    function escapeHtml(value) {
+        return String(value ?? '').replace(/[&<>"']/g, function(char) {
+            return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char];
+        });
+    }
+
+    function confidenceBadge(confidence) {
+        if (confidence === '高') return 'badge-high';
+        if (confidence === '中') return 'badge-medium';
+        return 'badge-low';
+    }
+
+    function conflictBadge(level) {
+        if (level === '高') return 'badge-bear';
+        if (level === '中') return 'badge-mid';
+        return 'badge-bull';
+    }
+
+    function renderList(items, className) {
+        if (!items || !items.length) {
+            return `<div class="${className}">暂无内容</div>`;
+        }
+        return `<ul class="${className}">${items.map(item => `<li class="${className === 'debate-list' ? 'debate-item' : 'archive-item'}">${escapeHtml(item)}</li>`).join('')}</ul>`;
+    }
+
+    function roleCardsHtml(roleViews) {
+        if (!roleViews || !roleViews.length) {
+            return '<div class="summary-text">当前尚未生成多角色研究视图。</div>';
+        }
+        return roleViews.map(role => `
+            <div class="role-card">
+                <div class="role-head">
+                    <span class="role-name">${escapeHtml(role.name || '')}</span>
+                    <div class="role-meta">
+                        <span class="score-chip">${escapeHtml(role.score ?? 0)} 分</span>
+                        <span class="stance-chip">${escapeHtml(role.stance || '-')}</span>
+                    </div>
+                </div>
+                <div class="role-view">${escapeHtml(role.view || '-')}</div>
+            </div>
+        `).join('');
+    }
+
+    function analystTraceCardsHtml(analystTraces) {
+        if (!analystTraces || !analystTraces.length) {
+            return '<div class="summary-text">暂无 TradingAgents 多 Agent 过程数据。</div>';
+        }
+        return analystTraces.map((trace, index) => {
+            const title = trace.title || trace.analyst || trace.agent || `Agent ${index + 1}`;
+            const traceItems = Array.isArray(trace.trace) ? trace.trace : [];
+            const content = trace.content || trace.summary || trace.report || '';
+            return `
+                <div class="role-card">
+                    <div class="role-head">
+                        <span class="role-name">${escapeHtml(title)}</span>
+                    </div>
+                    <div class="role-view">${escapeHtml(content || '-')}</div>
+                    ${traceItems.length ? `<div class="role-meta" style="margin-top: 10px;">${traceItems.slice(0, 6).map(item => `<span class="tag">${escapeHtml(String(item))}</span>`).join('')}</div>` : ''}
+                </div>
+            `;
+        }).join('');
+    }
+
+    function timelineRoleCardsHtml(roleViews) {
+        if (!roleViews || !roleViews.length) {
+            return '';
+        }
+        return `
+            <div class="timeline-role-grid">
+                ${roleViews.map(role => `
+                    <div class="timeline-role-card">
+                        <div class="timeline-role-head">
+                            <span class="timeline-role-name">${escapeHtml(role.name || '')}</span>
+                            <span class="score-chip">${escapeHtml(role.score ?? 0)}</span>
+                        </div>
+                        <div class="snapshot-text">${escapeHtml(role.stance || '-')}</div>
+                    </div>
+                `).join('')}
+            </div>
+        `;
+    }
+
+    function debatePanelHtml(debatePanel) {
+        const panel = debatePanel || {};
+        const conflictLevel = panel.conflict_level || '低';
+        return `
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title">多角色辩论面板 <span class="${conflictBadge(conflictLevel)}">分歧 ${escapeHtml(conflictLevel)}</span></h3>
+                </div>
+                <div class="card-body">
+                    <div class="debate-columns">
+                        <div class="debate-card">
+                            <div class="debate-label">看多论据</div>
+                            ${renderList(panel.bullish_points || [], 'debate-list')}
+                        </div>
+                        <div class="debate-card">
+                            <div class="debate-label">风险提示</div>
+                            ${renderList(panel.caution_points || [], 'debate-list')}
+                        </div>
+                        <div class="debate-card">
+                            <div class="debate-label">决策依据</div>
+                            ${renderList(panel.decision_basis || [], 'debate-list')}
+                        </div>
+                    </div>
+                    <div class="summary-box" style="margin-top: 16px;">
+                        <div class="debate-label">辩论结论</div>
+                        <div class="debate-text">${escapeHtml(panel.final_conclusion || '暂无辩论结论')}</div>
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+
+    function archivePanelHtml(archive, index) {
+        const snapshot = archive.snapshot || {};
+        const debatePanel = archive.debate_panel || {};
+        const conflictLevel = debatePanel.conflict_level || '低';
+        return `
+            <div class="archive-card">
+                <button type="button" class="archive-trigger" data-archive-trigger="${index}" onclick="toggleArchive(${index})">
+                    <div class="archive-topline">
+                        <span class="archive-date">${escapeHtml(archive.analysis_date || '-')}</span>
+                        <div class="archive-tags">
+                            <span class="badge-neutral">${escapeHtml(archive.action || '继续观察')}</span>
+                            ${archive.confidence ? `<span class="${confidenceBadge(archive.confidence)}">置信度 ${escapeHtml(archive.confidence)}</span>` : ''}
+                            <span class="${conflictBadge(conflictLevel)}">分歧 ${escapeHtml(conflictLevel)}</span>
+                        </div>
+                    </div>
+                    <div class="archive-text">${escapeHtml(archive.summary || '-')}</div>
+                </button>
+                <div class="archive-panel" id="archive-panel-${index}">
+                    <div class="archive-score-grid">
+                        <div class="archive-score-card">
+                            <div class="archive-label">综合分</div>
+                            <div class="metric-value">${escapeHtml(archive.scores?.total ?? 0)}</div>
+                        </div>
+                        <div class="archive-score-card">
+                            <div class="archive-label">技术 / 情绪</div>
+                            <div class="archive-text">${escapeHtml(archive.scores?.technical ?? 0)} / ${escapeHtml(archive.scores?.sentiment ?? 0)}</div>
+                        </div>
+                        <div class="archive-score-card">
+                            <div class="archive-label">风险 / 资金</div>
+                            <div class="archive-text">${escapeHtml(archive.scores?.risk ?? 0)} / ${escapeHtml(archive.scores?.capital ?? 0)}</div>
+                        </div>
+                    </div>
+                    <div class="snapshot-grid" style="margin-top: 16px;">
+                        <div class="snapshot-card">
+                            <div class="snapshot-label">最终裁决</div>
+                            <div class="snapshot-text">${escapeHtml(snapshot.final_action || archive.action || '-')}</div>
+                        </div>
+                        <div class="snapshot-card">
+                            <div class="snapshot-label">趋势 / 量比 / 位置</div>
+                            <div class="snapshot-text">${escapeHtml(snapshot.trend_bias || '-')} / ${escapeHtml(snapshot.volume_ratio ?? '-')} / ${escapeHtml(snapshot.price_position ?? '-')}%</div>
+                        </div>
+                        <div class="snapshot-card">
+                            <div class="snapshot-label">辩论摘要</div>
+                            <div class="snapshot-text">${escapeHtml(snapshot.debate_summary || '-')}</div>
+                        </div>
+                    </div>
+                    ${timelineRoleCardsHtml(archive.role_views || [])}
+                    <div class="debate-columns" style="margin-top: 16px;">
+                        <div class="debate-card">
+                            <div class="debate-label">历史看多论据</div>
+                            ${renderList(debatePanel.bullish_points || [], 'archive-list')}
+                        </div>
+                        <div class="debate-card">
+                            <div class="debate-label">历史风险提示</div>
+                            ${renderList(debatePanel.caution_points || [], 'archive-list')}
+                        </div>
+                        <div class="debate-card">
+                            <div class="debate-label">历史决策依据</div>
+                            ${renderList(debatePanel.decision_basis || [], 'archive-list')}
+                        </div>
+                    </div>
+                    <div class="summary-box" style="margin-top: 16px;">
+                        <div class="debate-label">历史结论</div>
+                        <div class="debate-text">${escapeHtml(debatePanel.final_conclusion || '暂无历史结论')}</div>
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+
+    function archiveTimelineHtml(archives) {
+        if (!archives || !archives.length) {
+            return '<div class="summary-text">暂无历史研究档案。</div>';
+        }
+        return `<div class="archive-grid">${archives.map((archive, index) => archivePanelHtml(archive, index)).join('')}</div>`;
+    }
+
+    function engineMetaHtml(analysis) {
+        const engineName = analysis.engine_display_name || analysis.engine_mode || currentEngine || 'rule';
+        const engineStatus = analysis.engine_status || 'ready';
+        const engineNote = analysis.engine_note || '';
+        return `
+            <div class="summary-box" style="margin-bottom: 16px;">
+                <div class="timeline-label">当前研究引擎</div>
+                <div class="detail-meta">
+                    <span class="badge-neutral">${escapeHtml(engineName)}</span>
+                    <span class="badge-neutral">状态 ${escapeHtml(engineStatus)}</span>
+                    ${engineNote ? `<span class="text-muted">${escapeHtml(engineNote)}</span>` : ''}
+                </div>
+            </div>
+        `;
+    }
+
+    function createAgentLiveState() {
+        return {
+            jobStatus: 'idle',
+            currentAgent: '',
+            progressMessage: '',
+            snapshotAgents: [],
+            reportChunks: [],
+            events: []
+        };
+    }
+
+    function pushAgentLiveEvent(event) {
+        if (!currentAgentLiveState) {
+            currentAgentLiveState = createAgentLiveState();
+        }
+        currentAgentLiveState.events.unshift(event);
+        currentAgentLiveState.events = currentAgentLiveState.events.slice(0, 30);
+    }
+
+    function renderAgentLiveHtml() {
+        const state = currentAgentLiveState;
+        if (!state) {
+            return '';
+        }
+        const snapshotHtml = (state.snapshotAgents || []).length
+            ? state.snapshotAgents.map(item => `
+                <div class="role-card">
+                    <div class="role-topline">
+                        <span class="role-name">${escapeHtml(item.agent || '-')}</span>
+                        <span class="stance-chip">${escapeHtml(item.status || 'pending')}</span>
+                    </div>
+                    <div class="role-view">${escapeHtml(item.team || '-')}</div>
+                </div>
+            `).join('')
+            : '<div class="summary-text">等待实时快照...</div>';
+        const reportHtml = (state.reportChunks || []).length
+            ? state.reportChunks.map(item => `
+                <div class="debate-item">
+                    <div class="debate-role">${escapeHtml(item.agent || item.section || 'Agent')}</div>
+                    <div class="debate-opinion">${escapeHtml(item.chunk || '')}</div>
+                </div>
+            `).join('')
+            : '<div class="summary-text">等待实时报告输出...</div>';
+        const eventHtml = (state.events || []).length
+            ? state.events.map(item => `
+                <div class="archive-card" style="padding: 12px; margin-bottom: 8px;">
+                    <div class="archive-topline">
+                        <span class="archive-date">${escapeHtml(item.event || '-')}</span>
+                        <div class="archive-tags">${item.agent ? `<span class="badge-neutral">${escapeHtml(item.agent)}</span>` : ''}</div>
+                    </div>
+                    <div class="archive-text">${escapeHtml(item.message || item.status || item.section || '')}</div>
+                </div>
+            `).join('')
+            : '<div class="summary-text">等待实时事件...</div>';
+        return `
+            <div class="card" style="border: 1px solid rgba(56, 189, 248, 0.35); margin-bottom: 16px;">
+                <div class="card-header">
+                    <h3 class="card-title">实时多 Agent 分析过程</h3>
+                </div>
+                <div class="card-body">
+                    <div class="detail-meta" style="margin-bottom: 12px;">
+                        <span class="badge-neutral">任务状态 ${escapeHtml(state.jobStatus || 'idle')}</span>
+                        ${state.currentAgent ? `<span class="badge-neutral">当前 Agent ${escapeHtml(state.currentAgent)}</span>` : ''}
+                        ${state.progressMessage ? `<span class="text-muted">${escapeHtml(state.progressMessage)}</span>` : ''}
+                    </div>
+                    <div class="summary-box" style="margin-bottom: 16px;">
+                        <div class="timeline-label">实时 Agent 快照</div>
+                        <div class="role-grid">${snapshotHtml}</div>
+                    </div>
+                    <div class="summary-box" style="margin-bottom: 16px;">
+                        <div class="timeline-label">实时报告输出</div>
+                        ${reportHtml}
+                    </div>
+                    <div class="summary-box">
+                        <div class="timeline-label">实时事件流</div>
+                        ${eventHtml}
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+
+    function detailHtml(detail) {
+        const pick = detail.pick || {};
+        const analysis = detail.latest_analysis || {};
+        const consensus = analysis.consensus || {};
+        const roleViews = analysis.role_views || [];
+        const analystTraces = analysis.analyst_traces || [];
+        const agentRaw = analysis.agent_raw || {};
+        const debatePanel = analysis.debate_panel || {};
+        const confidence = consensus.confidence || analysis.confidence || '低';
+        const chartUrl = `{{ url_for('strategies.react_stock_chart') }}?code=${encodeURIComponent(pick.code || '')}`;
+        return `
+            <div class="card">
+                <div class="card-header">
+                    <div class="detail-header-row" style="width: 100%;">
+                        <div>
+                            <div class="detail-topline">
+                                <span class="detail-name">${escapeHtml(pick.name || '-')}</span>
+                                <a href="${chartUrl}" class="stock-code-link" target="_blank">${escapeHtml(pick.code || '-')}</a>
+                            </div>
+                            <div class="detail-subline" style="margin-top: 8px;">
+                                <span class="tag">${escapeHtml(pick.pick_date || '-')}</span>
+                                <span class="tag">策略：${escapeHtml(pick.strategy_name || '2560')}</span>
+                                <span class="tag">信号：${escapeHtml(pick.signal || '未标注')}</span>
+                                <span class="tag">预期：${escapeHtml(pick.second_board_expectation || '-')}</span>
+                            </div>
+                        </div>
+                        <div class="action-row">
+                            <button class="btn btn-outline btn-sm" disabled title="legacy 页面已只读">重新分析</button>
+                            <button class="btn btn-secondary btn-sm" disabled title="legacy 页面已只读">移出自选</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="card-body">
+                    ${engineMetaHtml(analysis)}
+                    ${renderAgentLiveHtml()}
+                    <div class="consensus-grid" style="margin-bottom: 16px;">
+                        <div class="summary-box" style="flex: 1; min-width: 260px;">
+                            <div class="timeline-label">最终裁决</div>
+                            <div class="metric-value" style="font-size: 22px;">${escapeHtml(consensus.final_action || analysis.final_action || '待分析')}</div>
+                            <div style="margin-top: 12px;">
+                                <span class="${confidenceBadge(confidence)}">置信度 ${escapeHtml(confidence)}</span>
+                            </div>
+                        </div>
+                        <div class="summary-box" style="flex: 2; min-width: 300px;">
+                            <div class="timeline-label">研究摘要</div>
+                            <div class="summary-text">${escapeHtml(analysis.research_summary || pick.prediction_reason || '暂无摘要')}</div>
+                            <div class="metric-hint">${escapeHtml(analysis.debate_summary || consensus.summary || '暂无多角色辩论摘要')}</div>
+                        </div>
+                    </div>
+
+                    <div class="detail-meta">
+                        <span class="tag">分析状态：${escapeHtml(analysis.analysis_status || '-')}</span>
+                        <span class="tag">更新时间：${escapeHtml(analysis.research_updated_at || '-')}</span>
+                        <span class="tag">价格位置：${escapeHtml(analysis.price_position ?? 0)}%</span>
+                        <span class="tag">量比：${escapeHtml(analysis.volume_ratio ?? 0)}</span>
+                        <span class="tag">趋势：${escapeHtml(analysis.trend_bias || '-')}</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="metric-grid">
+                <div class="metric-card">
+                    <div class="metric-label">综合研究分</div>
+                    <div class="metric-value">${escapeHtml(analysis.research_score ?? 0)}</div>
+                    <div class="metric-hint">总分越高代表继续跟踪价值越强</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-label">技术评分</div>
+                    <div class="metric-value">${escapeHtml(analysis.technical_score ?? 0)}</div>
+                    <div class="metric-hint">趋势、位置、短期动量综合判断</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-label">情绪评分</div>
+                    <div class="metric-value">${escapeHtml(analysis.sentiment_score ?? 0)}</div>
+                    <div class="metric-hint">基于信号、标签与文本关键词反馈</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-label">风险评分</div>
+                    <div class="metric-value">${escapeHtml(analysis.risk_score ?? 0)}</div>
+                    <div class="metric-hint">数值越高代表波动与追高风险越大</div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title">多角色研究流</h3>
+                </div>
+                <div class="card-body">
+                    <div class="role-grid">${roleCardsHtml(roleViews)}</div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title">TradingAgents 多 Agent 过程</h3>
+                </div>
+                <div class="card-body">
+                    <div class="role-grid">${analystTraceCardsHtml(analystTraces)}</div>
+                </div>
+            </div>
+
+            ${debatePanelHtml(debatePanel)}
+
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title">历史研究档案 <span class="badge">${escapeHtml((detail.archives || []).length)} 条</span></h3>
+                </div>
+                <div class="card-body">
+                    ${archiveTimelineHtml(detail.archives || [])}
+                </div>
+            </div>
+        `;
+    }
+
+    function toggleArchive(index) {
+        const panel = document.getElementById(`archive-panel-${index}`);
+        const trigger = document.querySelector(`[data-archive-trigger="${index}"]`);
+        if (!panel || !trigger) return;
+        const willOpen = !panel.classList.contains('open');
+        panel.classList.toggle('open', willOpen);
+        trigger.classList.toggle('active', willOpen);
+    }
+
+    function syncEngineSelect() {
+        const select = document.getElementById('engineSelect');
+        if (select) {
+            select.value = currentEngine;
+        }
+    }
+
+    function switchResearchEngine(engine) {
+        currentEngine = engine || 'rule';
+        syncEngineSelect();
+        const url = new URL(window.location.href);
+        url.searchParams.set('engine', currentEngine);
+        if (currentPickId) {
+            url.searchParams.set('id', currentPickId);
+        }
+        window.history.replaceState({}, '', url);
+        if (currentPickId) {
+            loadDetail(currentPickId).catch(error => alert(error.message || '切换引擎失败'));
+        }
+    }
+
+    async function postJson(url, payload) {
+        if (LEGACY_READ_ONLY) {
+            throw new Error('legacy 页面已只读，请到 React 选股池执行写操作');
+        }
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload || {})
+        });
+        const data = await response.json();
+        if (!response.ok || data.success === false) {
+            throw new Error(data.message || data.error || '请求失败');
+        }
+        return data;
+    }
+
+    async function getJson(url) {
+        const response = await fetch(url);
+        const data = await response.json();
+        if (!response.ok || data.success === false) {
+            throw new Error(data.message || data.error || '请求失败');
+        }
+        return data;
+    }
+
+    function setActiveItem(id) {
+        document.querySelectorAll('.watch-item').forEach(item => {
+            item.classList.toggle('active', Number(item.dataset.id) === Number(id));
+        });
+    }
+
+    function toggleLoading(isLoading, id) {
+        const skeleton = document.getElementById('detailSkeleton');
+        const container = document.getElementById('detailContainer');
+        if (skeleton) {
+            skeleton.classList.toggle('show', isLoading);
+        }
+        if (container) {
+            container.classList.toggle('hidden', isLoading);
+        }
+        document.querySelectorAll('.watch-item').forEach(item => {
+            item.classList.toggle('loading', isLoading && (!id || Number(item.dataset.id) === Number(id)));
+        });
+    }
+
+    function renderDetail(detail) {
+        currentDetail = detail;
+        currentPickId = detail && detail.pick ? Number(detail.pick.id) : null;
+        currentEngine = detail && detail.engine ? detail.engine : currentEngine;
+        syncEngineSelect();
+        const container = document.getElementById('detailContainer');
+        const emptyState = document.getElementById('emptyState');
+        if (!container) return;
+        if (!detail || !detail.success || !detail.pick) {
+            container.innerHTML = '';
+            container.classList.add('hidden');
+            if (emptyState) emptyState.classList.remove('hidden');
+            return;
+        }
+        container.innerHTML = detailHtml(detail);
+        container.classList.remove('hidden');
+        if (emptyState) emptyState.classList.add('hidden');
+        setActiveItem(currentPickId);
+        const url = new URL(window.location.href);
+        url.searchParams.set('engine', currentEngine);
+        url.searchParams.set('id', currentPickId);
+        window.history.replaceState({}, '', url);
+    }
+
+    async function loadDetail(id) {
+        toggleLoading(true, id);
+        try {
+            const detail = await getJson(`/api/watch-pool/${id}/detail?engine=${encodeURIComponent(currentEngine)}`);
+            renderDetail(detail);
+            return detail;
+        } finally {
+            toggleLoading(false, id);
+        }
+    }
+
+    async function selectWatchItem(event, id) {
+        if (event) {
+            event.preventDefault();
+        }
+        try {
+            await loadDetail(id);
+        } catch (error) {
+            alert(error.message || '加载自选详情失败');
+        }
+    }
+
+    function closeAgentStream() {
+        if (currentAgentStream) {
+            currentAgentStream.close();
+            currentAgentStream = null;
+        }
+        currentAgentStreamJobId = null;
+    }
+
+    function rerenderCurrentDetail() {
+        if (currentDetail && currentDetail.success && currentDetail.pick) {
+            renderDetail(currentDetail);
+        }
+    }
+
+    function bindAgentStream(jobId) {
+        closeAgentStream();
+        currentAgentStreamJobId = jobId;
+        currentAgentLiveState = createAgentLiveState();
+        currentAgentLiveState.jobStatus = 'pending';
+        rerenderCurrentDetail();
+        const es = new EventSource(`/api/watch-pool/agent-stream/${jobId}/events`);
+        currentAgentStream = es;
+
+        const pushEventAndRender = (event) => {
+            pushAgentLiveEvent(event);
+            rerenderCurrentDetail();
+        };
+
+        es.addEventListener('job.ready', () => {
+            currentAgentLiveState.jobStatus = 'ready';
+            rerenderCurrentDetail();
+        });
+        es.addEventListener('job.created', (evt) => {
+            const data = JSON.parse(evt.data || '{}');
+            currentAgentLiveState.jobStatus = 'created';
+            pushEventAndRender({ event: 'job.created', message: `任务已创建 #${data.job_id || ''}` });
+        });
+        es.addEventListener('job.running', (evt) => {
+            const data = JSON.parse(evt.data || '{}');
+            currentAgentLiveState.jobStatus = 'running';
+            pushEventAndRender({ event: 'job.running', message: `正在分析标的 ${data.rid || ''}` });
+        });
+        es.addEventListener('job.progress', (evt) => {
+            const data = JSON.parse(evt.data || '{}');
+            currentAgentLiveState.currentAgent = data.agent || '';
+            currentAgentLiveState.progressMessage = data.message || '';
+            pushEventAndRender({ event: 'job.progress', agent: data.agent, section: data.section, message: data.message });
+        });
+        es.addEventListener('agent.snapshot', (evt) => {
+            const data = JSON.parse(evt.data || '{}');
+            currentAgentLiveState.snapshotAgents = Array.isArray(data.agents) ? data.agents : [];
+            pushEventAndRender({ event: 'agent.snapshot', message: `已收到 ${currentAgentLiveState.snapshotAgents.length} 个 Agent 快照` });
+        });
+        es.addEventListener('agent.status', (evt) => {
+            const data = JSON.parse(evt.data || '{}');
+            currentAgentLiveState.currentAgent = data.agent || currentAgentLiveState.currentAgent;
+            currentAgentLiveState.snapshotAgents = (currentAgentLiveState.snapshotAgents || []).map(item => item.agent === data.agent ? { ...item, status: data.status || item.status } : item);
+            pushEventAndRender({ event: 'agent.status', agent: data.agent, status: data.status, message: `${data.agent || 'Agent'} -> ${data.status || '-'}` });
+        });
+        es.addEventListener('agent.report.chunk', (evt) => {
+            const data = JSON.parse(evt.data || '{}');
+            currentAgentLiveState.reportChunks.unshift(data);
+            currentAgentLiveState.reportChunks = currentAgentLiveState.reportChunks.slice(0, 8);
+            pushEventAndRender({ event: 'agent.report.chunk', agent: data.agent, section: data.section, message: '收到新的报告片段' });
+        });
+        es.addEventListener('job.completed', async (evt) => {
+            const data = JSON.parse(evt.data || '{}');
+            currentAgentLiveState.jobStatus = 'completed';
+            pushEventAndRender({ event: 'job.completed', message: '多 Agent 分析完成' });
+            if (data.result) {
+                currentDetail = data.result;
+                renderDetail(data.result);
+            } else if (currentPickId) {
+                await loadDetail(currentPickId);
+            }
+            closeAgentStream();
+        });
+        es.addEventListener('job.failed', (evt) => {
+            const data = JSON.parse(evt.data || '{}');
+            currentAgentLiveState.jobStatus = 'failed';
+            pushEventAndRender({ event: 'job.failed', message: data.error || '任务失败' });
+            closeAgentStream();
+        });
+        es.addEventListener('done', () => {
+            closeAgentStream();
+        });
+        es.onerror = () => {
+            pushEventAndRender({ event: 'error', message: '实时连接已断开' });
+            closeAgentStream();
+        };
+    }
+
+    async function reanalyzeCurrentPick() {
+        if (!currentPickId) return;
+        if (currentEngine !== 'agent') {
+            try {
+                await postJson(`/api/picks/${currentPickId}/analyze`, { engine: currentEngine });
+                await loadDetail(currentPickId);
+            } catch (error) {
+                alert(error.message || '重新分析失败');
+            }
+            return;
+        }
+        try {
+            const data = await postJson(`/api/watch-pool/${currentPickId}/agent-stream`, { engine: currentEngine });
+            bindAgentStream(data.job_id);
+        } catch (error) {
+            alert(error.message || '启动实时多 Agent 分析失败');
+        }
+    }
+
+    async function removeCurrentWatch() {
+        if (!currentPickId) return;
+        try {
+            await postJson(`/api/picks/${currentPickId}/unwatch`, {});
+            const activeItem = document.querySelector(`.watch-item[data-id="${currentPickId}"]`);
+            if (activeItem) {
+                activeItem.remove();
+            }
+            const firstItem = document.querySelector('.watch-item');
+            if (firstItem) {
+                await loadDetail(firstItem.dataset.id);
+            } else {
+                currentPickId = null;
+                renderDetail(null);
+            }
+        } catch (error) {
+            alert(error.message || '移出自选失败');
+        }
+    }
+
+    async function refreshWatchPool() {
+        try {
+            await postJson('/api/watch-pool/analyze', { engine: currentEngine });
+            if (currentPickId) {
+                await loadDetail(currentPickId);
+            } else {
+                location.reload();
+            }
+        } catch (error) {
+            alert(error.message || '刷新自选分析失败');
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', function() {
+        syncEngineSelect();
+        const initialNode = document.getElementById('initialDetailData');
+        if (!initialNode) return;
+        try {
+            const payload = JSON.parse(initialNode.textContent || '{}');
+            if (payload && payload.success && payload.pick) {
+                renderDetail(payload);
+            }
+        } catch (error) {
+            console.error(error);
+        }
+        window.addEventListener('beforeunload', closeAgentStream);
+    });
+</script>
+{% endblock %}

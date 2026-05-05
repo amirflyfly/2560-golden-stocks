@@ -14,6 +14,17 @@ def _fmt_size(n):
 
 
 def render_backups_page(message=''):
+    if backup_service.backup_stats().get('disabled'):
+        body = f"""
+<div class='topline'><div><h1>Backup Management</h1><div class='muted'>Legacy SQLite backup/restore is disabled in production.</div></div><div><a class='btn' href='/'>Back</a></div></div>
+<div class='nav'>{render_nav('dashboard')}</div>
+<div class='section card'>
+  <h2>Production backup</h2>
+  <div class='muted'>{esc(message or 'Use MySQL dump/restore tooling and the production runbook for database recovery.')}</div>
+  <p style='margin-top:12px'><a class='btn' href='/migration-check'>Migration Check</a></p>
+</div>
+"""
+        return layout_page('Backup Management', body)
     backups = backup_service.list_backups(limit=200)
     msg_html = f"<div class='card' style='background:#eff6ff;border:1px solid #bfdbfe'>{esc(message)}</div>" if message else ''
 

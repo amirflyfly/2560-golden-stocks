@@ -1,0 +1,45 @@
+{% extends 'base.html' %}
+
+{% block title %}导入密钥 - 2560战法复盘系统{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1 class="page-title">导入密钥</h1>
+    <a href="{{ url_for('admin.backup_key') }}" class="btn btn-secondary">返回</a>
+</div>
+
+<div class="dashboard-grid">
+    <div class="card">
+        <div class="card-header">
+            <h3 class="card-title">导入当前密钥</h3>
+        </div>
+        <div class="card-body">
+            <form method="POST" action="{{ url_for('admin.import_current_key') }}" enctype="multipart/form-data">
+                <div class="form-group">
+                    <label class="form-label">选择密钥文件</label>
+                    <input type="file" name="key_file" class="form-input" accept=".txt" required>
+                </div>
+                <button type="submit" class="btn btn-primary">导入当前密钥</button>
+            </form>
+        </div>
+    </div>
+    
+    <div class="card">
+        <div class="card-header">
+            <h3 class="card-title">导入旧密钥列表</h3>
+        </div>
+        <div class="card-body">
+            <form method="POST" action="{{ url_for('admin.import_current_key') }}" enctype="multipart/form-data">
+                <div class="form-group">
+                    <label class="form-label">选择密钥列表文件</label>
+                    <input type="file" name="legacy_file" class="form-input" accept=".txt" required>
+                </div>
+                <p style="color: var(--text-muted); font-size: 12px; margin-bottom: 12px;">
+                    旧密钥用于验证历史备份文件
+                </p>
+                <button type="submit" class="btn btn-primary">导入旧密钥</button>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}

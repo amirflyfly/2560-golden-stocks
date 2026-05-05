@@ -1,0 +1,155 @@
+{% extends 'base.html' %}
+
+{% block title %}编辑记录 - 2560战法复盘系统{% endblock %}
+
+{% block extra_js %}
+<script>
+// Load strategy options
+fetch('/strategies/api/list')
+    .then(r => r.json())
+    .then(strategies => {
+        const select = document.getElementById('strategySelect');
+        const currentStrategy = '{{ pick.strategy_name if pick else "2560" }}';
+        strategies.forEach(s => {
+            const option = document.createElement('option');
+            option.value = s.code;
+            option.textContent = s.name;
+            if (s.code === currentStrategy) {
+                option.selected = true;
+            }
+            select.appendChild(option);
+        });
+    });
+
+function submitEditForm(event) {
+    event.preventDefault();
+    const form = document.getElementById('editForm');
+    const formData = new FormData(form);
+    const payload = Object.fromEntries(formData.entries());
+    const hasPick = {{ 'true' if pick else 'false' }};
+    const url = hasPick ? '/api/picks/{{ pick.id if pick else 0 }}' : '/api/picks';
+    const method = hasPick ? 'PUT' : 'POST';
+
+    fetch(url, {
+        method: method,
+        headers: method === 'PUT' ? {'Content-Type': 'application/json'} : undefined,
+        body: method === 'PUT' ? JSON.stringify(payload) : formData,
+    })
+    .then(r => r.json())
+    .then(res => {
+        if (res.success) {
+            window.location.href = '{{ url_for("main.dashboard") }}';
+        } else {
+            alert(res.error || '保存失败');
+        }
+    })
+    .catch(() => alert('保存失败'));
+    return false;
+}
+</script>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1 class="page-title">编辑记录</h1>
+    <a href="{{ url_for('main.dashboard') }}" class="btn btn-secondary">返回列表</a>
+</div>
+
+<div class="card">
+    <div class="card-body">
+        <form id="editForm" onsubmit="return submitEditForm(event)">
+            <div class="form-grid">
+                <div class="form-group">
+                    <label class="form-label required">日期</label>
+                    <input type="date" name="pick_date" class="form-input" value="{{ pick.pick_date if pick else '' }}" required>
+                </div>
+                <div class="form-group">
+                    <label class="form-label required">股票代码</label>
+                    <input type="text" name="code" class="form-input" value="{{ pick.code if pick else '' }}" placeholder="如: 600519" required>
+                </div>
+                <div class="form-group">
+                    <label class="form-label required">股票名称</label>
+                    <input type="text" name="name" class="form-input" value="{{ pick.name if pick else '' }}" placeholder="如: 贵州茅台" required>
+                </div>
+                <div class="form-group">
+                    <label class="form-label required">推荐价</label>
+                    <input type="number" step="0.01" name="pick_price" class="form-input" value="{{ pick.pick_price if pick else '' }}" placeholder="如: 1688.00" required>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">策略名称</label>
+                    <select name="strategy_name" class="form-select" id="strategySelect">
+                        <!-- Options will be loaded via API -->
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">信号</label>
+                    <input type="text" name="signal" class="form-input" value="{{ pick.signal if pick else '' }}" placeholder="如: 缩量回踩">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">渠道</label>
+                    <input type="text" name="source_channel" class="form-input" value="{{ pick.source_channel if pick else '' }}" placeholder="如: douyin/xhs">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">标签</label>
+                    <input type="text" name="reason_tag" class="form-input" value="{{ pick.reason_tag if pick else '' }}" placeholder="如: 趋势突破">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">复盘状态</label>
+                    <select name="review_status" class="form-select">
+                        <option value="未复盘" {% if pick and pick.review_status == '未复盘' %}selected{% endif %}>未复盘</option>
+                        <option value="值得复讲" {% if pick and pick.review_status == '值得复讲' %}selected{% endif %}>值得复讲</option>
+                        <option value="逻辑一般" {% if pick and pick.review_status == '逻辑一般' %}selected{% endif %}>逻辑一般</option>
+                        <option value="不建议再提" {% if pick and pick.review_status == '不建议再提' %}selected{% endif %}>不建议再提</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">结果评级</label>
+                    <select name="result_grade" class="form-select">
+                        <option value="待定" {% if pick and pick.result_grade == '待定' %}selected{% endif %}>待定</option>
+                        <option value="S" {% if pick and pick.result_grade == 'S' %}selected{% endif %}>S</option>
+                        <option value="A" {% if pick and pick.result_grade == 'A' %}selected{% endif %}>A</option>
+                        <option value="B" {% if pick and pick.result_grade == 'B' %}selected{% endif %}>B</option>
+                        <option value="C" {% if pick and pick.result_grade == 'C' %}selected{% endif %}>C</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">成交状态</label>
+                    <select name="deal_status" class="form-select">
+                        <option value="未成交" {% if pick and pick.deal_status == '未成交' %}selected{% endif %}>未成交</option>
+                        <option value="已咨询" {% if pick and pick.deal_status == '已咨询' %}selected{% endif %}>已咨询</option>
+                        <option value="已成交" {% if pick and pick.deal_status == '已成交' %}selected{% endif %}>已成交</option>
+                        <option value="待跟进" {% if pick and pick.deal_status == '待跟进' %}selected{% endif %}>待跟进</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">咨询数</label>
+                    <input type="number" name="inquiry_count" class="form-input" value="{{ pick.inquiry_count if pick else 0 }}">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">二次传播</label>
+                    <select name="secondary_spread" class="form-select">
+                        <option value="否" {% if pick and pick.secondary_spread == '否' %}selected{% endif %}>否</option>
+                        <option value="是" {% if pick and pick.secondary_spread == '是' %}selected{% endif %}>是</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">内容标题</label>
+                    <input type="text" name="content_title" class="form-input" value="{{ pick.content_title if pick else '' }}">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">内容编号</label>
+                    <input type="text" name="content_ref" class="form-input" value="{{ pick.content_ref if pick else '' }}">
+                </div>
+            </div>
+            <div class="form-group full-width" style="margin-top: 16px;">
+                <label class="form-label">备注</label>
+                <textarea name="note" class="form-textarea" rows="4" placeholder="输入备注信息...">{{ pick.note if pick else '' }}</textarea>
+            </div>
+            <div class="form-actions" style="margin-top: 24px; display: flex; gap: 12px;">
+                <button type="submit" class="btn btn-primary">保存</button>
+                <a href="{{ url_for('main.dashboard') }}" class="btn btn-secondary">取消</a>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}

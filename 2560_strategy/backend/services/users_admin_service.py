@@ -32,9 +32,7 @@ def reset_password(user_id: int, new_password: str):
     if not new_password:
         return False, '新密码不能为空'
     try:
-        # update directly
-        from backend.repositories.db import execute
-        execute('UPDATE users SET password_hash=? WHERE id=?', (hash_password(new_password), int(user_id)))
+        users_repo.update_password(int(user_id), hash_password(new_password))
         return True, '密码已重置'
     except Exception as e:
         return False, f'重置失败：{e}'

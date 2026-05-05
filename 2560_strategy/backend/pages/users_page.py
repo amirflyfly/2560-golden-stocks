@@ -1,11 +1,11 @@
 """Page: user management (admin)."""
 
-from backend.repositories.db import q
+from backend.repositories import users_repo
 from backend.ui.html_helpers import esc, layout_page, render_nav
 
 
 def render_users_page(message=''):
-    users = q('SELECT id, username, role, is_active, created_at FROM users ORDER BY id ASC')
+    users = users_repo.list_users()
     msg_html = f"<div class='card' style='background:#eff6ff;border:1px solid #bfdbfe'>{esc(message)}</div>" if message else ''
     rows = ''.join([
         f"<tr><td>{u['id']}</td><td>{esc(u['username'])}</td><td>{esc(u['role'])}</td><td>{'启用' if int(u['is_active'] or 0)==1 else '停用'}</td><td>{esc(u['created_at'])}</td>"

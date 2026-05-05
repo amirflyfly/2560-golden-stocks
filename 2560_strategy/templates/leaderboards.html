@@ -1,0 +1,186 @@
+{% extends 'base.html' %}
+
+{% block title %}排行榜 - 飞哥复盘{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1 class="page-title">
+        <span class="page-icon">🏆</span>
+        排行榜
+    </h1>
+    <div class="page-actions">
+        <div class="relative">
+            <select class="form-select pr-8" onchange="location.href='{{ url_for('main.leaderboards') }}?range=' + this.value">
+                <option value="7d" {% if current_range == '7d' %}selected{% endif %}>近7天</option>
+                <option value="30d" {% if current_range == '30d' %}selected{% endif %}>近30天</option>
+                <option value="90d" {% if current_range == '90d' %}selected{% endif %}>近90天</option>
+                <option value="all" {% if current_range == 'all' %}selected{% endif %}>全部</option>
+            </select>
+            <div class="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 pointer-events-none">
+                📅
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="flash-message flash-info">
+    <span class="flash-icon">ℹ</span>
+    <span class="flash-text">排行榜为 legacy 只读页面。研究、复盘和入池操作请使用 React 工作流。</span>
+</div>
+
+<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+    {% for board_name, board_data in boards.items() %}
+    <div class="card">
+        <div class="card-header">
+            <h3 class="card-title">
+                <span class="card-icon">📊</span>
+                {{ board_name }}
+            </h3>
+        </div>
+        <div class="card-body">
+            {% if board_data and board_data|length > 0 %}
+                <div class="space-y-3">
+                    {% for item in board_data[:10] %}
+                    <div class="rank-item">
+                        <div class="flex items-center">
+                            {% if loop.index <= 3 %}
+                            <div class="rank-badge rank-badge-top rank-badge-{{ loop.index }}">
+                                {{ loop.index }}
+                            </div>
+                            {% else %}
+                            <div class="rank-badge rank-badge-normal">
+                                {{ loop.index }}
+                            </div>
+                            {% endif %}
+                            <div class="rank-info flex-1 ml-3">
+                                <div class="rank-name font-medium">{{ item.name }}</div>
+                                <div class="rank-code text-xs text-gray-500">
+                                    <a href="{{ url_for('strategies.react_stock_chart') }}?code={{ item.code }}" class="stock-code-link" target="_blank">
+                                        {{ item.code }}
+                                    </a>
+                                </div>
+                            </div>
+                            <div class="rank-value font-bold text-lg">
+                                {{ item.value }}
+                            </div>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+            {% else %}
+                <div class="empty-state">
+                    <div class="empty-state-icon">📊</div>
+                    <div class="empty-state-text">暂无数据</div>
+                    <div class="empty-state-subtext">数据更新后将显示排行榜</div>
+                </div>
+            {% endif %}
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% endblock %}
+
+{% block extra_css %}
+<style>
+.rank-item {
+    padding: 12px;
+    border-radius: 8px;
+    transition: all 0.3s ease;
+}
+
+.rank-item:hover {
+    background-color: var(--bg-secondary);
+    transform: translateX(4px);
+}
+
+.rank-badge {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    font-size: 14px;
+    font-weight: 600;
+    flex-shrink: 0;
+}
+
+.rank-badge-normal {
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    border: 1px solid var(--border-color);
+}
+
+.rank-badge-top {
+    color: #fff;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+.rank-badge-1 {
+    background: linear-gradient(135deg, #ffd700, #ffb347);
+}
+
+.rank-badge-2 {
+    background: linear-gradient(135deg, #c0c0c0, #a8a8a8);
+}
+
+.rank-badge-3 {
+    background: linear-gradient(135deg, #cd7f32, #b8860b);
+}
+
+.rank-info {
+    flex: 1;
+}
+
+.rank-name {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+.rank-code {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-top: 2px;
+}
+
+.rank-value {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--primary-color);
+    text-align: right;
+}
+
+.stock-code-link {
+    color: #007bff;
+    text-decoration: none;
+    font-weight: 500;
+}
+
+.stock-code-link:hover {
+    text-decoration: underline;
+    color: #0056b3;
+}
+
+/* 响应式调整 */
+@media (max-width: 768px) {
+    .grid {
+        grid-template-columns: 1fr;
+    }
+    
+    .rank-item {
+        padding: 10px;
+    }
+    
+    .rank-badge {
+        width: 28px;
+        height: 28px;
+        font-size: 12px;
+    }
+    
+    .rank-value {
+        font-size: 14px;
+    }
+}
+</style>
+{% endblock %}

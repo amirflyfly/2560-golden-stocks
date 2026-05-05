@@ -1,0 +1,65 @@
+{% extends 'base.html' %}
+
+{% block title %}备份详情 - 2560战法复盘系统{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1 class="page-title">备份详情</h1>
+    <a href="{{ url_for('admin.backups') }}" class="btn btn-secondary">返回列表</a>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h3 class="card-title">{{ name }}</h3>
+    </div>
+    <div class="card-body">
+        <div class="info-list">
+            <div class="info-item">
+                <span class="info-label">创建时间</span>
+                <span class="info-value">{{ meta.created_at | default('-') }}</span>
+            </div>
+            <div class="info-item">
+                <span class="info-label">操作者</span>
+                <span class="info-value">{{ meta.actor.username | default('-') }}</span>
+            </div>
+            <div class="info-item">
+                <span class="info-label">版本</span>
+                <span class="info-value">{{ meta.version | default('-') }}</span>
+            </div>
+            <div class="info-item">
+                <span class="info-label">数据库记录数</span>
+                <span class="info-value">{{ meta.picks_count | default('-') }}</span>
+            </div>
+        </div>
+        
+        <div style="margin-top: 20px; display: flex; gap: 12px;">
+            <a href="{{ url_for('admin.download_backup', name=name) }}" class="btn btn-primary">下载此备份</a>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_css %}
+<style>
+.info-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.info-item {
+    display: flex;
+    justify-content: space-between;
+    padding: 8px 0;
+    border-bottom: 1px dashed var(--border-color);
+}
+
+.info-label {
+    color: var(--text-secondary);
+}
+
+.info-value {
+    font-weight: 500;
+}
+</style>
+{% endblock %}

@@ -3,10 +3,15 @@ import io
 import json
 import html
 import secrets
+import os
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse, urlencode
 from http.server import BaseHTTPRequestHandler, HTTPServer
+
+from scripts.maintenance.legacy_sqlite_guard import refuse_production
+
+refuse_production('web_panel.py')
 
 from backend.repositories.db import ensure_schema, q, q1, execute, execute_many
 from backend.services.filters_service import (
@@ -70,8 +75,9 @@ SECRET_PATH = DATA_DIR / 'web_panel_secret.txt'
 
 ensure_schema()
 
-# bootstrap: create default admin on fresh DB
-ensure_default_admin('admin', 'admin123')
+# bootstrap: create the first admin on fresh DB. Production deployments must
+# provide ADMIN_INIT_USERNAME and ADMIN_INIT_PASSWORD.
+ensure_default_admin()
 
 
 class Handler(BaseHTTPRequestHandler):

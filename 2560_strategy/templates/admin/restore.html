@@ -1,0 +1,28 @@
+{% extends 'base.html' %}
+
+{% block title %}恢复数据 - 2560战法复盘系统{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1 class="page-title">恢复数据</h1>
+    <a href="{{ url_for('admin.backups') }}" class="btn btn-secondary">返回备份列表</a>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h3 class="card-title">上传备份文件</h3>
+    </div>
+    <div class="card-body">
+        <form method="POST" action="{{ url_for('admin.restore_upload') }}" enctype="multipart/form-data">
+            <div class="form-group">
+                <label class="form-label">选择备份文件（.zip）</label>
+                <input type="file" name="backup_zip" class="form-input" accept=".zip" required>
+            </div>
+            <div class="alert alert-warning" style="background: var(--warning-light); padding: 12px; border-radius: 8px; margin-bottom: 16px;">
+                <strong>⚠️ 注意：</strong>恢复操作将覆盖当前数据库，请确保已做好备份。
+            </div>
+            <button type="submit" class="btn btn-primary">上传并校验</button>
+        </form>
+    </div>
+</div>
+{% endblock %}

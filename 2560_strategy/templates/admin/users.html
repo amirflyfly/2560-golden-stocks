@@ -1,0 +1,162 @@
+{% extends 'base.html' %}
+
+{% block title %}用户管理 - 2560战法复盘系统{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1 class="page-title">用户管理</h1>
+    <button class="btn btn-primary" onclick="showCreateUserModal()">新增用户</button>
+</div>
+
+<div class="card">
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>用户名</th>
+                        <th>角色</th>
+                        <th>状态</th>
+                        <th>创建时间</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for u in users %}
+                    <tr>
+                        <td>{{ u.id }}</td>
+                        <td class="font-medium">{{ u.username }}</td>
+                        <td>
+                            <span class="tag tag-{{ 'primary' if u.role == 'admin' else 'default' }}">{{ u.role }}</span>
+                        </td>
+                        <td>
+                            <span class="status-badge status-{{ 'success' if u.is_active else 'danger' }}">
+                                {{ '正常' if u.is_active else '禁用' }}
+                            </span>
+                        </td>
+                        <td>{{ u.created_at }}</td>
+                        <td>
+                            <div class="action-btns">
+                                <button class="btn btn-link btn-sm" onclick="toggleUser({{ u.id }}, {{ 0 if u.is_active else 1 }})">
+                                    {{ '禁用' if u.is_active else '启用' }}
+                                </button>
+                                <button class="btn btn-link btn-sm" onclick="showResetPasswordModal({{ u.id }}, '{{ u.username }}')">重置密码</button>
+                            </div>
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="6" class="text-center text-muted py-8">暂无用户</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<div id="createUserModal" class="modal">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h3 class="modal-title">新增用户</h3>
+            <button class="modal-close" onclick="closeModal('createUserModal')">×</button>
+        </div>
+        <form id="createUserForm" class="modal-body" method="POST" action="{{ url_for('admin.create_user') }}">
+            <div class="form-group">
+                <label class="form-label required">用户名</label>
+                <input type="text" name="username" class="form-input" required>
+            </div>
+            <div class="form-group">
+                <label class="form-label required">密码</label>
+                <input type="password" name="password" class="form-input" required>
+            </div>
+            <div class="form-group">
+                <label class="form-label">角色</label>
+                <select name="role" class="form-select">
+                    <option value="editor">编辑</option>
+                    <option value="admin">管理员</option>
+                </select>
+            </div>
+        </form>
+        <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeModal('createUserModal')">取消</button>
+            <button class="btn btn-primary" onclick="document.getElementById('createUserForm').submit()">创建</button>
+        </div>
+    </div>
+</div>
+
+<div id="resetPasswordModal" class="modal">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h3 class="modal-title">重置密码</h3>
+            <button class="modal-close" onclick="closeModal('resetPasswordModal')">×</button>
+        </div>
+        <form id="resetPasswordForm" class="modal-body">
+            <input type="hidden" name="user_id" id="resetUserId">
+            <div class="form-group">
+                <label class="form-label">用户名</label>
+                <input type="text" id="resetUsername" class="form-input" readonly>
+            </div>
+            <div class="form-group">
+                <label class="form-label required">新密码</label>
+                <input type="password" name="new_password" class="form-input" required>
+            </div>
+        </form>
+        <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeModal('resetPasswordModal')">取消</button>
+            <button class="btn btn-primary" onclick="submitResetPassword()">确认</button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+function showCreateUserModal() {
+    document.getElementById('createUserModal').classList.add('show');
+}
+
+function showResetPasswordModal(userId, username) {
+    document.getElementById('resetUserId').value = userId;
+    document.getElementById('resetUsername').value = username;
+    document.getElementById('resetPasswordModal').classList.add('show');
+}
+
+function closeModal(id) {
+    document.getElementById(id).classList.remove('show');
+}
+
+function toggleUser(userId, isActive) {
+    fetch('{{ url_for("admin.toggle_user") }}', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: 'user_id=' + userId + '&is_active=' + isActive
+    })
+    .then(r => r.json())
+    .then(res => {
+        if (res.success) location.reload();
+        else alert(res.message);
+    });
+}
+
+function submitResetPassword() {
+    const form = document.getElementById('resetPasswordForm');
+    const data = new FormData(form);
+    
+    fetch('{{ url_for("admin.reset_password") }}', {
+        method: 'POST',
+        body: data
+    })
+    .then(r => r.json())
+    .then(res => {
+        if (res.success) {
+            alert('密码已重置');
+            closeModal('resetPasswordModal');
+        } else {
+            alert(res.message);
+        }
+    });
+}
+</script>
+{% endblock %}

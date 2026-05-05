@@ -1,7 +1,35 @@
 __pycache__/
-*.pyc
+*.py[cod]
+*.log
+*.tmp
+*.temp
+*.pid
 
-# data artifacts
-2560_strategy/data/
-# secrets
-**/backup_hmac_key.txt
+# Local environments and dependencies
+.env
+.env.*
+!.env.example
+venv/
+.venv/
+node_modules/
+2560_strategy/venv/
+2560_strategy/.venv/
+2560_strategy/frontend/node_modules/
+
+# Build and test outputs
+dist/
+static/dist/
+2560_strategy/static/dist/
+2560_strategy/frontend/dist/
+playwright-report/
+test-results/
+2560_strategy/frontend/playwright-report/
+2560_strategy/frontend/test-results/
+
+# Runtime data and local tool state
+2560_strategy/data/*.db
+2560_strategy/data/*.sqlite
+2560_strategy/data/cache/
+2560_strategy/data/e2e/
+2560_strategy/data/backup_hmac_key.txt
+.openclaw/workspace-state.json

@@ -2,11 +2,14 @@ import argparse
 import sqlite3
 from pathlib import Path
 
+from scripts.maintenance.legacy_sqlite_guard import refuse_production
+
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = BASE_DIR / 'data' / 'picks.db'
 
 
 def main():
+    refuse_production('add_pick.py')
     parser = argparse.ArgumentParser(description='手动录入宣传好票')
     parser.add_argument('--date', required=True, help='推荐日期，如 2026-03-09')
     parser.add_argument('--code', required=True, help='股票代码')

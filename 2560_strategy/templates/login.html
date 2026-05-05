@@ -1,0 +1,34 @@
+{% extends 'base.html' %}
+
+{% block title %}登录 - 2560战法复盘系统{% endblock %}
+
+{% block content %}
+<div class="login-container">
+    <div class="login-card">
+        <div class="login-header">
+            <div class="login-logo">2560</div>
+            <h1 class="login-title">2560战法复盘系统</h1>
+            <p class="login-subtitle">微信风生产工作台 · 策略、扫描、监控统一入口</p>
+        </div>
+
+        <form class="login-form" method="POST" action="{{ url_for('main.login') }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <div class="form-group">
+                <label class="form-label">用户名</label>
+                <input type="text" name="username" class="form-input" placeholder="请输入用户名" required autofocus>
+            </div>
+            
+            <div class="form-group">
+                <label class="form-label">密码</label>
+                <input type="password" name="password" class="form-input" placeholder="请输入密码" required>
+            </div>
+            
+            <button type="submit" class="btn btn-primary btn-block">登录</button>
+        </form>
+        
+        <div class="login-footer">
+            <p>请使用已初始化的管理员账号登录。</p>
+        </div>
+    </div>
+</div>
+{% endblock %}

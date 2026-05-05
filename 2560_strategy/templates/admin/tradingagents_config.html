@@ -1,0 +1,163 @@
+{% extends 'base.html' %}
+
+{% block title %}Agent 模型配置 - 2560战法复盘系统{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">Agent 模型配置</h1>
+        <p class="text-muted">为 TradingAgents-AShare 配置模型提供商、Base URL、模型名与辩论轮次，让自选专页的 agent 模式可直接使用页面配置。</p>
+    </div>
+</div>
+
+<div class="card" style="margin-bottom: 20px;">
+    <div class="card-body">
+        <form id="tradingagentsConfigForm" method="POST" action="{{ url_for('admin.tradingagents_config') }}">
+            <div class="grid grid-cols-2" style="gap: 20px;">
+                <div class="form-group">
+                    <label class="form-label">服务商预设</label>
+                    <select id="providerPreset" class="form-select" onchange="applyPreset(this.value)">
+                        {% for item in presets %}
+                        <option value="{{ item.id }}" {% if current_preset == item.id %}selected{% endif %}>{{ item.label }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">LLM Provider</label>
+                    <input type="text" id="llmProvider" name="llm_provider" class="form-input" value="{{ config.llm_provider }}" required>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Base URL</label>
+                    <input type="text" id="backendUrl" name="backend_url" class="form-input" value="{{ config.backend_url }}" placeholder="https://api.openai.com/v1">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">API Key</label>
+                    <input type="password" id="apiKeyInput" name="api_key" class="form-input" value="{{ config.api_key }}" placeholder="{% if has_api_key %}留空则保留当前 Key{% else %}sk-...{% endif %}">
+                    {% if has_api_key %}
+                    <div class="text-muted" style="margin-top: 8px;">当前已保存 Key：{{ masked_api_key }}</div>
+                    {% endif %}
+                </div>
+                <div class="form-group">
+                    <label class="form-label">深度模型</label>
+                    <input type="text" name="deep_think_llm" class="form-input" value="{{ config.deep_think_llm }}" required>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">快速模型</label>
+                    <input type="text" name="quick_think_llm" class="form-input" value="{{ config.quick_think_llm }}" required>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">最大辩论轮次</label>
+                    <input type="number" min="1" max="6" name="max_debate_rounds" class="form-input" value="{{ config.max_debate_rounds }}" required>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">最大风控讨论轮次</label>
+                    <input type="number" min="1" max="4" name="max_risk_discuss_rounds" class="form-input" value="{{ config.max_risk_discuss_rounds }}" required>
+                </div>
+            </div>
+            <div style="display:flex; gap:12px; margin-top: 20px; flex-wrap: wrap;">
+                <button type="submit" class="btn btn-primary">保存配置</button>
+                <button type="button" class="btn btn-secondary" onclick="fillDefaultModels()">填充推荐模型</button>
+                <button type="button" id="testModelBtn" class="btn btn-secondary" onclick="testModelConfig()">测试模型连接</button>
+                <a href="{{ url_for('main.watchlist', engine='agent') }}" class="btn btn-secondary">打开 Agent 自选页</a>
+            </div>
+            <div id="testResultBox" class="card" style="margin-top: 16px; display: none; border: 1px solid var(--border-color);">
+                <div class="card-body">
+                    <div id="testResultStatus" style="font-weight: 600; margin-bottom: 8px;"></div>
+                    <div id="testResultMessage" class="text-muted" style="line-height: 1.7;"></div>
+                </div>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-body">
+        <h3 style="margin-bottom: 12px;">当前生效说明</h3>
+        <div class="text-muted" style="line-height: 1.8;">
+            <div>1. 页面保存后，Agent 引擎会优先读取这里的配置。</div>
+            <div>2. 如果这里为空，才会回退到环境变量和 TradingAgents 默认配置。</div>
+            <div>3. 保存后可直接去“自选专页”切到 agent 模式验证效果。</div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+const PROVIDER_PRESETS = {{ presets | tojson }};
+
+function applyPreset(presetId) {
+    const preset = PROVIDER_PRESETS.find(item => item.id === presetId);
+    if (!preset) return;
+    document.getElementById('llmProvider').value = preset.provider || 'openai';
+    if (preset.base_url !== undefined) {
+        document.getElementById('backendUrl').value = preset.base_url || '';
+    }
+}
+
+function fillDefaultModels() {
+    const provider = (document.getElementById('llmProvider').value || '').toLowerCase();
+    const deepInput = document.querySelector('input[name="deep_think_llm"]');
+    const quickInput = document.querySelector('input[name="quick_think_llm"]');
+    if (provider === 'google') {
+        deepInput.value = deepInput.value || 'gemini-1.5-pro';
+        quickInput.value = quickInput.value || 'gemini-1.5-flash';
+        return;
+    }
+    if (provider === 'anthropic') {
+        deepInput.value = deepInput.value || 'claude-3-5-sonnet-latest';
+        quickInput.value = quickInput.value || 'claude-3-5-haiku-latest';
+        return;
+    }
+    deepInput.value = deepInput.value || 'gpt-4o';
+    quickInput.value = quickInput.value || 'gpt-4o-mini';
+}
+
+function setTestResult(success, message, detailHtml) {
+    const box = document.getElementById('testResultBox');
+    const status = document.getElementById('testResultStatus');
+    const detail = document.getElementById('testResultMessage');
+    box.style.display = 'block';
+    status.style.color = success ? '#16a34a' : '#dc2626';
+    status.textContent = success ? '测试成功' : '测试失败';
+    detail.innerHTML = `<div>${message || ''}</div>${detailHtml || ''}`;
+}
+
+async function testModelConfig() {
+    const form = document.getElementById('tradingagentsConfigForm');
+    const button = document.getElementById('testModelBtn');
+    const payload = Object.fromEntries(new FormData(form).entries());
+    button.disabled = true;
+    button.textContent = '测试中...';
+    setTestResult(true, '正在测试模型连接，请稍候...', '');
+    try {
+        const response = await fetch("{{ url_for('admin.test_tradingagents_config') }}", {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(payload),
+        });
+        const data = await response.json();
+        if (!response.ok || !data.success) {
+            throw new Error(data.message || '模型连接测试失败');
+        }
+        const result = data.result || {};
+        const detailHtml = `
+            <div style="margin-top:8px;">
+                <div>Provider：${result.provider || '-'}</div>
+                <div>Model：${result.model || '-'}</div>
+                <div>Base URL：${result.base_url || '-'}</div>
+                <div style="margin-top:8px; word-break: break-word;">返回片段：${result.response_preview || '-'}</div>
+            </div>
+        `;
+        setTestResult(true, data.message || '模型连接测试成功', detailHtml);
+    } catch (error) {
+        setTestResult(false, error.message || '模型连接测试失败', '');
+    } finally {
+        button.disabled = false;
+        button.textContent = '测试模型连接';
+    }
+}
+</script>
+{% endblock %}

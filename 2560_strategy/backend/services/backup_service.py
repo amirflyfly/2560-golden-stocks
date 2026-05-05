@@ -19,11 +19,25 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 
-from backend.repositories.db import DATA_DIR, DB_PATH
-from backend.app_config import BACKUP_RETENTION
+from backend.app_config import BACKUP_RETENTION, DATA_DIR_NAME
+from backend.core.config import get_settings
+
+
+BASE_DIR = Path(__file__).resolve().parents[2]
+DATA_DIR = BASE_DIR / DATA_DIR_NAME
+DB_PATH = DATA_DIR / 'picks.db'
 
 
 LEGACY_SECRET = DATA_DIR / 'web_panel_secret.txt'
+
+
+def _production_sqlite_backup_blocked() -> bool:
+    return (get_settings().environment or '').strip().lower() in {'prod', 'production'}
+
+
+def _ensure_legacy_sqlite_backup_allowed():
+    if _production_sqlite_backup_blocked():
+        raise RuntimeError('Legacy SQLite backup/restore is disabled in production; use MySQL backup tooling.')
 
 
 def _now_stamp():
@@ -38,6 +52,7 @@ def backup_dir():
 
 def make_backup_zip_bytes(actor=None):
     """Create an in-memory zip for download."""
+    _ensure_legacy_sqlite_backup_allowed()
     actor = actor or {}
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, 'w', compression=zipfile.ZIP_DEFLATED) as z:
@@ -90,6 +105,7 @@ def save_backup_zip_to_disk(zip_bytes: bytes, prefix='backup', actor_username=''
 
 def restore_from_backup_zip_bytes(zip_bytes: bytes):
     """Restore picks.db from a backup zip. Auto-backup current DB first."""
+    _ensure_legacy_sqlite_backup_allowed()
     # auto-backup current
     if DB_PATH.exists():
         cur_bytes = make_backup_zip_bytes(actor={'username': 'system', 'role': 'system'})
@@ -131,6 +147,8 @@ def restore_from_backup_zip_bytes(zip_bytes: bytes):
 
 
 def list_backups(limit=50):
+    if _production_sqlite_backup_blocked():
+        return []
     bdir = backup_dir()
     items = []
     for z in sorted(bdir.glob('*.zip'), key=lambda p: p.stat().st_mtime, reverse=True)[: int(limit)]:
@@ -145,6 +163,7 @@ def list_backups(limit=50):
 
 
 def read_backup_zip_bytes(name: str):
+    _ensure_legacy_sqlite_backup_allowed()
     name = (name or '').strip()
     if not name or '/' in name or '..' in name:
         raise ValueError('invalid backup name')
@@ -157,6 +176,7 @@ def read_backup_zip_bytes(name: str):
 
 def validate_backup_zip_bytes(zip_bytes: bytes):
     """Basic validation: zip readable, contains data/picks.db and meta.json."""
+    _ensure_legacy_sqlite_backup_allowed()
     import zipfile
     import io
     try:
@@ -208,6 +228,7 @@ def validate_backup_zip_bytes(zip_bytes: bytes):
 
 
 def read_backup_meta(zip_bytes: bytes):
+    _ensure_legacy_sqlite_backup_allowed()
     import zipfile
     import io
     import json
@@ -223,15 +244,16 @@ def cached_validate_backup(name: str):
     Cache key: backup_validate::<name>
     Value: <mtime>|OK or <mtime>|FAIL::<reason>
     """
-    from backend.repositories.settings_repo import q1, execute
+    if _production_sqlite_backup_blocked():
+        return False, 'DISABLED'
+    from backend.repositories.settings_repo import get_ui_setting, set_ui_setting
     from pathlib import Path
     path = backup_dir() / name
     st = path.stat()
     mtime = int(st.st_mtime)
     key = f'backup_validate::{name}'
-    row = q1('SELECT setting_value FROM ui_settings WHERE setting_key=?', (key,))
-    if row and row.get('setting_value'):
-        val = row['setting_value']
+    val = get_ui_setting(key, '')
+    if val:
         if val.startswith(str(mtime) + '|'):
             parts = val.split('|', 1)[1]
             if parts.startswith('OK'):
@@ -241,19 +263,11 @@ def cached_validate_backup(name: str):
         zip_bytes = read_backup_zip_bytes(name)
         ok, msg = validate_backup_zip_bytes(zip_bytes)
         stored = f"{mtime}|{'OK' if ok else 'FAIL'}"
-        execute(
-            "INSERT INTO ui_settings (setting_key, setting_value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) "
-            "ON CONFLICT(setting_key) DO UPDATE SET setting_value=excluded.setting_value, updated_at=CURRENT_TIMESTAMP",
-            (key, stored),
-        )
+        set_ui_setting(key, stored)
         return ok, ('OK' if ok else 'FAIL')
     except Exception:
         stored = f"{mtime}|FAIL"
-        execute(
-            "INSERT INTO ui_settings (setting_key, setting_value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) "
-            "ON CONFLICT(setting_key) DO UPDATE SET setting_value=excluded.setting_value, updated_at=CURRENT_TIMESTAMP",
-            (key, stored),
-        )
+        set_ui_setting(key, stored)
         return False, 'FAIL'
 
 
@@ -284,6 +298,7 @@ def _sign_meta(meta: dict) -> str:
 
 def save_restore_upload(zip_bytes: bytes):
     """Store uploaded restore zip temporarily and return a key."""
+    _ensure_legacy_sqlite_backup_allowed()
     import secrets
     tmp_dir = DATA_DIR / 'restore_uploads'
     tmp_dir.mkdir(parents=True, exist_ok=True)
@@ -295,6 +310,7 @@ def save_restore_upload(zip_bytes: bytes):
 
 
 def load_restore_upload(key: str) -> bytes:
+    _ensure_legacy_sqlite_backup_allowed()
     key = (key or '').strip()
     if not key or '/' in key or '..' in key:
         raise ValueError('invalid key')
@@ -306,6 +322,8 @@ def load_restore_upload(key: str) -> bytes:
 
 
 def delete_restore_upload(key: str):
+    if _production_sqlite_backup_blocked():
+        return
     try:
         path = (DATA_DIR / 'restore_uploads') / f'{key}.zip'
         if path.exists():
@@ -365,6 +383,16 @@ def rotate_hmac_key():
 
 def backup_stats():
     """Return basic backup observability stats."""
+    if _production_sqlite_backup_blocked():
+        return {
+            'total': 0,
+            'latest_time': '-',
+            'latest_name': '-',
+            'checked': 0,
+            'fail': 0,
+            'disabled': True,
+            'message': 'Legacy SQLite backup/restore is disabled in production.',
+        }
     bdir = backup_dir()
     zips = sorted(bdir.glob('*.zip'), key=lambda p: p.stat().st_mtime, reverse=True)
     total = len(zips)

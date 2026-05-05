@@ -5,6 +5,10 @@ from datetime import datetime, timedelta
 import akshare as ak
 import pandas as pd
 
+from scripts.maintenance.legacy_sqlite_guard import refuse_production
+
+refuse_production("first_limit_validate.py")
+
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = BASE_DIR / 'data' / 'picks.db'
 OUT_PATH = BASE_DIR / 'data' / 'first_limit_validate_report.txt'

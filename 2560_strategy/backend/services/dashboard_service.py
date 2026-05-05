@@ -1,65 +1,135 @@
-"""Dashboard data aggregation.
+"""Dashboard data aggregation."""
 
-Step 5 of the web_panel.py split: move dashboard queries and aggregations here.
-Rendering stays in web_panel.py.
-"""
+from __future__ import annotations
 
-from backend.repositories.db import q, q1
+from collections import Counter, defaultdict
+from datetime import date, timedelta
+
+from backend.repositories import picks_repo
 from backend.services.logs_service import recent_logs
 
 
+_WORTHY_STATUSES = {"worthy", "worth_review", "鍊煎緱澶嶈", "值得复盘"}
+_DEAL_STATUSES = {"done", "deal", "dealt", "completed", "宸叉垚浜?", "已成交"}
+_SPREAD_STATUSES = {"yes", "true", "1", "鏄?", "是"}
+
+
+def _safe_float(value):
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _safe_int(value):
+    try:
+        return int(float(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _parse_date(value):
+    try:
+        return date.fromisoformat(str(value)[:10])
+    except (TypeError, ValueError):
+        return None
+
+
+def _rows():
+    return [row for row in picks_repo.list_picks(limit=100000) if not _safe_int(row.get("archived"))]
+
+
+def _is_worthy(row):
+    return (row.get("review_status") or "").strip() in _WORTHY_STATUSES
+
+
+def _is_deal(row):
+    return (row.get("deal_status") or "").strip() in _DEAL_STATUSES
+
+
+def _is_spread(row):
+    return (row.get("secondary_spread") or "").strip() in _SPREAD_STATUSES
+
+
+def _count_by(rows, key, default=""):
+    counter = Counter((row.get(key) or default) for row in rows)
+    return [{"name": name, "cnt": cnt} for name, cnt in counter.most_common()]
+
+
 def dashboard_overview():
-    return q1(
-        '''SELECT COUNT(*) AS total,
-                  SUM(CASE WHEN COALESCE(archived,0)=0 THEN 1 ELSE 0 END) AS active_total,
-                  SUM(CASE WHEN COALESCE(NULLIF(deal_status,''),'未成交')='已成交' THEN 1 ELSE 0 END) AS deal_total,
-                  SUM(CASE WHEN COALESCE(NULLIF(secondary_spread,''),'否')='是' THEN 1 ELSE 0 END) AS spread_total,
-                  SUM(CASE WHEN COALESCE(NULLIF(review_status,''),'未复盘')='值得复讲' THEN 1 ELSE 0 END) AS worthy_total
-           FROM picks'''
-    ) or {}
+    rows = _rows()
+    return {
+        "total": len(rows),
+        "active_total": len(rows),
+        "deal_total": sum(1 for row in rows if _is_deal(row)),
+        "spread_total": sum(1 for row in rows if _is_spread(row)),
+        "worthy_total": sum(1 for row in rows if _is_worthy(row)),
+    }
 
 
 def dashboard_kpi():
-    return q1(
-        '''SELECT SUM(CASE WHEN date(pick_date) >= date('now','weekday 1','-7 days') THEN 1 ELSE 0 END) AS week_new,
-                  SUM(CASE WHEN date(pick_date) >= date('now','-6 day') THEN 1 ELSE 0 END) AS last7_new,
-                  SUM(CASE WHEN date(pick_date) >= date('now','-29 day') THEN 1 ELSE 0 END) AS last30_new,
-                  ROUND(100.0 * SUM(CASE WHEN COALESCE(NULLIF(review_status,''),'未复盘')='值得复讲' THEN 1 ELSE 0 END) / NULLIF(COUNT(*),0), 1) AS worthy_rate,
-                  ROUND(AVG(COALESCE(inquiry_count,0)), 1) AS avg_inquiry
-           FROM picks WHERE COALESCE(archived,0)=0'''
-    ) or {}
+    rows = _rows()
+    today = date.today()
+    total = len(rows)
+    worthy = sum(1 for row in rows if _is_worthy(row))
+    inquiries = [_safe_float(row.get("inquiry_count")) for row in rows]
+    return {
+        "week_new": sum(1 for row in rows if (_parse_date(row.get("pick_date")) or date.min) >= today - timedelta(days=6)),
+        "last7_new": sum(1 for row in rows if (_parse_date(row.get("pick_date")) or date.min) >= today - timedelta(days=6)),
+        "last30_new": sum(1 for row in rows if (_parse_date(row.get("pick_date")) or date.min) >= today - timedelta(days=29)),
+        "worthy_rate": round(100.0 * worthy / total, 1) if total else 0,
+        "avg_inquiry": round(sum(inquiries) / len(inquiries), 1) if inquiries else 0,
+    }
 
 
 def dashboard_channels():
-    return q("SELECT COALESCE(NULLIF(source_channel,''),'system') AS name, COUNT(*) AS cnt FROM picks WHERE COALESCE(archived,0)=0 GROUP BY name ORDER BY cnt DESC")
+    return _count_by(_rows(), "source_channel", "system")
 
 
 def dashboard_tags():
-    return q("SELECT COALESCE(NULLIF(reason_tag,''),'未标注') AS name, COUNT(*) AS cnt FROM picks WHERE COALESCE(archived,0)=0 GROUP BY name ORDER BY cnt DESC")
+    return _count_by(_rows(), "reason_tag", "untagged")
 
 
 def dashboard_review_status():
-    return q("SELECT COALESCE(NULLIF(review_status,''),'未复盘') AS name, COUNT(*) AS cnt FROM picks WHERE COALESCE(archived,0)=0 GROUP BY name ORDER BY cnt DESC")
+    return _count_by(_rows(), "review_status", "pending")
 
 
 def dashboard_grades():
-    return q("SELECT COALESCE(NULLIF(result_grade,''),'待定') AS name, COUNT(*) AS cnt FROM picks WHERE COALESCE(archived,0)=0 GROUP BY name ORDER BY cnt DESC")
+    return _count_by(_rows(), "result_grade", "pending")
 
 
 def dashboard_deals():
-    return q("SELECT COALESCE(NULLIF(deal_status,''),'未成交') AS name, COUNT(*) AS cnt FROM picks WHERE COALESCE(archived,0)=0 GROUP BY name ORDER BY cnt DESC")
+    return _count_by(_rows(), "deal_status", "not_dealt")
 
 
 def dashboard_trend_30d():
-    return q("SELECT pick_date AS name, COUNT(*) AS cnt FROM picks WHERE COALESCE(archived,0)=0 AND date(pick_date) >= date('now','-29 day') GROUP BY pick_date ORDER BY pick_date ASC")
+    cutoff = date.today() - timedelta(days=29)
+    counter = Counter()
+    for row in _rows():
+        parsed = _parse_date(row.get("pick_date"))
+        if parsed and parsed >= cutoff:
+            counter[str(parsed)] += 1
+    return [{"name": key, "cnt": counter[key]} for key in sorted(counter)]
 
 
 def dashboard_worthy_trend_30d():
-    return q("SELECT pick_date AS name, SUM(CASE WHEN COALESCE(NULLIF(review_status,''),'未复盘')='值得复讲' THEN 1 ELSE 0 END) AS cnt FROM picks WHERE COALESCE(archived,0)=0 AND date(pick_date) >= date('now','-29 day') GROUP BY pick_date ORDER BY pick_date ASC")
+    cutoff = date.today() - timedelta(days=29)
+    counter = Counter()
+    for row in _rows():
+        parsed = _parse_date(row.get("pick_date"))
+        if parsed and parsed >= cutoff and _is_worthy(row):
+            counter[str(parsed)] += 1
+    return [{"name": key, "cnt": counter[key]} for key in sorted(counter)]
 
 
 def dashboard_deal_trend_30d():
-    return q("SELECT pick_date AS name, SUM(CASE WHEN COALESCE(NULLIF(deal_status,''),'未成交')='已成交' THEN 1 ELSE 0 END) AS cnt FROM picks WHERE COALESCE(archived,0)=0 AND date(pick_date) >= date('now','-29 day') GROUP BY pick_date ORDER BY pick_date ASC")
+    cutoff = date.today() - timedelta(days=29)
+    counter = Counter()
+    for row in _rows():
+        parsed = _parse_date(row.get("pick_date"))
+        if parsed and parsed >= cutoff and _is_deal(row):
+            counter[str(parsed)] += 1
+    return [{"name": key, "cnt": counter[key]} for key in sorted(counter)]
 
 
 def recent_operation_logs(limit=15):
@@ -67,36 +137,113 @@ def recent_operation_logs(limit=15):
 
 
 def dashboard_strategy_summary():
-    return q("SELECT COALESCE(NULLIF(strategy_name,''),'2560') AS name, COUNT(*) AS cnt FROM picks WHERE COALESCE(archived,0)=0 GROUP BY name ORDER BY cnt DESC")
+    return _count_by(_rows(), "strategy_name", "2560")
 
 
 def dashboard_strategy_panels():
-    return q("SELECT COALESCE(NULLIF(strategy_name,''),'2560') AS strategy_name, COUNT(*) AS total, SUM(CASE WHEN COALESCE(review_status,'未复盘')='值得复讲' THEN 1 ELSE 0 END) AS worthy_total, SUM(CASE WHEN COALESCE(deal_status,'未成交')='已成交' THEN 1 ELSE 0 END) AS deal_total, ROUND(AVG(COALESCE(return_pct,0)),2) AS avg_return FROM picks WHERE COALESCE(archived,0)=0 GROUP BY strategy_name ORDER BY total DESC")
+    grouped = defaultdict(lambda: {"total": 0, "worthy_total": 0, "deal_total": 0, "return_sum": 0.0})
+    for row in _rows():
+        key = row.get("strategy_name") or "2560"
+        item = grouped[key]
+        item["total"] += 1
+        item["worthy_total"] += 1 if _is_worthy(row) else 0
+        item["deal_total"] += 1 if _is_deal(row) else 0
+        item["return_sum"] += _safe_float(row.get("return_pct"))
+    return [
+        {
+            "strategy_name": key,
+            "total": item["total"],
+            "worthy_total": item["worthy_total"],
+            "deal_total": item["deal_total"],
+            "avg_return": round(item["return_sum"] / item["total"], 2) if item["total"] else 0,
+        }
+        for key, item in sorted(grouped.items(), key=lambda pair: pair[1]["total"], reverse=True)
+    ]
 
 
 def dashboard_strategy_compare():
-    return q("SELECT COALESCE(NULLIF(strategy_name,''),'2560') AS name, COUNT(*) AS total, ROUND(AVG(COALESCE(return_pct,0)),2) AS avg_return, SUM(CASE WHEN COALESCE(deal_status,'未成交')='已成交' THEN 1 ELSE 0 END) AS deal_total FROM picks WHERE COALESCE(archived,0)=0 GROUP BY name ORDER BY total DESC")
+    return [
+        {"name": item["strategy_name"], "total": item["total"], "avg_return": item["avg_return"], "deal_total": item["deal_total"]}
+        for item in dashboard_strategy_panels()
+    ]
 
 
 def dashboard_second_board_pool():
-    return q("SELECT id, pick_date, code, name, COALESCE(second_board_expectation,'') AS second_board_expectation, COALESCE(second_board_score,0) AS second_board_score, COALESCE(prediction_reason,'') AS prediction_reason FROM picks WHERE COALESCE(archived,0)=0 AND COALESCE(strategy_name,'')='首板涨停' AND COALESCE(second_board_expectation,'')='高' ORDER BY COALESCE(second_board_score,0) DESC, pick_date DESC LIMIT 8")
+    rows = [
+        row for row in _rows()
+        if (row.get("strategy_name") or "") == "棣栨澘娑ㄥ仠" and (row.get("second_board_expectation") or "") in {"楂?", "高"}
+    ]
+    rows.sort(key=lambda row: (_safe_float(row.get("second_board_score")), str(row.get("pick_date") or "")), reverse=True)
+    return rows[:8]
 
 
 def dashboard_watch_pool():
-    return q("SELECT id, pick_date, code, name, COALESCE(second_board_score,0) AS second_board_score, COALESCE(prediction_reason,'') AS prediction_reason FROM picks WHERE COALESCE(archived,0)=0 AND COALESCE(watch_flag,0)=1 ORDER BY pick_date DESC, COALESCE(second_board_score,0) DESC LIMIT 10")
+    rows = [row for row in _rows() if _safe_int(row.get("watch_flag")) == 1]
+    rows.sort(key=lambda row: (str(row.get("pick_date") or ""), _safe_float(row.get("second_board_score"))), reverse=True)
+    return rows[:10]
 
 
 def dashboard_validate_rows():
-    return q("SELECT pick_date, code, name, COALESCE(second_board_expectation,'') AS second_board_expectation, COALESCE(second_board_score,0) AS second_board_score, COALESCE(validation_result,'待验证') AS validation_result FROM picks WHERE COALESCE(strategy_name,'')='首板涨停' AND COALESCE(watch_flag,0)=1 ORDER BY pick_date DESC, id DESC LIMIT 10")
+    rows = [row for row in _rows() if (row.get("strategy_name") or "") == "棣栨澘娑ㄥ仠" and _safe_int(row.get("watch_flag")) == 1]
+    rows.sort(key=lambda row: (str(row.get("pick_date") or ""), _safe_int(row.get("id"))), reverse=True)
+    return rows[:10]
 
 
 def dashboard_validate_stats():
-    return q("SELECT COALESCE(validation_result,'待验证') AS name, COUNT(*) AS cnt FROM picks WHERE COALESCE(strategy_name,'')='首板涨停' GROUP BY validation_result ORDER BY cnt DESC")
+    return _count_by([row for row in _rows() if (row.get("strategy_name") or "") == "棣栨澘娑ㄥ仠"], "validation_result", "pending")
 
 
 def dashboard_validate_rate():
-    return q1("SELECT COUNT(*) AS total, SUM(CASE WHEN COALESCE(validation_result,'')='晋级成功' THEN 1 ELSE 0 END) AS success FROM picks WHERE COALESCE(strategy_name,'')='首板涨停'") or {}
+    rows = [row for row in _rows() if (row.get("strategy_name") or "") == "棣栨澘娑ㄥ仠"]
+    return {"total": len(rows), "success": sum(1 for row in rows if (row.get("validation_result") or "") in {"鏅嬬骇鎴愬姛", "success"})}
 
 
 def dashboard_hit_compare():
-    return q("SELECT COALESCE(second_board_expectation,'待定') AS name, COUNT(*) AS total, SUM(CASE WHEN COALESCE(validation_result,'')='晋级成功' THEN 1 ELSE 0 END) AS hit_total FROM picks WHERE COALESCE(strategy_name,'')='首板涨停' GROUP BY second_board_expectation ORDER BY total DESC")
+    grouped = defaultdict(lambda: {"total": 0, "hit_total": 0})
+    for row in _rows():
+        if (row.get("strategy_name") or "") != "棣栨澘娑ㄥ仠":
+            continue
+        key = row.get("second_board_expectation") or "pending"
+        grouped[key]["total"] += 1
+        grouped[key]["hit_total"] += 1 if (row.get("validation_result") or "") in {"鏅嬬骇鎴愬姛", "success"} else 0
+    return [{"name": key, **value} for key, value in sorted(grouped.items(), key=lambda pair: pair[1]["total"], reverse=True)]
+
+
+def dashboard_strategy_names():
+    return dashboard_strategy_summary()
+
+
+def dashboard_daily_strategy_matrix(target_date):
+    rows = [row for row in _rows() if str(row.get("pick_date") or "")[:10] == str(target_date)]
+    grouped = defaultdict(lambda: {"total": 0, "worthy_total": 0, "deal_total": 0})
+    for row in rows:
+        key = row.get("strategy_name") or "2560"
+        grouped[key]["total"] += 1
+        grouped[key]["worthy_total"] += 1 if _is_worthy(row) else 0
+        grouped[key]["deal_total"] += 1 if _is_deal(row) else 0
+    return [{"strategy_name": key, **value} for key, value in sorted(grouped.items(), key=lambda pair: pair[1]["total"], reverse=True)]
+
+
+def dashboard_daily_strategy_picks(target_date, strategy_name=""):
+    rows = [row for row in _rows() if str(row.get("pick_date") or "")[:10] == str(target_date)]
+    if strategy_name:
+        rows = [row for row in rows if (row.get("strategy_name") or "2560") == strategy_name]
+    rows.sort(key=lambda row: ((row.get("strategy_name") or "2560"), -_safe_int(row.get("id"))))
+    return rows
+
+
+def dashboard_research_stats():
+    rows = _rows()
+    scores = [_safe_float(row.get("second_board_score")) for row in rows]
+    return {
+        "total": len(rows),
+        "watch_total": sum(1 for row in rows if _safe_int(row.get("watch_flag")) == 1),
+        "avg_score": round(sum(scores) / len(scores), 1) if scores else 0,
+        "strong_total": sum(1 for score in scores if score >= 75),
+    }
+
+
+def dashboard_research_watchlist(limit=8):
+    rows = [row for row in _rows() if _safe_int(row.get("watch_flag")) == 1]
+    rows.sort(key=lambda row: (_safe_float(row.get("second_board_score")), str(row.get("pick_date") or "")), reverse=True)
+    return rows[: int(limit)]

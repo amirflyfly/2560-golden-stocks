@@ -1,0 +1,160 @@
+import os
+from functools import wraps
+
+from flask import Blueprint, render_template, request, redirect, url_for, flash, jsonify
+
+bp = Blueprint('strategies', __name__, url_prefix='/strategies')
+
+
+@bp.after_request
+def add_legacy_strategy_headers(response):
+    response.headers['X-Legacy-Page'] = 'deprecated'
+    response.headers['Link'] = '</app?page=strategies>; rel="successor-version"'
+    return response
+
+
+@bp.before_request
+def freeze_production_legacy_strategy_page_writes_before_auth():
+    if _is_production() and request.method in {'POST', 'PUT', 'PATCH', 'DELETE'}:
+        return _legacy_strategy_page_frozen_response()
+    return None
+
+
+def admin_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        from backend.services.multiuser_auth_service import get_session
+        from flask import session
+        token = session.get('auth_token')
+        sess = get_session(token)
+        if not sess or sess.get('role') != 'admin':
+            flash('需要管理员权限', 'error')
+            return redirect(url_for('main.dashboard'))
+        return f(*args, **kwargs)
+    return decorated_function
+
+
+def get_current_user():
+    from backend.services.multiuser_auth_service import get_session
+    from flask import session
+    token = session.get('auth_token')
+    if token:
+        sess = get_session(token)
+        if sess:
+            return {
+                'user_id': sess.get('user_id'),
+                'username': sess.get('username'),
+                'role': sess.get('role'),
+            }
+    return None
+
+
+def _is_production() -> bool:
+    return (os.getenv('APP_ENV') or '').strip().lower() in {'prod', 'production'}
+
+
+def _legacy_strategy_page_frozen_response():
+    response = jsonify({
+        'success': False,
+        'message': 'legacy strategy write endpoint is frozen; use the React v1 workflow',
+        'successor': '/app?page=strategies',
+    })
+    response.status_code = 410
+    return response
+
+
+def freeze_legacy_strategy_page_write_in_production(f):
+    @wraps(f)
+    def wrapped(*args, **kwargs):
+        if _is_production():
+            return _legacy_strategy_page_frozen_response()
+        return f(*args, **kwargs)
+    return wrapped
+
+
+@bp.route('/')
+@admin_required
+def index():
+    return redirect('/app?page=strategies')
+
+
+@bp.route('/create', methods=['POST'])
+@admin_required
+@freeze_legacy_strategy_page_write_in_production
+def create():
+    from backend.services import strategy_service
+    
+    code = request.form.get('code', '').strip()
+    name = request.form.get('name', '').strip()
+    category = request.form.get('category', '').strip()
+    description = request.form.get('description', '').strip()
+    
+    if not code or not name:
+        flash('策略编码和名称不能为空', 'error')
+        return redirect(url_for('strategies.index'))
+    
+    if not strategy_service.validate_strategy_code(code):
+        flash('策略编码已存在', 'error')
+        return redirect(url_for('strategies.index'))
+    
+    strategy_service.create_strategy(code, name, category, description)
+    flash('策略创建成功', 'success')
+    return redirect(url_for('strategies.index'))
+
+
+@bp.route('/<int:sid>/update', methods=['POST'])
+@admin_required
+@freeze_legacy_strategy_page_write_in_production
+def update(sid):
+    from backend.services import strategy_service
+    
+    name = request.form.get('name', '').strip()
+    category = request.form.get('category', '').strip()
+    description = request.form.get('description', '').strip()
+    
+    strategy_service.update_strategy(sid, name=name, category=category, description=description)
+    flash('策略更新成功', 'success')
+    return redirect(url_for('strategies.index'))
+
+
+@bp.route('/<int:sid>/toggle', methods=['POST'])
+@admin_required
+@freeze_legacy_strategy_page_write_in_production
+def toggle(sid):
+    from backend.services import strategy_service
+    strategy_service.toggle_strategy(sid)
+    return jsonify({'success': True})
+
+
+@bp.route('/<int:sid>/delete', methods=['POST'])
+@admin_required
+@freeze_legacy_strategy_page_write_in_production
+def delete(sid):
+    from backend.services import strategy_service
+    strategy_service.delete_strategy(sid)
+    flash('策略已停用', 'success')
+    return redirect(url_for('strategies.index'))
+
+
+@bp.route('/api/list')
+def api_list():
+    """API endpoint for getting active strategies (for dropdowns)."""
+    from backend.services import strategy_service
+    strategies = strategy_service.get_strategy_dropdown_options()
+    return jsonify(strategies)
+
+
+@bp.route('/stock-chart')
+def stock_chart():
+    """股票K线图表页面"""
+    suffix = '&' + request.query_string.decode('utf-8') if request.query_string else ''
+    return redirect(f"/app?page=kline{suffix}")
+
+
+@bp.route('/react-stock-chart')
+def react_stock_chart():
+    """React股票K线图表页面"""
+    from flask import redirect, url_for, request
+    # 重定向到新的股票K线图表页面
+    suffix = '&' + request.query_string.decode('utf-8') if request.query_string else ''
+    return redirect(f"/app?page=kline{suffix}")

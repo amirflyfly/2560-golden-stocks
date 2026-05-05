@@ -1,0 +1,76 @@
+{% extends 'base.html' %}
+
+{% block title %}备份管理 - 2560战法复盘系统{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1 class="page-title">备份管理</h1>
+    <div class="page-actions">
+        <a href="{{ url_for('admin.create_backup') }}" class="btn btn-primary">创建备份</a>
+        <a href="{{ url_for('admin.restore_page') }}" class="btn btn-secondary">恢复数据</a>
+    </div>
+</div>
+
+<div class="stats-grid" style="grid-template-columns: repeat(3, 1fr);">
+    <div class="stat-card">
+        <div class="stat-icon stat-icon-primary">💾</div>
+        <div class="stat-content">
+            <div class="stat-value">{{ stats.total | default(0) }}</div>
+            <div class="stat-label">备份总数</div>
+        </div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon stat-icon-success">✓</div>
+        <div class="stat-content">
+            <div class="stat-value">{{ stats.checked | default(0) }}</div>
+            <div class="stat-label">已校验</div>
+        </div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon stat-icon-warning">⚠</div>
+        <div class="stat-content">
+            <div class="stat-value">{{ stats.fail | default(0) }}</div>
+            <div class="stat-label">校验失败</div>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h3 class="card-title">备份列表</h3>
+    </div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>文件名</th>
+                        <th>大小</th>
+                        <th>创建时间</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for backup in backups %}
+                    <tr>
+                        <td class="font-medium">{{ backup.name }}</td>
+                        <td>{{ backup.size | filesizeformat }}</td>
+                        <td>{{ backup.created_at }}</td>
+                        <td>
+                            <div class="action-btns">
+                                <a href="{{ url_for('admin.download_backup', name=backup.name) }}" class="btn btn-link btn-sm">下载</a>
+                                <a href="{{ url_for('admin.backup_detail', name=backup.name) }}" class="btn btn-link btn-sm">详情</a>
+                            </div>
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="4" class="text-center text-muted py-8">暂无备份</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}

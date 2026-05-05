@@ -1,0 +1,167 @@
+{% extends 'base.html' %}
+
+{% block title %}策略管理 - 飞哥复盘{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1 class="page-title">
+        <span class="page-icon">🎯</span>
+        策略管理
+    </h1>
+    <button class="btn btn-primary" onclick="showCreateModal()">
+        <span class="btn-icon">+</span>
+        新增策略
+    </button>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h3 class="card-title">
+            <span class="card-icon">📋</span>
+            策略列表
+        </h3>
+    </div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>排序</th>
+                        <th>策略编码</th>
+                        <th>策略名称</th>
+                        <th>分类</th>
+                        <th>描述</th>
+                        <th>状态</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for s in strategies %}
+                    <tr>
+                        <td>{{ s.sort_order }}</td>
+                        <td class="font-medium">{{ s.code }}</td>
+                        <td>{{ s.name }}</td>
+                        <td><span class="tag">{{ s.category or '-' }}</span></td>
+                        <td class="text-muted">{{ s.description or '-' }}</td>
+                        <td>
+                            <span class="status-badge status-{{ 'success' if s.is_active else 'danger' }}">
+                                {{ '启用' if s.is_active else '停用' }}
+                            </span>
+                        </td>
+                        <td>
+                            <div class="action-btns">
+                                <a href="{{ url_for('strategy_management.strategy_pool', strategy_code=s.code) }}" class="btn btn-link btn-sm">股票池子</a>
+                                <a href="{{ url_for('strategy_management.strategy_run', strategy_code=s.code) }}" class="btn btn-link btn-sm">手动运行</a>
+                                <a href="{{ url_for('strategy_management.strategy_backtest', strategy_code=s.code) }}" class="btn btn-link btn-sm">回测</a>
+                                <button class="btn btn-link btn-sm" onclick="showEditModal({{ s.id }}, '{{ s.name }}', '{{ s.category }}', '{{ s.description }}')">编辑</button>
+                                <button class="btn btn-link btn-sm" onclick="toggleStrategy({{ s.id }})">{{ '停用' if s.is_active else '启用' }}</button>
+                            </div>
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="7" class="text-center text-muted py-8">暂无策略</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<div id="createModal" class="modal">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h3 class="modal-title">
+                <span class="modal-icon">+</span>
+                新增策略
+            </h3>
+            <button class="modal-close" onclick="closeModal('createModal')">×</button>
+        </div>
+        <form method="POST" action="{{ url_for('strategies.create') }}" class="modal-body">
+            <div class="form-group">
+                <label class="form-label required">策略编码</label>
+                <input type="text" name="code" class="form-input" placeholder="如: trend_low" required>
+                <small class="text-muted">用于系统内部标识，创建后不可修改</small>
+            </div>
+            <div class="form-group">
+                <label class="form-label required">策略名称</label>
+                <input type="text" name="name" class="form-input" placeholder="如: 趋势低吸" required>
+            </div>
+            <div class="form-group">
+                <label class="form-label">分类</label>
+                <input type="text" name="category" class="form-input" placeholder="如: 趋势策略">
+            </div>
+            <div class="form-group">
+                <label class="form-label">描述</label>
+                <textarea name="description" class="form-textarea" rows="3" placeholder="策略描述..."></textarea>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" onclick="closeModal('createModal')">取消</button>
+                <button type="submit" class="btn btn-primary">创建</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div id="editModal" class="modal">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h3 class="modal-title">
+                <span class="modal-icon">✏️</span>
+                编辑策略
+            </h3>
+            <button class="modal-close" onclick="closeModal('editModal')">×</button>
+        </div>
+        <form id="editForm" method="POST" class="modal-body">
+            <div class="form-group">
+                <label class="form-label required">策略名称</label>
+                <input type="text" name="name" id="editName" class="form-input" required>
+            </div>
+            <div class="form-group">
+                <label class="form-label">分类</label>
+                <input type="text" name="category" id="editCategory" class="form-input">
+            </div>
+            <div class="form-group">
+                <label class="form-label">描述</label>
+                <textarea name="description" id="editDescription" class="form-textarea" rows="3"></textarea>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" onclick="closeModal('editModal')">取消</button>
+                <button type="submit" class="btn btn-primary">保存</button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+function showCreateModal() {
+    document.getElementById('createModal').classList.add('show');
+}
+
+function showEditModal(id, name, category, description) {
+    document.getElementById('editForm').action = '/strategies/' + id + '/update';
+    document.getElementById('editName').value = name;
+    document.getElementById('editCategory').value = category;
+    document.getElementById('editDescription').value = description;
+    document.getElementById('editModal').classList.add('show');
+}
+
+function closeModal(id) {
+    document.getElementById(id).classList.remove('show');
+}
+
+function toggleStrategy(id) {
+    fetch('/strategies/' + id + '/toggle', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'}
+    })
+    .then(r => r.json())
+    .then(res => {
+        if (res.success) location.reload();
+    });
+}
+</script>
+{% endblock %}

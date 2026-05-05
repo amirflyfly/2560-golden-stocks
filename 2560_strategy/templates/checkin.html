@@ -1,0 +1,43 @@
+{% extends 'base.html' %}
+
+{% block title %}每日签到 - 飞哥复盘{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1 class="page-title">每日签到</h1>
+    <div class="page-actions">
+        <a href="{{ url_for('main.user_profile') }}" class="btn btn-secondary">
+            <span class="btn-icon">←</span>
+            返回个人信息
+        </a>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h3 class="card-title">签到奖励</h3>
+    </div>
+    <div class="card-body">
+        <div class="text-center py-8">
+            <div class="checkin-icon" style="font-size: 80px; margin-bottom: 24px;">🎁</div>
+            <h2 class="text-2xl font-bold mb-4">每日签到</h2>
+            <p class="text-muted mb-6">每日签到可获得 <span class="text-primary font-bold">10</span> 积分</p>
+            <form method="POST" class="inline-block">
+                <button type="submit" class="btn btn-primary checkin-btn" style="font-size: 18px; padding: 16px 32px;">
+                    <span class="btn-icon">📅</span>
+                    立即签到
+                </button>
+            </form>
+        </div>
+        <div class="mt-8">
+            <h4 class="font-medium mb-4">签到规则</h4>
+            <ul class="list-disc pl-5 space-y-2 text-muted">
+                <li>每日只能签到一次</li>
+                <li>每次签到获得10积分</li>
+                <li>连续签到可获得额外奖励（开发中）</li>
+                <li>积分可用于兑换权益（开发中）</li>
+            </ul>
+        </div>
+    </div>
+</div>
+{% endblock %}

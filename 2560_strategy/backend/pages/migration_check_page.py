@@ -5,6 +5,16 @@ from backend.ui.html_helpers import esc, layout_page, render_nav
 
 
 def render_migration_check_page():
+    if backup_service.backup_stats().get('disabled'):
+        body = f"""
+<div class='topline'><div><h1>Migration Check</h1><div class='muted'>Legacy SQLite backup verification is disabled in production.</div></div><div><a class='btn' href='/backups'>Back</a></div></div>
+<div class='nav'>{render_nav('dashboard')}</div>
+<div class='section card'>
+  <h2>Production recovery check</h2>
+  <div class='muted'>Use MySQL dump/restore validation and scripts/maintenance/mysql_restore_check.sh for production recovery drills.</div>
+</div>
+"""
+        return layout_page('Migration Check', body)
     key_path, legacy_path = backup_service._key_file_paths()
     backups = backup_service.list_backups(limit=5)
 

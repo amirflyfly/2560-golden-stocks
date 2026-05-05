@@ -1,0 +1,174 @@
+services:
+  mysql:
+    image: ${MYSQL_IMAGE:-mysql:8.4}
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    env_file:
+      - .env
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set MYSQL_ROOT_PASSWORD in .env}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-strategy_2560}
+      MYSQL_USER: ${MYSQL_USER:-strategy}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?set MYSQL_PASSWORD in .env}
+      TZ: Asia/Shanghai
+    expose:
+      - "3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$${MYSQL_ROOT_PASSWORD} --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: ${REDIS_IMAGE:-redis:7-alpine}
+    env_file:
+      - .env
+    command: sh -c 'redis-server --appendonly yes --requirepass "$${REDIS_PASSWORD}"'
+    expose:
+      - "6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a $${REDIS_PASSWORD} ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    environment:
+      APP_ENV: production
+      APP_DEBUG: "0"
+      SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY in .env}
+      ADMIN_INIT_USERNAME: ${ADMIN_INIT_USERNAME:?set ADMIN_INIT_USERNAME in .env}
+      ADMIN_INIT_PASSWORD: ${ADMIN_INIT_PASSWORD:?set ADMIN_INIT_PASSWORD in .env}
+      DATABASE_URL: mysql+pymysql://${MYSQL_USER:-strategy}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE:-strategy_2560}?charset=utf8mb4
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      CACHE_BACKEND: ${CACHE_BACKEND:-redis}
+      TASK_QUEUE_BACKEND: ${TASK_QUEUE_BACKEND:-redis}
+      TASK_EXECUTION_MODE: ${TASK_EXECUTION_MODE:-worker}
+      ALERT_EVALUATION_INTERVAL_SECONDS: ${ALERT_EVALUATION_INTERVAL_SECONDS:-300}
+      MARKET_DATA_PROVIDER: ${MARKET_DATA_PROVIDER:-mootdx}
+      MARKET_DATA_FALLBACKS: ${MARKET_DATA_FALLBACKS:-akshare}
+      ALLOW_MOCK_MARKET_DATA: ${ALLOW_MOCK_MARKET_DATA:-0}
+      PICKS_REPOSITORY_BACKEND: ${PICKS_REPOSITORY_BACKEND:-mysql}
+      AUTH_REPOSITORY_BACKEND: ${AUTH_REPOSITORY_BACKEND:-mysql}
+      AUDIT_REPOSITORY_BACKEND: ${AUDIT_REPOSITORY_BACKEND:-mysql}
+      SETTINGS_REPOSITORY_BACKEND: ${SETTINGS_REPOSITORY_BACKEND:-mysql}
+      LOGS_REPOSITORY_BACKEND: ${LOGS_REPOSITORY_BACKEND:-mysql}
+      STRATEGY_POOL_REPOSITORY_BACKEND: ${STRATEGY_POOL_REPOSITORY_BACKEND:-mysql}
+      STRATEGY_REPOSITORY_BACKEND: ${STRATEGY_REPOSITORY_BACKEND:-mysql}
+      TRADING_REPOSITORY_BACKEND: ${TRADING_REPOSITORY_BACKEND:-mysql}
+      PAPER_TRADING_ENABLED: ${PAPER_TRADING_ENABLED:-1}
+      PAPER_INITIAL_CASH: ${PAPER_INITIAL_CASH:-1000000}
+      PAPER_CASH_PER_TRADE: ${PAPER_CASH_PER_TRADE:-50000}
+      PAPER_MAX_POSITIONS: ${PAPER_MAX_POSITIONS:-10}
+      PAPER_STOP_LOSS_PCT: ${PAPER_STOP_LOSS_PCT:--0.08}
+      PAPER_TAKE_PROFIT_PCT: ${PAPER_TAKE_PROFIT_PCT:-0.15}
+      PAPER_MAX_HOLDING_DAYS: ${PAPER_MAX_HOLDING_DAYS:-20}
+      PAPER_LOT_SIZE: ${PAPER_LOT_SIZE:-100}
+      PAPER_FEE_RATE: ${PAPER_FEE_RATE:-0}
+      WEB_WORKERS: ${WEB_WORKERS:-2}
+      WEB_THREADS: ${WEB_THREADS:-4}
+      WEB_TIMEOUT: ${WEB_TIMEOUT:-120}
+      WEB_GRACEFUL_TIMEOUT: ${WEB_GRACEFUL_TIMEOUT:-30}
+    expose:
+      - "8765"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./data:/app/data
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: >
+      python -m backend.infrastructure.tasks.worker
+      --alert-interval-seconds ${ALERT_EVALUATION_INTERVAL_SECONDS:-300}
+      --market-sync-interval-seconds ${MARKET_SYNC_INTERVAL_SECONDS:-1800}
+      --market-snapshot-interval-seconds ${MARKET_SNAPSHOT_INTERVAL_SECONDS:-60}
+      --strategy-run-interval-seconds ${STRATEGY_RUN_INTERVAL_SECONDS:-300}
+    env_file:
+      - .env
+    environment:
+      APP_ENV: production
+      APP_DEBUG: "0"
+      SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY in .env}
+      DATABASE_URL: mysql+pymysql://${MYSQL_USER:-strategy}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE:-strategy_2560}?charset=utf8mb4
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      CACHE_BACKEND: ${CACHE_BACKEND:-redis}
+      TASK_QUEUE_BACKEND: ${TASK_QUEUE_BACKEND:-redis}
+      TASK_EXECUTION_MODE: ${TASK_EXECUTION_MODE:-worker}
+      ALERT_EVALUATION_INTERVAL_SECONDS: ${ALERT_EVALUATION_INTERVAL_SECONDS:-300}
+      MARKET_SYNC_INTERVAL_SECONDS: ${MARKET_SYNC_INTERVAL_SECONDS:-1800}
+      MARKET_SYNC_SYMBOLS: ${MARKET_SYNC_SYMBOLS:-all}
+      MARKET_SYNC_INCREMENTAL: ${MARKET_SYNC_INCREMENTAL:-1}
+      MARKET_BOOTSTRAP_ON_START: ${MARKET_BOOTSTRAP_ON_START:-1}
+      MARKET_BOOTSTRAP_DAYS: ${MARKET_BOOTSTRAP_DAYS:-180}
+      MARKET_SYNC_CORRECTION_DAYS: ${MARKET_SYNC_CORRECTION_DAYS:-3}
+      MARKET_SYNC_ADJUST: ${MARKET_SYNC_ADJUST:-qfq}
+      MARKET_SYNC_MAX_SYMBOLS: ${MARKET_SYNC_MAX_SYMBOLS:-0}
+      MARKET_SYNC_BATCH_SIZE: ${MARKET_SYNC_BATCH_SIZE:-200}
+      MARKET_SNAPSHOT_INTERVAL_SECONDS: ${MARKET_SNAPSHOT_INTERVAL_SECONDS:-60}
+      MARKET_SNAPSHOT_SYMBOLS: ${MARKET_SNAPSHOT_SYMBOLS:-all}
+      MARKET_SNAPSHOT_MAX_SYMBOLS: ${MARKET_SNAPSHOT_MAX_SYMBOLS:-0}
+      MARKET_SNAPSHOT_BATCH_SIZE: ${MARKET_SNAPSHOT_BATCH_SIZE:-500}
+      STRATEGY_RUN_INTERVAL_SECONDS: ${STRATEGY_RUN_INTERVAL_SECONDS:-300}
+      STRATEGY_RUN_SCAN_LIMIT: ${STRATEGY_RUN_SCAN_LIMIT:-6000}
+      STRATEGY_RUN_MIN_COVERAGE_RATIO: ${STRATEGY_RUN_MIN_COVERAGE_RATIO:-0}
+      WORKER_TENANT_ID: ${WORKER_TENANT_ID:-1}
+      MARKET_DATA_PROVIDER: ${MARKET_DATA_PROVIDER:-mootdx}
+      MARKET_DATA_FALLBACKS: ${MARKET_DATA_FALLBACKS:-akshare}
+      ALLOW_MOCK_MARKET_DATA: ${ALLOW_MOCK_MARKET_DATA:-0}
+      PICKS_REPOSITORY_BACKEND: ${PICKS_REPOSITORY_BACKEND:-mysql}
+      AUTH_REPOSITORY_BACKEND: ${AUTH_REPOSITORY_BACKEND:-mysql}
+      AUDIT_REPOSITORY_BACKEND: ${AUDIT_REPOSITORY_BACKEND:-mysql}
+      SETTINGS_REPOSITORY_BACKEND: ${SETTINGS_REPOSITORY_BACKEND:-mysql}
+      LOGS_REPOSITORY_BACKEND: ${LOGS_REPOSITORY_BACKEND:-mysql}
+      STRATEGY_POOL_REPOSITORY_BACKEND: ${STRATEGY_POOL_REPOSITORY_BACKEND:-mysql}
+      STRATEGY_REPOSITORY_BACKEND: ${STRATEGY_REPOSITORY_BACKEND:-mysql}
+      TRADING_REPOSITORY_BACKEND: ${TRADING_REPOSITORY_BACKEND:-mysql}
+      PAPER_TRADING_ENABLED: ${PAPER_TRADING_ENABLED:-1}
+      PAPER_INITIAL_CASH: ${PAPER_INITIAL_CASH:-1000000}
+      PAPER_CASH_PER_TRADE: ${PAPER_CASH_PER_TRADE:-50000}
+      PAPER_MAX_POSITIONS: ${PAPER_MAX_POSITIONS:-10}
+      PAPER_STOP_LOSS_PCT: ${PAPER_STOP_LOSS_PCT:--0.08}
+      PAPER_TAKE_PROFIT_PCT: ${PAPER_TAKE_PROFIT_PCT:-0.15}
+      PAPER_MAX_HOLDING_DAYS: ${PAPER_MAX_HOLDING_DAYS:-20}
+      PAPER_LOT_SIZE: ${PAPER_LOT_SIZE:-100}
+      PAPER_FEE_RATE: ${PAPER_FEE_RATE:-0}
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./data:/app/data
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        NODE_BASE_IMAGE: ${FRONTEND_IMAGE:-swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/node:24-alpine}
+        NGINX_BASE_IMAGE: ${NGINX_IMAGE:-swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/nginx:1.27-alpine}
+    env_file:
+      - .env
+    ports:
+      - "5174:5174"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  mysql_data:
+  redis_data:

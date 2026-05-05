@@ -5,6 +5,10 @@ import datetime
 import time
 import os
 
+from scripts.maintenance.legacy_sqlite_guard import refuse_production
+
+refuse_production("strategy_lite.py")
+
 # 配置
 CONFIG = {
     "price_limit": 30.0,
