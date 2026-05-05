@@ -168,15 +168,15 @@
 
 真实 Docker Compose staging 已跑通：
 - 默认 pipeline 通过，`unresolved_strategy_rows=0`。
-- apply pipeline 通过，首次 `inserted=6`、`existing=0`。
-- verify reconciliation 通过，`matched_rows=6`、`missing_rows=0`、`mismatch_rows=0`。
-- 幂等重跑通过，第二次 `inserted=0`、`existing=6`。
-- 数据库层抽查通过，MySQL `picks` 共 6 条，均为 `tenant_id=1/source=auto_scan`。
-- `0003_picks_legacy_payload_json` 已落地，legacy-only 字段进入 `legacy_payload_json`，staging 迁移 `issues=0`。
+- apply pipeline 通过；当前 staging 已有前序迁移数据，本轮 `inserted=0`、`existing=6`、`duplicates=0`。
+- verify reconciliation 通过，`expected_rows=6`、`matched_rows=6`、`missing_rows=0`、`mismatch_rows=0`、`field_mismatches=0`。
+- 幂等重跑通过，重复执行仍为 `inserted=0`、`existing=6`。
+- 数据库层抽查通过，MySQL `picks` 共 7 条，其中迁移切片 `tenant_id=1/source=auto_scan` 为 6 条，另 1 条 `csv-import` 是既有 staging 烟测数据。
+- `0011_user_engagement_fields` 已是当前 schema revision，legacy-only 字段进入 `legacy_payload_json`，staging 迁移 `issues=0`。
 - 结果记录在 `docs/product/STAGING_MIGRATION_REPORT.md`。
 
 剩余生产切流前问题：
-- 生产切流前仍需备份恢复演练和读写切换方案确认。
+- staging 备份恢复和回滚演练已通过；生产切流前仍需用冻结生产 SQLite 指纹复跑、保留最近一次校验通过的 MySQL dump，并完成 MySQL 主路径 soak。
 
 ## P6 Staging Pipeline Update - 2026-05-04
 
@@ -216,10 +216,21 @@
 - 迁移测试覆盖 apply 门禁、对账缺失、字段 mismatch、SQLite 表名安全和缺表 count。
 
 后续仍按原顺序推进：
-- staging MySQL 先跑 `--resolve-strategies --json`。
-- 阻塞项清零后再跑 `--apply --confirm-apply sqlite-to-mysql-picks --json`。
-- 保存对账报告并确认行数、关键字段、默认 `tenant_id`、去重结果和 strategy_id 映射一致。
-- 完成幂等重跑、备份恢复和回滚演练后，再推进 SQLite 读写切流。
+- staging MySQL 已跑 `--resolve-strategies --json`，`unresolved_strategy_rows=0`。
+- staging MySQL 已跑 `--apply --confirm-apply sqlite-to-mysql-picks --json`，apply gate 和 reconciliation 均通过。
+- 对账报告已保存，行数、关键字段、默认 `tenant_id`、去重结果和 strategy_id 映射一致。
+- 幂等重跑、备份恢复和隔离回滚演练已完成；下一步进入生产冻结数据复跑和 MySQL 主路径 soak。
+
+## P6 Migration Closure Update - 2026-05-04
+
+本轮 staging 落地清单已经闭合：
+
+- `scripts/migrate_sqlite_to_mysql.py --resolve-strategies --json`：`planned_rows=6`、`unresolved_strategy_rows=0`、`issues=0`、`strategy_map_size=14`。
+- `--apply --confirm-apply sqlite-to-mysql-picks --json`：`apply_gate.ok=true`、`inserted=0`、`existing=6`、`duplicates=0`。
+- `--verify --json`：`expected_rows=6`、`matched_rows=6`、`missing_rows=0`、`mismatch_rows=0`。
+- SQL 对账：迁移切片 `tenant_id=1/source=auto_scan` 为 6；重复 key 0；非默认租户 0；空或孤立 `strategy_id` 0；策略映射到 `2560 / 2560战法`。
+- SQLite backup/restore drill 通过；MySQL dump 已恢复到隔离 `restore_check` 库，恢复后迁移切片仍为 6，重复 key 和孤立 strategy 均为 0。
+- 完整 staging pipeline 通过 Alembic、seed、schema validate、resolve、apply、verify。
 
 ## Product Closure Update - 2026-05-04
 

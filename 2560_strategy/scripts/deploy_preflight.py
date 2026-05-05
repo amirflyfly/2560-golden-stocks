@@ -25,6 +25,8 @@ REQUIRED_FILES = [
     "scripts/bootstrap_mysql_seed.py",
     "scripts/staging_mysql_migration.py",
     "scripts/production_evidence.py",
+    "backend/infrastructure/tasks/handlers.py",
+    "backend/infrastructure/tasks/worker.py",
     "scripts/validate_mysql_schema.py",
     "docs/refactor/BACKUP_RESTORE_RUNBOOK.md",
     "docs/product/PRODUCTION_EVIDENCE.md",
@@ -180,6 +182,9 @@ def _actual_env_checks(root: Path) -> list[dict[str, Any]]:
         if item.strip()
     }
     allow_mock_market_data = env.get("ALLOW_MOCK_MARKET_DATA", "0").strip() == "1"
+    cache_backend = env.get("CACHE_BACKEND", "redis").strip().lower()
+    task_queue_backend = env.get("TASK_QUEUE_BACKEND", "redis").strip().lower()
+    task_execution_mode = env.get("TASK_EXECUTION_MODE", "worker").strip().lower()
     backend_values = {
         name: env.get(name, "mysql").strip().lower()
         for name in REPOSITORY_BACKEND_ENV_VARS
@@ -190,6 +195,9 @@ def _actual_env_checks(root: Path) -> list[dict[str, Any]]:
         _check("env-file:database-url-not-sqlite", not database_url or not parsed.scheme.startswith("sqlite"), "DATABASE_URL is not sqlite"),
         _check("env-file:market-data-provider-not-mock", allow_mock_market_data or market_data_provider != "mock", "MARKET_DATA_PROVIDER is not mock"),
         _check("env-file:market-data-fallbacks-not-mock", allow_mock_market_data or "mock" not in market_data_fallbacks, "MARKET_DATA_FALLBACKS does not include mock"),
+        _check("env-file:cache-backend-redis", cache_backend == "redis", "CACHE_BACKEND is redis"),
+        _check("env-file:task-queue-backend-redis", task_queue_backend == "redis", "TASK_QUEUE_BACKEND is redis"),
+        _check("env-file:task-execution-worker", task_execution_mode == "worker", "TASK_EXECUTION_MODE is worker"),
         _check(
             "env-file:repository-backends-not-sqlite",
             all(value in {"", "auto", "mysql"} for value in backend_values.values()),
@@ -218,8 +226,12 @@ def run_preflight(project_root: Path | None = None) -> dict[str, Any]:
         _check("dockerfile:healthcheck", "/api/v1/readiness" in dockerfile and "HEALTHCHECK" in dockerfile, "backend readiness healthcheck is configured"),
         _check("dockerignore:vendor-excluded", "vendor/" in dockerignore, "vendor directory is excluded from production image context"),
         _check("requirements:mysql8-auth", "PyMySQL" in requirements and "cryptography" in requirements, "PyMySQL can authenticate against MySQL 8 caching_sha2_password"),
+        _check("env:redis-cache-and-queue", all(item in env_template for item in ["CACHE_BACKEND=redis", "TASK_QUEUE_BACKEND=redis", "TASK_EXECUTION_MODE=worker", "ALERT_EVALUATION_INTERVAL_SECONDS=300"]), "production template pins Redis queue, worker mode, and alert cadence"),
         _check("env:repository-backends-mysql", _repository_backends_are_mysql(env_template), "production template pins repositories to MySQL"),
         _check("compose:repository-backends-mysql", _repository_backends_are_mysql(compose, compose=True), "production compose defaults repositories to MySQL"),
+        _check("compose:worker-service", "\n  worker:" in compose and "python -m backend.infrastructure.tasks.worker" in compose, "standalone worker service is configured"),
+        _check("compose:worker-alert-scheduler", "--alert-interval-seconds ${ALERT_EVALUATION_INTERVAL_SECONDS:-300}" in compose, "worker schedules background alert evaluation"),
+        _check("compose:redis-task-queue", all(item in compose for item in ["CACHE_BACKEND: ${CACHE_BACKEND:-redis}", "TASK_QUEUE_BACKEND: ${TASK_QUEUE_BACKEND:-redis}", "TASK_EXECUTION_MODE: ${TASK_EXECUTION_MODE:-worker}"]), "compose pins Redis task queue and worker mode"),
         _check("nginx:api-proxy", "proxy_pass http://backend:8765/api/v1/;" in nginx, "frontend proxies v1 API internally"),
         _check("nginx:legacy-api-frozen", "location /api/" in nginx and "return 410" in nginx, "frontend freezes legacy API prefix"),
         _check("nginx:security-headers", all(header in nginx for header in ["Content-Security-Policy", "X-Frame-Options", "X-Content-Type-Options", "Strict-Transport-Security"]), "security headers are present"),

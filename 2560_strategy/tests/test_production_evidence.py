@@ -27,6 +27,8 @@ def _passing_evidence() -> dict:
         "ready": True,
         "database_dialect": "mysql",
         "cache_backend": "redis",
+        "task_queue_backend": "redis",
+        "task_execution_mode": "worker",
         "repository_backends": {key: "mysql" for key in REPOSITORY_BACKEND_KEYS},
         "tasks_stale": 0,
     }

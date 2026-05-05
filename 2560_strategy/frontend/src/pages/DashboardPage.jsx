@@ -3,11 +3,47 @@ import { api, getTenantId } from '../api/client';
 import { DataTable, MetricCard, PageHeader, SectionCard, StatusBadge } from '../components/common';
 
 function marketQualityLabel(market) {
-  if (!market) return 'unknown';
-  if (market.data_quality) return market.data_quality;
-  if (market.ok === true) return 'available';
-  if (market.ok === false) return 'unhealthy';
-  return 'checking';
+  const value = market?.data_quality || (market?.ok === true ? 'available' : market?.ok === false ? 'unhealthy' : 'checking');
+  const labels = {
+    primary: '主数据源',
+    fallback: '备用数据源',
+    mock: '模拟数据',
+    available: '正常',
+    unhealthy: '异常',
+    checking: '检查中',
+    unknown: '未知',
+  };
+  return labels[value] || value || '未知';
+}
+
+function healthStatusLabel(value) {
+  const labels = {
+    ok: '正常',
+    healthy: '正常',
+    unhealthy: '异常',
+    unknown: '未知',
+  };
+  return labels[String(value || '').toLowerCase()] || value || '未知';
+}
+
+function booleanLabel(value) {
+  if (value === true) return '正常';
+  if (value === false) return '异常';
+  return '未知';
+}
+
+function taskStatusLabel(value) {
+  const labels = {
+    pending: '等待中',
+    queued: '已排队',
+    running: '运行中',
+    retrying: '重试中',
+    completed: '已完成',
+    failed: '失败',
+    cancelled: '已取消',
+    stale: '已过期',
+  };
+  return labels[String(value || '').toLowerCase()] || value || '-';
 }
 
 function countByStatus(items, status) {
@@ -67,7 +103,7 @@ export function DashboardPage({ onNavigate }) {
   if (state.loading) {
     return (
       <main className="page">
-        <div className="card loading-card">Loading dashboard...</div>
+        <div className="card loading-card">正在加载首页看板...</div>
       </main>
     );
   }
@@ -75,12 +111,12 @@ export function DashboardPage({ onNavigate }) {
   return (
     <main className="page">
       <PageHeader
-        eyebrow="Workspace"
-        title="Today Dashboard"
-        description="Track market data health, scans, candidate pool, and production tasks from one working surface."
+        eyebrow="工作台"
+        title="今日看板"
+        description="集中查看行情源、策略扫描、候选池和后台任务的运行情况。"
         badges={(
           <>
-            <StatusBadge tone="success">Tenant {getTenantId()}</StatusBadge>
+            <StatusBadge tone="success">数据空间 {getTenantId()}</StatusBadge>
             <StatusBadge tone={marketOk ? 'success' : 'warning'}>{marketQualityLabel(state.market)}</StatusBadge>
           </>
         )}
@@ -89,80 +125,84 @@ export function DashboardPage({ onNavigate }) {
       {state.error ? <div className="alert">{state.error}</div> : null}
       {!marketOk || state.market?.data_quality === 'mock' || state.market?.fallback_used ? (
         <div className="alert warning">
-          Market data quality is {marketQualityLabel(state.market)}.
-          {state.market?.fallback_used ? ` Fallback provider is active: ${state.market?.actual_provider || state.market?.provider || 'unknown'}.` : ''}
-          {state.market?.errors?.length ? ` Recent provider error: ${state.market.errors[0]}` : ''}
-          {' '}Scan and backtest conclusions need review.
+          当前行情质量：{marketQualityLabel(state.market)}。
+          {state.market?.fallback_used ? ` 已切换到备用行情源：${state.market?.actual_provider || state.market?.provider || '未知'}。` : ''}
+          {state.market?.errors?.length ? ` 最近错误：${state.market.errors[0]}。` : ''}
+          扫描和回测结论需要复核后再使用。
         </div>
       ) : null}
 
       <section className="grid">
-        <MetricCard label="API status" value={state.health?.status || 'unknown'} hint="Backend health check" />
+        <MetricCard label="接口状态" value={healthStatusLabel(state.health?.status)} hint="后端服务健康检查" />
         <MetricCard
-          label="Market source"
-          value={state.market?.provider || 'unknown'}
-          badge={<span className={marketOk ? 'data-badge success small-text' : 'data-badge warning small-text'}>{String(state.market?.ok ?? 'unknown')}</span>}
+          label="行情源"
+          value={state.market?.provider || '未知'}
+          badge={<span className={marketOk ? 'data-badge success small-text' : 'data-badge warning small-text'}>{booleanLabel(state.market?.ok)}</span>}
         />
-        <MetricCard label="Strategies" value={state.strategies?.total ?? 0} hint="Available strategies" />
-        <MetricCard label="Candidate pool" value={state.picks?.total ?? 0} hint="Active picks waiting for review" />
-        <MetricCard label="Scan tasks" value={state.scans?.total ?? 0} hint="Strategy scan jobs" />
-        <MetricCard label="Failed tasks" value={failedTasks} hint={`Running ${runningTasks}`} danger={failedTasks > 0} />
+        <MetricCard label="策略数量" value={state.strategies?.total ?? 0} hint="当前可用策略" />
+        <MetricCard label="候选池" value={state.picks?.total ?? 0} hint="待复盘或观察的候选标的" />
+        <MetricCard label="扫描任务" value={state.scans?.total ?? 0} hint="已创建的策略扫描任务" />
+        <MetricCard label="失败任务" value={failedTasks} hint={`运行中 ${runningTasks}`} danger={failedTasks > 0} />
       </section>
 
       <section className="dashboard-layout section-gap">
         <article className="panel-card">
           <div className="section-title-row">
             <div>
-              <h2>Next actions</h2>
-              <p className="muted">Daily research actions are grouped here so scan, review, and validation stay connected.</p>
+              <h2>下一步操作</h2>
+              <p className="muted">常用工作入口集中在这里，方便从行情检查、策略扫描到复盘验证连续操作。</p>
             </div>
           </div>
           <div className="quick-actions">
             <button type="button" className="quick-action" onClick={() => onNavigate?.('scans')}>
-              <strong>Create scan</strong>
-              <span>Generate candidates from strategy signals.</span>
+              <strong>创建扫描</strong>
+              <span>按策略信号生成候选标的。</span>
+            </button>
+            <button type="button" className="quick-action" onClick={() => onNavigate?.('discovery')}>
+              <strong>市场发现</strong>
+              <span>扫描前先查看市场宽度和活跃标的。</span>
             </button>
             <button type="button" className="quick-action" onClick={() => onNavigate?.('picks')}>
-              <strong>Review pool</strong>
-              <span>Update status, deal feedback, and review notes.</span>
+              <strong>复盘候选池</strong>
+              <span>更新状态、成交反馈和复盘备注。</span>
             </button>
             <button type="button" className="quick-action" onClick={() => onNavigate?.('strategies')}>
-              <strong>Run backtest</strong>
-              <span>Validate win rate, drawdown, and equity curve.</span>
+              <strong>运行回测</strong>
+              <span>验证胜率、回撤和资金曲线。</span>
             </button>
             <button type="button" className="quick-action" onClick={() => onNavigate?.('sync')}>
-              <strong>Sync market data</strong>
-              <span>Refresh local market data cache.</span>
+              <strong>同步行情</strong>
+              <span>刷新本地行情数据缓存。</span>
             </button>
           </div>
         </article>
 
         <article className="panel-card">
-          <h2>System context</h2>
+          <h2>系统状态</h2>
           <div className="scan-summary">
-            <div className="summary-row"><span>Tenant</span><strong>{getTenantId()}</strong></div>
-            <div className="summary-row"><span>Market status</span><strong>{marketQualityLabel(state.market)}</strong></div>
-            <div className="summary-row"><span>Provider</span><strong>{state.market?.provider || '-'}</strong></div>
-            <div className="summary-row"><span>Actual provider</span><strong>{state.market?.actual_provider || state.market?.provider || '-'}</strong></div>
-            <div className="summary-row"><span>Provider chain</span><strong>{providerChainLabel(state.market)}</strong></div>
-            <div className="summary-row"><span>Fallback</span><strong>{state.market?.fallback_used ? 'yes' : 'no'}</strong></div>
-            <div className="summary-row"><span>API</span><strong>{state.health?.status || '-'}</strong></div>
+            <div className="summary-row"><span>数据空间</span><strong>{getTenantId()}</strong></div>
+            <div className="summary-row"><span>行情状态</span><strong>{marketQualityLabel(state.market)}</strong></div>
+            <div className="summary-row"><span>配置行情源</span><strong>{state.market?.provider || '-'}</strong></div>
+            <div className="summary-row"><span>实际行情源</span><strong>{state.market?.actual_provider || state.market?.provider || '-'}</strong></div>
+            <div className="summary-row"><span>行情源链路</span><strong>{providerChainLabel(state.market)}</strong></div>
+            <div className="summary-row"><span>是否降级</span><strong>{state.market?.fallback_used ? '是' : '否'}</strong></div>
+            <div className="summary-row"><span>接口</span><strong>{healthStatusLabel(state.health?.status)}</strong></div>
           </div>
         </article>
       </section>
 
-      <SectionCard title="Recent tasks" actions={<button type="button" className="btn-secondary" onClick={() => onNavigate?.('monitoring')}>Monitoring</button>}>
+      <SectionCard title="最近任务" actions={<button type="button" className="btn-secondary" onClick={() => onNavigate?.('monitoring')}>查看监控</button>}>
         <DataTable
           className="task-table"
           columns={[
-            { label: 'Task', render: (task) => task.name || task.id },
-            { label: 'Status', render: (task) => <StatusBadge status={task.status}>{task.status}</StatusBadge> },
-            { label: 'Duration', render: (task) => task.duration_seconds == null ? '-' : `${task.duration_seconds}s` },
-            { label: 'Time', render: (task) => task.created_at || '-' },
-            { label: 'Failure', render: (task) => task.failure_category || task.error || '-' },
+            { label: '任务', render: (task) => task.name || task.id },
+            { label: '状态', render: (task) => <StatusBadge status={task.status}>{taskStatusLabel(task.status)}</StatusBadge> },
+            { label: '耗时', render: (task) => task.duration_seconds == null ? '-' : `${task.duration_seconds}s` },
+            { label: '时间', render: (task) => task.created_at || '-' },
+            { label: '失败原因', render: (task) => task.failure_category || task.error || '-' },
           ]}
           rows={recentTasks}
-          emptyText="No tasks yet. Create a scan to start the workflow."
+          emptyText="暂无任务。可以先创建一次策略扫描。"
         />
       </SectionCard>
     </main>

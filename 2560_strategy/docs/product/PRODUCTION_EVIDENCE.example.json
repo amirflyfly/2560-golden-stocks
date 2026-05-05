@@ -26,6 +26,8 @@
         "ready": true,
         "database_dialect": "mysql",
         "cache_backend": "redis",
+        "task_queue_backend": "redis",
+        "task_execution_mode": "worker",
         "repository_backends": {
           "PICKS_REPOSITORY_BACKEND": "mysql",
           "AUTH_REPOSITORY_BACKEND": "mysql",

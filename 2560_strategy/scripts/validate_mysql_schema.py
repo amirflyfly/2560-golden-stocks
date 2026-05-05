@@ -36,6 +36,7 @@ EXPECTED_TABLES = {
     "saved_filters",
     "ui_settings",
     "stocks",
+    "limit_rule_calendar",
     "stock_daily_bars",
     "strategies",
     "strategy_pools",
@@ -70,8 +71,9 @@ EXPECTED_INDEXES = {
         "ix_scan_results_trade_date",
     },
     "picks": {"ix_picks_tenant_id", "ix_picks_symbol", "ix_picks_trade_date", "ix_picks_strategy_id"},
-    "stocks": {"ix_stocks_exchange", "ix_stocks_name"},
+    "stocks": {"ix_stocks_exchange", "ix_stocks_name", "ix_stocks_security_type", "ix_stocks_board_type"},
     "stock_daily_bars": {"ix_stock_daily_bars_symbol", "ix_stock_daily_bars_trade_date"},
+    "limit_rule_calendar": {"ix_limit_rule_calendar_profile", "ix_limit_rule_calendar_effective_from"},
 }
 
 EXPECTED_COLUMNS = {
@@ -160,6 +162,40 @@ EXPECTED_COLUMNS = {
         "updated_at",
         "deleted_at",
     },
+    "stocks": {
+        "id",
+        "symbol",
+        "exchange",
+        "name",
+        "market",
+        "security_type",
+        "industry",
+        "listing_date",
+        "status",
+        "is_st",
+        "board_type",
+        "limit_rule_profile",
+        "is_suspended",
+        "is_delisting",
+        "created_at",
+        "updated_at",
+    },
+    "limit_rule_calendar": {
+        "id",
+        "exchange",
+        "board_type",
+        "security_type",
+        "risk_warning",
+        "effective_from",
+        "effective_to",
+        "limit_up_rate",
+        "limit_down_rate",
+        "no_limit_first_days",
+        "status",
+        "notes",
+        "created_at",
+        "updated_at",
+    },
     "picks": {
         "tenant_id",
         "symbol",
@@ -193,11 +229,12 @@ EXPECTED_UNIQUE_CONSTRAINTS = {
     "picks": {"uk_picks_tenant_date_symbol_source"},
     "strategy_pools": {"uk_strategy_pools_strategy_code"},
     "research_reports": {"uk_research_reports_pick_analysis"},
+    "limit_rule_calendar": {"uk_limit_rule_calendar_profile_start"},
 }
 
-EXPECTED_ALEMBIC_REVISION = "0011_user_engagement_fields"
+EXPECTED_ALEMBIC_REVISION = "0018_limit_up_return_rules"
 EXPECTED_TENANT_CODE = "default"
-EXPECTED_STRATEGY_CODES = {"2560", "first_limit_up"}
+EXPECTED_STRATEGY_CODES = {"2560", "first_limit_up", "LIMIT_UP_RETURN"}
 
 
 @dataclass

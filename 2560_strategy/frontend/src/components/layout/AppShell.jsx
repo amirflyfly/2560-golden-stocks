@@ -1,21 +1,20 @@
-import { getTenantId } from '../../api/client';
 import { NavSidebar } from './NavSidebar';
 import { Topbar } from './Topbar';
+import { NotificationCenter } from '../notifications/NotificationCenter';
 
-export function AppShell({ page, meta, navGroups, onNavigate, children, authz }) {
-  function navigate(nextPage) {
-    const nextTenantId = getTenantId();
-    const params = new URLSearchParams(window.location.search);
-    params.set('tenant_id', nextTenantId);
-    window.history.replaceState(null, '', `${window.location.pathname}?${params.toString()}`);
-    onNavigate(nextPage);
+export function AppShell({ page, meta, navGroups, onNavigate, children, authz, onLogout }) {
+  function navigate(nextPage, payload = {}) {
+    onNavigate(nextPage, payload);
   }
 
   return (
     <div className="shell">
       <NavSidebar page={page} navGroups={navGroups} onNavigate={navigate} />
       <div className="content-shell">
-        <Topbar meta={meta} authz={authz} />
+        <div className="topbar-wrap">
+          <Topbar meta={meta} authz={authz} onLogout={onLogout} />
+          <NotificationCenter authz={authz} />
+        </div>
         {children({ navigate })}
       </div>
     </div>

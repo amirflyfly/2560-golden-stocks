@@ -1,6 +1,4 @@
 import { TenantSwitcher } from '../TenantSwitcher';
-import { StatusBadge } from '../common';
-import { getTenantId } from '../../api/client';
 
 export function NavSidebar({ page, navGroups, onNavigate }) {
   return (
@@ -14,12 +12,8 @@ export function NavSidebar({ page, navGroups, onNavigate }) {
       </div>
 
       <div className="tenant-card">
-        <p className="tenant-card-title">当前操作上下文</p>
+        <p className="tenant-card-title">当前数据空间</p>
         <TenantSwitcher />
-        <div className="tenant-status-row section-gap">
-          <StatusBadge tone="success">active</StatusBadge>
-          <StatusBadge tone="info">tenant {getTenantId()}</StatusBadge>
-        </div>
       </div>
 
       <nav>

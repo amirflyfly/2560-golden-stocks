@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import json
 from datetime import datetime
 from typing import Any
 
@@ -36,9 +37,39 @@ def _dt(value: Any) -> Any:
     return value
 
 
+def _json_load(value: Any, default: Any = None) -> Any:
+    if value in (None, ""):
+        return default
+    if isinstance(value, (dict, list)):
+        return value
+    try:
+        return json.loads(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _json_dump(value: Any) -> str:
+    if value in (None, ""):
+        return "{}"
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii=False)
+
+
 def _public_strategy(row: Strategy | dict) -> dict:
     if isinstance(row, dict):
-        return dict(row)
+        data = dict(row)
+        data["enabled"] = bool(data.get("enabled", data.get("is_active", 1)))
+        data["is_active"] = bool(data.get("is_active", data.get("enabled", 1)))
+        data["config"] = _json_load(data.get("config_json"), {})
+        data["config_json"] = _json_dump(data.get("config", data.get("config_json", {})))
+        data["source_type"] = data.get("source_type") or "builtin"
+        data["lifecycle_status"] = data.get("lifecycle_status") or ("deployed" if data["enabled"] else "disabled")
+        data["version"] = int(data.get("version") or 1)
+        data["code_body"] = data.get("code_body") or ""
+        data["last_test_status"] = data.get("last_test_status") or ""
+        data["last_test_message"] = data.get("last_test_message") or ""
+        return data
     is_active = bool(row.is_active) and row.deleted_at is None
     return {
         "id": row.id,
@@ -51,7 +82,17 @@ def _public_strategy(row: Strategy | dict) -> dict:
         "created_at": _dt(row.created_at),
         "updated_at": _dt(row.updated_at),
         "tenant_id": row.tenant_id,
-        "enabled": 1 if row.enabled else 0,
+        "enabled": bool(row.enabled),
+        "source_type": row.source_type or "builtin",
+        "lifecycle_status": row.lifecycle_status or ("deployed" if row.enabled else "disabled"),
+        "version": row.version or 1,
+        "config": row.config_json or {},
+        "config_json": _json_dump(row.config_json or {}),
+        "code_body": row.code_body or "",
+        "deployed_at": _dt(row.deployed_at),
+        "last_test_status": row.last_test_status or "",
+        "last_test_message": row.last_test_message or "",
+        "last_test_at": _dt(row.last_test_at),
     }
 
 
@@ -62,7 +103,7 @@ def list_strategies(active_only=True):
         if active_only:
             sql += " WHERE is_active = 1"
         sql += " ORDER BY sort_order ASC, id ASC"
-        return sqlite_q(sql)
+        return [_public_strategy(row) for row in sqlite_q(sql)]
     with session_scope() as session:
         statement = select(Strategy).where(Strategy.tenant_id == DEFAULT_TENANT_ID)
         if active_only:
@@ -74,7 +115,8 @@ def list_strategies(active_only=True):
 def get_strategy_by_id(sid):
     """Get a single strategy by ID."""
     if _repo_backend() == "sqlite":
-        return sqlite_q1("SELECT * FROM strategies WHERE id=?", (sid,))
+        row = sqlite_q1("SELECT * FROM strategies WHERE id=?", (sid,))
+        return _public_strategy(row) if row else None
     with session_scope() as session:
         row = session.get(Strategy, int(sid))
         if row is None or row.tenant_id != DEFAULT_TENANT_ID:
@@ -85,7 +127,8 @@ def get_strategy_by_id(sid):
 def get_strategy_by_code(code):
     """Get a single strategy by code."""
     if _repo_backend() == "sqlite":
-        return sqlite_q1("SELECT * FROM strategies WHERE code=?", (code,))
+        row = sqlite_q1("SELECT * FROM strategies WHERE code=?", (code,))
+        return _public_strategy(row) if row else None
     with session_scope() as session:
         row = session.execute(
             select(Strategy).where(Strategy.tenant_id == DEFAULT_TENANT_ID, Strategy.code == code)
@@ -93,13 +136,39 @@ def get_strategy_by_code(code):
         return _public_strategy(row) if row is not None else None
 
 
-def create_strategy(code, name, category="", description="", sort_order=0):
+def create_strategy(
+    code,
+    name,
+    category="",
+    description="",
+    sort_order=0,
+    *,
+    code_body="",
+    config_json=None,
+    source_type="custom",
+    lifecycle_status="draft",
+    enabled=False,
+    created_by=None,
+):
     """Create a new strategy."""
     if _repo_backend() == "sqlite":
         return sqlite_execute(
-            """INSERT INTO strategies (code, name, category, description, sort_order)
-               VALUES (?, ?, ?, ?, ?)""",
-            (code, name, category, description, sort_order),
+            """INSERT INTO strategies
+               (code, name, category, description, sort_order, code_body, config_json,
+                source_type, lifecycle_status, enabled, is_active)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)""",
+            (
+                code,
+                name,
+                category,
+                description,
+                sort_order,
+                code_body or "",
+                _json_dump(config_json),
+                source_type or "custom",
+                lifecycle_status or "draft",
+                1 if enabled else 0,
+            ),
         )
     with session_scope() as session:
         session.add(
@@ -109,18 +178,40 @@ def create_strategy(code, name, category="", description="", sort_order=0):
                 name=name,
                 category=category or "",
                 description=description or "",
-                config_json=None,
-                enabled=True,
+                config_json=_json_load(config_json, {}) or {},
+                code_body=code_body or "",
+                source_type=source_type or "custom",
+                lifecycle_status=lifecycle_status or "draft",
+                version=1,
+                enabled=bool(enabled),
                 is_active=True,
                 sort_order=int(sort_order or 0),
-                created_by=None,
+                created_by=created_by,
             )
         )
         session.flush()
     return 1
 
 
-def update_strategy(sid, code=None, name=None, category=None, description=None, is_active=None, sort_order=None):
+def update_strategy(
+    sid,
+    code=None,
+    name=None,
+    category=None,
+    description=None,
+    is_active=None,
+    sort_order=None,
+    enabled=None,
+    code_body=None,
+    config_json=None,
+    source_type=None,
+    lifecycle_status=None,
+    version=None,
+    deployed_at=None,
+    last_test_status=None,
+    last_test_message=None,
+    last_test_at=None,
+):
     """Update a strategy. Only updates provided fields."""
     if _repo_backend() == "sqlite":
         strategy = get_strategy_by_id(sid)
@@ -148,6 +239,36 @@ def update_strategy(sid, code=None, name=None, category=None, description=None, 
         if sort_order is not None:
             fields.append("sort_order=?")
             args.append(sort_order)
+        if enabled is not None:
+            fields.append("enabled=?")
+            args.append(1 if enabled else 0)
+        if code_body is not None:
+            fields.append("code_body=?")
+            args.append(code_body)
+        if config_json is not None:
+            fields.append("config_json=?")
+            args.append(_json_dump(config_json))
+        if source_type is not None:
+            fields.append("source_type=?")
+            args.append(source_type)
+        if lifecycle_status is not None:
+            fields.append("lifecycle_status=?")
+            args.append(lifecycle_status)
+        if version is not None:
+            fields.append("version=?")
+            args.append(int(version))
+        if deployed_at is not None:
+            fields.append("deployed_at=?")
+            args.append(_dt(deployed_at))
+        if last_test_status is not None:
+            fields.append("last_test_status=?")
+            args.append(last_test_status)
+        if last_test_message is not None:
+            fields.append("last_test_message=?")
+            args.append(last_test_message)
+        if last_test_at is not None:
+            fields.append("last_test_at=?")
+            args.append(_dt(last_test_at))
 
         if not fields:
             return 0
@@ -176,6 +297,26 @@ def update_strategy(sid, code=None, name=None, category=None, description=None, 
             row.deleted_at = None if is_active else datetime.now()
         if sort_order is not None:
             row.sort_order = int(sort_order)
+        if enabled is not None:
+            row.enabled = bool(enabled)
+        if code_body is not None:
+            row.code_body = code_body
+        if config_json is not None:
+            row.config_json = _json_load(config_json, {}) or {}
+        if source_type is not None:
+            row.source_type = source_type
+        if lifecycle_status is not None:
+            row.lifecycle_status = lifecycle_status
+        if version is not None:
+            row.version = int(version)
+        if deployed_at is not None:
+            row.deployed_at = deployed_at if isinstance(deployed_at, datetime) else datetime.now()
+        if last_test_status is not None:
+            row.last_test_status = last_test_status
+        if last_test_message is not None:
+            row.last_test_message = last_test_message
+        if last_test_at is not None:
+            row.last_test_at = last_test_at if isinstance(last_test_at, datetime) else datetime.now()
         row.updated_at = datetime.now()
         session.flush()
     return 1

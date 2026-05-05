@@ -15,7 +15,7 @@ class BrokenProvider:
     def get_stock_list(self):
         raise RuntimeError("broken stock list")
 
-    def get_daily_bars(self, symbol, start_date, end_date, adjust="qfq"):
+    def get_daily_bars(self, symbol, start_date, end_date, adjust="qfq", interval="1d"):
         raise RuntimeError("broken daily bars")
 
     def get_trading_dates(self, start_date, end_date):
@@ -34,6 +34,16 @@ def test_mock_provider_returns_normalized_daily_bars():
     assert bars[0].trade_date == date(2026, 4, 27)
     assert bars[0].source == "mock"
     assert "open" in bars[0].to_dict()
+
+
+def test_mock_provider_returns_intraday_bars_with_interval():
+    provider = MockMarketDataProvider()
+    bars = provider.get_daily_bars("123001", "2026-04-27", "2026-04-27", adjust="none", interval="15m")
+
+    assert bars
+    assert bars[0].interval == "15m"
+    assert bars[0].trade_time.hour == 9
+    assert bars[0].trade_time.minute == 45
 
 
 def test_fallback_provider_uses_next_provider_when_first_fails():
@@ -65,6 +75,57 @@ def test_mootdx_provider_health_check_does_not_raise_when_unavailable():
 
     assert result.provider == "mootdx"
     assert isinstance(result.ok, bool)
+
+
+def test_mootdx_provider_get_stock_list_filters_to_a_share_stocks():
+    class FakeMootdxClient:
+        def __init__(self):
+            self.calls = []
+
+        def stocks(self, market):
+            self.calls.append(market)
+            if market == 0:
+                return [
+                    {"code": "000001", "name": "Ping An\x00"},
+                    {"code": "300750", "name": "CATL"},
+                    {"code": "430047", "name": "BSE Co"},
+                    {"code": "000015", "name": "\u7ea2\u5229\u6307\u6570"},
+                    {"code": "100609", "name": "Treasury Bond"},
+                    {"code": "159001", "name": "ETF"},
+                    {"code": "399001", "name": "Index"},
+                ]
+            return [
+                {"code": "600519", "name": "Moutai"},
+                {"code": "688001", "name": "STAR Co"},
+                {"code": "510300", "name": "ETF"},
+                {"code": "113001", "name": "Convertible Bond"},
+            ]
+
+    provider = MootdxMarketDataProvider()
+    fake_client = FakeMootdxClient()
+    provider._quotes_client = fake_client
+
+    items = provider.get_stock_list()
+
+    assert fake_client.calls == [0, 1]
+    assert [item.symbol for item in items] == ["000001", "300750", "430047", "000015", "100609", "159001", "399001", "600519", "688001", "510300", "113001"]
+    assert {item.symbol: item.exchange for item in items} == {
+        "000001": "SZ",
+        "300750": "SZ",
+        "430047": "BJ",
+        "000015": "SZ",
+        "100609": "SH",
+        "159001": "SZ",
+        "399001": "SZ",
+        "600519": "SH",
+        "688001": "SH",
+        "510300": "SH",
+        "113001": "SH",
+    }
+    assert {item.symbol: item.security_type for item in items}["000015"] == "index"
+    assert {item.symbol: item.security_type for item in items}["113001"] == "convertible_bond"
+    assert {item.symbol: item.security_type for item in items}["510300"] == "etf"
+    assert items[0].name == "Ping An"
 
 
 def test_production_rejects_mock_market_data_provider(monkeypatch):

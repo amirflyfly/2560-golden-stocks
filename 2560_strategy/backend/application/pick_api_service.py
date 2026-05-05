@@ -42,7 +42,7 @@ def _row_to_pick(row: dict, tenant_id: int) -> dict:
 
 class PickApiService:
     def get_pick(self, tenant_id: int, pick_id: int) -> dict | None:
-        row = picks_repo.get_pick_by_id(pick_id)
+        row = picks_repo.get_pick_by_id(pick_id, tenant_id=tenant_id)
         return _row_to_pick(row, tenant_id) if row else None
 
     def list_picks(self, tenant_id: int, pagination: PaginationParams, filters: dict | None = None) -> dict:
@@ -86,8 +86,8 @@ class PickApiService:
             args.append(to_date)
 
         where_sql = "WHERE " + " AND ".join(where)
-        rows = picks_repo.list_picks(where_sql, args, limit=pagination.page_size, offset=pagination.offset)
-        total = picks_repo.count_picks(where_sql, args)
+        rows = picks_repo.list_picks(where_sql, args, limit=pagination.page_size, offset=pagination.offset, tenant_id=tenant_id)
+        total = picks_repo.count_picks(where_sql, args, tenant_id=tenant_id)
         return {
             "items": [_row_to_pick(row, tenant_id) for row in rows],
             "total": total,
@@ -127,7 +127,7 @@ class PickApiService:
         )
         fallback_used = bool(payload.get("fallback_used", market_data.get("fallback_used", False)))
 
-        existing = picks_repo.get_pick_by_unique(trade_date, symbol, source)
+        existing = picks_repo.get_pick_by_unique(trade_date, symbol, source, tenant_id=tenant_id)
         if existing:
             picks_repo.update_pick_api_fields(
                 existing["id"],
@@ -147,10 +147,11 @@ class PickApiService:
                 data_quality=data_quality,
                 market_data_source=market_data_source,
                 fallback_used=fallback_used,
+                tenant_id=tenant_id,
             )
             pick_id = existing["id"]
         else:
-            picks_repo.create_or_replace_pick(
+            created_id = picks_repo.create_or_replace_pick(
                 trade_date,
                 symbol,
                 stock_name,
@@ -172,9 +173,10 @@ class PickApiService:
                 data_quality,
                 market_data_source,
                 fallback_used,
+                tenant_id=tenant_id,
             )
-            pick_id = picks_repo.last_inserted_id()
-        row = picks_repo.get_pick_by_id(pick_id) if pick_id else None
+            pick_id = int(created_id) if created_id else picks_repo.last_inserted_id()
+        row = picks_repo.get_pick_by_id(pick_id, tenant_id=tenant_id) if pick_id else None
         if row:
             return _row_to_pick(row, tenant_id)
         return {
@@ -189,7 +191,7 @@ class PickApiService:
         }
 
     def update_review(self, tenant_id: int, pick_id: int, payload: dict) -> dict | None:
-        row = picks_repo.get_pick_by_id(pick_id)
+        row = picks_repo.get_pick_by_id(pick_id, tenant_id=tenant_id)
         if not row:
             return None
         current = _row_to_pick(row, tenant_id)
@@ -213,12 +215,42 @@ class PickApiService:
             validation_result=validation_result or "",
             validation_note=validation_note or "",
             watch_flag=watch_flag,
+            tenant_id=tenant_id,
         )
-        updated = picks_repo.get_pick_by_id(pick_id)
+        updated = picks_repo.get_pick_by_id(pick_id, tenant_id=tenant_id)
         return _row_to_pick(updated, tenant_id) if updated else None
 
+    def batch_update_review(self, tenant_id: int, pick_ids: list[int], payload: dict) -> dict:
+        if not pick_ids:
+            raise AppError("missing pick ids")
+        unique_ids = []
+        seen = set()
+        for raw_id in pick_ids:
+            try:
+                pick_id = int(raw_id)
+            except (TypeError, ValueError) as exc:
+                raise AppError("invalid pick id") from exc
+            if pick_id > 0 and pick_id not in seen:
+                seen.add(pick_id)
+                unique_ids.append(pick_id)
+
+        updated_items = []
+        missing_ids = []
+        for pick_id in unique_ids:
+            item = self.update_review(tenant_id, pick_id, payload)
+            if item is None:
+                missing_ids.append(pick_id)
+            else:
+                updated_items.append(item)
+        return {
+            "tenant_id": tenant_id,
+            "updated": len(updated_items),
+            "missing_ids": missing_ids,
+            "items": updated_items,
+        }
+
     def get_timeline(self, tenant_id: int, pick_id: int) -> dict | None:
-        row = picks_repo.get_pick_by_id(pick_id)
+        row = picks_repo.get_pick_by_id(pick_id, tenant_id=tenant_id)
         if not row:
             return None
         pick = _row_to_pick(row, tenant_id)

@@ -369,6 +369,13 @@ class StrategyFirstLimitUp(BaseStrategy):
 
     def _get_market_sentiment(self, date: str = None) -> Dict[str, Any]:
         """获取市场情绪数据."""
+        if os.getenv("MARKET_DATA_LOCAL_ONLY", "").strip() == "1":
+            return {
+                'limit_up_count': 0,
+                'limit_down_count': 0,
+                'sentiment_score': 50,
+                'is_good_market': True
+            }
         try:
             # 获取当日涨停跌停数据
             if date:
@@ -413,6 +420,8 @@ class StrategyFirstLimitUp(BaseStrategy):
 
     def _get_sector_data(self, stock_code: str, date: str = None) -> Dict[str, Any]:
         """获取股票所属板块数据."""
+        if os.getenv("MARKET_DATA_LOCAL_ONLY", "").strip() == "1":
+            return {'sector_name': '本地数据', 'sector_limit_count': 0, 'sector_score': 0}
         try:
             # 获取股票所属概念板块
             sector_df = ak.stock_board_concept_name_ths()
@@ -578,6 +587,8 @@ class StrategyFirstLimitUp(BaseStrategy):
 
     def _get_realtime_data(self, stock_code: str) -> Optional[Dict[str, Any]]:
         """获取实时行情数据."""
+        if os.getenv("MARKET_DATA_LOCAL_ONLY", "").strip() == "1":
+            return None
         try:
             df = ak.stock_zh_a_spot_em()
             if df is not None and not df.empty:
@@ -609,20 +620,33 @@ class StrategyFirstLimitUp(BaseStrategy):
             market = self._get_market_type(stock_code)
 
             # 获取历史数据
-            if target_date:
-                end_date = datetime.strptime(target_date, '%Y-%m-%d')
-                start_date = end_date - timedelta(days=60)
-                start_str = start_date.strftime('%Y%m%d')
-                end_str = end_date.strftime('%Y%m%d')
+            if os.getenv("MARKET_DATA_LOCAL_ONLY", "").strip() == "1":
+                from backend.services.stock_data_service import get_stock_data_service
 
-                df = ak.stock_zh_a_hist(
-                    symbol=stock_code,
-                    period="daily",
+                stock_data = get_stock_data_service()
+                end_date = datetime.strptime(target_date, '%Y-%m-%d') if target_date else datetime.now()
+                start_date = end_date - timedelta(days=60)
+                df = stock_data.get_stock_hist(
+                    stock_code,
+                    start_date.strftime('%Y-%m-%d'),
+                    end_date.strftime('%Y-%m-%d'),
                     adjust="qfq",
-                    start_date=start_str,
-                    end_date=end_str
                 )
-            else:
+            if target_date:
+                if os.getenv("MARKET_DATA_LOCAL_ONLY", "").strip() != "1":
+                    end_date = datetime.strptime(target_date, '%Y-%m-%d')
+                    start_date = end_date - timedelta(days=60)
+                    start_str = start_date.strftime('%Y%m%d')
+                    end_str = end_date.strftime('%Y%m%d')
+
+                    df = ak.stock_zh_a_hist(
+                        symbol=stock_code,
+                        period="daily",
+                        adjust="qfq",
+                        start_date=start_str,
+                        end_date=end_str
+                    )
+            elif os.getenv("MARKET_DATA_LOCAL_ONLY", "").strip() != "1":
                 start_date = (datetime.now() - timedelta(days=60)).strftime('%Y%m%d')
                 df = ak.stock_zh_a_hist(
                     symbol=stock_code,
@@ -838,6 +862,10 @@ class StrategyFirstLimitUp(BaseStrategy):
 
     def _get_stock_list(self) -> pd.DataFrame:
         """获取股票列表."""
+        if os.getenv("MARKET_DATA_LOCAL_ONLY", "").strip() == "1":
+            from backend.services.stock_data_service import get_stock_data_service
+
+            return get_stock_data_service().get_stock_list(source="local")
         try:
             df = ak.stock_info_a_code_name()
             if isinstance(df, pd.DataFrame) and not df.empty:

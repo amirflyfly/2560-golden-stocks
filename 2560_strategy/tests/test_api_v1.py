@@ -150,6 +150,60 @@ def test_login_rejects_missing_csrf_token(client):
     assert "请求校验失败" in response.get_data(as_text=True)
 
 
+def test_auth_bootstrap_reports_initialized_admin(client):
+    response = client.get("/api/v1/auth/bootstrap")
+    data = response.get_json()
+
+    assert response.status_code == 200
+    assert data["code"] == 0
+    assert data["data"]["has_users"] is True
+    assert data["data"]["admin_initialized"] is True
+    assert data["data"]["admin_init_required"] is False
+
+
+def test_json_login_establishes_react_session_and_me(client):
+    response = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin123"})
+    data = response.get_json()
+
+    assert response.status_code == 200
+    assert data["code"] == 0
+    assert data["data"]["username"] == "admin"
+    assert data["data"]["role"] == "admin"
+    assert data["data"]["tenant_id"] == 1
+    assert get_auth_token(client)
+
+    me_response = client.get("/api/v1/me", headers=tenant_headers(client))
+    me_data = me_response.get_json()
+
+    assert me_response.status_code == 200
+    assert me_data["data"]["role"] == "admin"
+    assert me_data["data"]["permissions"]["can_admin"] is True
+
+
+def test_json_login_rejects_invalid_credentials(client):
+    response = client.post("/api/v1/auth/login", json={"username": "admin", "password": "wrong-password"})
+    data = response.get_json()
+
+    assert response.status_code == 401
+    assert data["code"] == 401
+
+
+def test_json_logout_revokes_react_session(client):
+    login_response = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin123"})
+    assert login_response.status_code == 200
+    assert get_auth_token(client)
+
+    logout_response = client.post("/api/v1/auth/logout", json={}, headers=tenant_headers(client, include_csrf=True))
+    logout_data = logout_response.get_json()
+
+    assert logout_response.status_code == 200
+    assert logout_data["data"]["logged_out"] is True
+    assert get_auth_token(client) is None
+
+    me_response = client.get("/api/v1/me", headers=tenant_headers(client))
+    assert me_response.status_code == 401
+
+
 
 def test_scan_write_requires_csrf_token(client):
     authed = login_as(client, "editor_no_csrf")
@@ -200,6 +254,24 @@ def test_scan_write_rejects_cross_origin_header(client):
     assert response.status_code == 403
     assert data["code"] == 403
     assert data["message"] == "forbidden"
+
+
+def test_scan_write_accepts_loopback_dev_proxy_origin_with_valid_csrf(client):
+    authed = login_as(client, "editor_dev_proxy_origin")
+
+    response = authed.post(
+        "/api/v1/scans",
+        json={"strategy_code": "2560", "params": {}},
+        headers=tenant_headers(
+            authed,
+            include_csrf=True,
+            extra={"Origin": "http://127.0.0.1:5176", "Sec-Fetch-Site": "same-site"},
+        ),
+    )
+    data = response.get_json()
+
+    assert response.status_code == 202
+    assert data["code"] == 0
 
 
 
@@ -253,6 +325,57 @@ def test_strategies_list_returns_paginated_data_with_auth(client):
     assert data["code"] == 0
     assert data["data"]["tenant_id"] == 1
     assert data["data"]["items"]
+    assert data["data"]["workflow"]["data_policy"]["backtest"] == "local_market_data_first"
+
+
+def test_strategy_lifecycle_create_edit_test_and_deploy(client):
+    authed = login_as(client, "editor_strategy_lifecycle")
+    headers = tenant_headers(authed, include_csrf=True)
+
+    create_response = authed.post(
+        "/api/v1/strategies",
+        json={
+            "code": "custom_life",
+            "name": "Custom Lifecycle",
+            "category": "自定义策略",
+            "description": "draft strategy",
+            "config": {"target_security_type": "convertible_bond", "bar_interval": "15m", "adjust": "none", "allow_t0": True},
+            "code_body": "from backend.strategies import BaseStrategy\n\nclass CustomLife(BaseStrategy):\n    def get_code(self):\n        return 'custom_life'\n    def get_name(self):\n        return 'Custom Lifecycle'\n    def get_description(self):\n        return 'draft'\n    def scan(self, date=None):\n        return []\n",
+        },
+        headers=headers,
+    )
+    created = create_response.get_json()["data"]
+
+    assert create_response.status_code == 201
+    assert created["lifecycle_status"] == "draft"
+    assert created["runtime_registered"] is False
+    assert created["target_security_type"] == "convertible_bond"
+    assert created["bar_interval"] == "15m"
+    assert created["data_requirements"]["t0_supported"] is True
+
+    update_response = authed.patch(
+        f"/api/v1/strategies/{created['id']}",
+        json={"description": "edited strategy", "enabled": False},
+        headers=headers,
+    )
+    updated = update_response.get_json()["data"]
+
+    assert update_response.status_code == 200
+    assert updated["description"] == "edited strategy"
+
+    test_response = authed.post(f"/api/v1/strategies/{created['id']}/test", json={}, headers=headers)
+    tested = test_response.get_json()["data"]
+
+    assert test_response.status_code == 200
+    assert tested["result"]["passed"] is True
+    assert tested["strategy"]["last_test_status"] == "passed"
+
+    deploy_response = authed.post(f"/api/v1/strategies/{created['id']}/deploy", json={}, headers=headers)
+    deployed = deploy_response.get_json()["data"]
+
+    assert deploy_response.status_code == 200
+    assert deployed["strategy"]["lifecycle_status"] == "deployed"
+    assert deployed["strategy"]["enabled"] is True
 
 
 def test_me_returns_effective_tenant_role_and_permissions(client):
@@ -497,6 +620,18 @@ def test_readiness_includes_task_health_summary(client):
     assert data["tasks"]["by_failure_category"]["stale"] >= 1
 
 
+def test_monitoring_uses_sqlite_health_for_local_sqlite_repositories(client):
+    authed = login_as(client, "admin_monitoring_sqlite", role="admin")
+
+    response = authed.get("/api/v1/monitoring/overview", headers=tenant_headers(authed))
+    data = response.get_json()["data"]
+
+    assert response.status_code == 200
+    assert data["database"]["ok"] is True
+    assert data["database"]["backend"] == "sqlite"
+    assert set(data["database"]["repository_backends"].values()) == {"sqlite"}
+
+
 
 def test_scan_results_expose_market_data_quality_on_items(client):
     authed = login_as(client, "editor_scan_quality")
@@ -550,6 +685,241 @@ def test_scan_results_expose_market_data_quality_on_items(client):
     assert data["data"]["items"][0]["data_quality"] == "mock"
     assert data["data"]["items"][0]["explanation"]["schema_version"] == "scan-explanation/v2"
     assert data["data"]["items"][0]["explanation"]["risk_level"] == "high"
+
+
+def test_scan_results_use_registered_strategy_before_market_sample(client, monkeypatch):
+    from backend.application import scan_api_service
+
+    class FakeStrategy:
+        code = "2560"
+
+        def scan(self, target_date=None):
+            assert target_date == "2026-05-04"
+            return [
+                {
+                    "code": "000888",
+                    "name": "Strategy Pick",
+                    "pick_price": 12.3,
+                    "signal": "策略信号",
+                    "reason_tag": "策略信号",
+                    "risk_score": 18,
+                    "total_score": 91,
+                }
+            ]
+
+    monkeypatch.setattr(scan_api_service.registry, "get", lambda code: FakeStrategy() if code == "2560" else None)
+    authed = login_as(client, "editor_scan_registry")
+
+    create_response = authed.post(
+        "/api/v1/scans",
+        json={"strategy_code": "2560", "params": {"trade_date": "2026-05-04"}},
+        headers=tenant_headers(authed, include_csrf=True),
+    )
+    scan_id = create_response.get_json()["data"]["id"]
+    response = authed.get(f"/api/v1/scans/{scan_id}/results", headers=tenant_headers(authed))
+    data = response.get_json()["data"]
+
+    assert response.status_code == 200
+    assert data["strategy_runner"] == "registry"
+    assert data["items"][0]["symbol"] == "000888"
+    assert data["items"][0]["explanation"]["strategy_code"] == "2560"
+
+
+def test_scan_market_sample_carries_security_type_and_bar_interval(monkeypatch):
+    from backend.application.scan_api_service import ScanApiService
+    from backend.infrastructure.market_data.provider import HealthCheckResult, StockInfo
+
+    class FakeProvider:
+        name = "fake"
+
+        def get_stock_list(self):
+            return [
+                StockInfo(symbol="000001", name="Ping An", exchange="SZ", security_type="stock"),
+                StockInfo(symbol="123001", name="Convertible", exchange="SZ", security_type="convertible_bond"),
+                StockInfo(symbol="510300", name="ETF", exchange="SH", security_type="etf"),
+            ]
+
+        def health_check(self):
+            return HealthCheckResult(provider="fake", ok=True)
+
+    from backend.application import scan_api_service
+
+    monkeypatch.setattr(scan_api_service.registry, "get", lambda code: None)
+    result = ScanApiService(FakeProvider())._run_scan(
+        1,
+        "unknown",
+        {"security_type": "convertible_bond", "bar_interval": "30m", "adjust": "qfq", "sample_size": 5},
+    )
+
+    assert result["params"]["security_type"] == "convertible_bond"
+    assert result["params"]["bar_interval"] == "30m"
+    assert result["params"]["adjust"] == "none"
+    assert result["market_data"]["sample_symbols"][0]["symbol"] == "123001"
+    assert result["market_data"]["sample_symbols"][0]["security_type"] == "convertible_bond"
+    assert result["market_data"]["sample_symbols"][0]["bar_interval"] == "30m"
+
+
+def test_scan_can_disable_market_sample_fallback(monkeypatch):
+    from backend.application import scan_api_service
+    from backend.application.scan_api_service import ScanApiService
+    from backend.infrastructure.market_data.provider import HealthCheckResult
+
+    class EmptyStrategy:
+        def scan(self, target_date=None):
+            return []
+
+    class FakeProvider:
+        name = "fake"
+
+        def get_stock_list(self):
+            pytest.fail("market sample fallback should be disabled")
+
+        def health_check(self):
+            return HealthCheckResult(provider="fake", ok=True)
+
+    monkeypatch.setattr(scan_api_service.registry, "get", lambda code: EmptyStrategy())
+
+    result = ScanApiService(FakeProvider())._run_scan(
+        1,
+        "2560",
+        {"disable_market_sample_fallback": True, "sample_size": 5},
+    )
+
+    assert result["strategy_runner"] == "registry"
+    assert result["market_data"]["sample_symbols"] == []
+    assert result["params"]["disable_market_sample_fallback"] is True
+
+
+def test_scan_accepts_first_limit_up_alias(client, monkeypatch):
+    from backend.application import scan_api_service
+
+    seen = {}
+
+    class FakeStrategy:
+        code = "FIRST_LIMIT_UP"
+
+        def scan(self, target_date=None):
+            return []
+
+    def fake_get(code):
+        seen["code"] = code
+        return FakeStrategy()
+
+    monkeypatch.setattr(scan_api_service.registry, "get", fake_get)
+    authed = login_as(client, "editor_scan_alias")
+
+    response = authed.post(
+        "/api/v1/scans",
+        json={"strategy_code": "first_limit_up", "params": {}},
+        headers=tenant_headers(authed, include_csrf=True),
+    )
+    payload = response.get_json()["data"]
+
+    assert response.status_code == 202
+    assert payload["strategy_code"] == "first_limit_up"
+    assert seen["code"] == "FIRST_LIMIT_UP"
+
+
+def test_market_discovery_returns_breadth_and_data_contract(client):
+    authed = login_as(client, "editor_market_discovery")
+
+    response = authed.get("/api/v1/market-discovery?sample_size=3&lookback_days=20", headers=tenant_headers(authed))
+    data = response.get_json()["data"]
+
+    assert response.status_code == 200
+    assert data["breadth"]["sampled"] <= 3
+    assert "advance_ratio" in data["breadth"]
+    assert data["coverage"]["requested_sample_size"] == 3
+    assert data["coverage"]["successful"] == data["breadth"]["sampled"]
+    assert "success_rate" in data["coverage"]
+    assert data["data_contract"]["data_quality"] in {"primary", "fallback", "mock", "unknown"}
+    assert data["data_quality_summary"]["grade"] in {"primary", "fallback", "mock", "unknown"}
+    assert isinstance(data["candidate_groups"], list)
+    assert isinstance(data["top_movers"], list)
+
+
+def test_settings_saved_views_and_alerts_are_persisted(client):
+    authed = login_as(client, "editor_settings")
+    write_headers = tenant_headers(authed, include_csrf=True)
+    read_headers = tenant_headers(authed)
+
+    view_response = authed.post(
+        "/api/v1/settings/saved-views",
+        json={
+            "name": "High quality scans",
+            "page": "scans",
+            "filters": {"risk_level": "low", "data_quality": "primary"},
+            "sort": {"field": "score", "order": "desc"},
+            "columns": ["symbol", "score"],
+        },
+        headers=write_headers,
+    )
+    view = view_response.get_json()["data"]
+
+    assert view_response.status_code == 201
+    assert view["id"]
+    assert view["filters"]["data_quality"] == "primary"
+
+    views_response = authed.get("/api/v1/settings/saved-views", headers=read_headers)
+    views = views_response.get_json()["data"]
+    assert views_response.status_code == 200
+    assert views["items"][0]["id"] == view["id"]
+
+    alert_response = authed.post(
+        "/api/v1/settings/alerts",
+        json={
+            "name": "Ping An drawdown",
+            "target": "000001",
+            "rule": {"field": "drawdown_pct", "operator": "<=", "value": -0.05},
+            "channels": ["in_app"],
+        },
+        headers=write_headers,
+    )
+    alert = alert_response.get_json()["data"]
+
+    assert alert_response.status_code == 201
+    assert alert["enabled"] is True
+    assert alert["rule"]["field"] == "drawdown_pct"
+
+    alerts_response = authed.get("/api/v1/settings/alerts", headers=read_headers)
+    alerts = alerts_response.get_json()["data"]
+    assert alerts_response.status_code == 200
+    assert alerts["items"][0]["id"] == alert["id"]
+
+    delete_response = authed.delete(f"/api/v1/settings/saved-views/{view['id']}", headers=write_headers)
+    assert delete_response.status_code == 200
+
+
+def test_batch_pick_review_updates_selected_items_and_audits(client):
+    from backend.application.audit_log_service import audit_log_service
+
+    authed = login_as(client, "editor_pick_batch")
+    headers = tenant_headers(authed, include_csrf=True)
+    first = authed.post(
+        "/api/v1/picks",
+        json={"symbol": "000101", "stock_name": "Batch One", "trade_date": "2026-05-04", "source": "manual"},
+        headers=headers,
+    ).get_json()["data"]
+    second = authed.post(
+        "/api/v1/picks",
+        json={"symbol": "000102", "stock_name": "Batch Two", "trade_date": "2026-05-04", "source": "manual"},
+        headers=headers,
+    ).get_json()["data"]
+
+    response = authed.patch(
+        "/api/v1/picks/batch/review",
+        json={"ids": [first["id"], second["id"]], "status": "watching", "risk_level": "medium", "watch_flag": True},
+        headers=headers,
+    )
+    data = response.get_json()["data"]
+
+    assert response.status_code == 200
+    assert data["updated"] == 2
+    assert {item["status"] for item in data["items"]} == {"watching"}
+    assert all(item["watch_flag"] for item in data["items"])
+    logs = audit_log_service.list_logs(tenant_id=1, action="pick.review.batch_update")
+    assert logs["items"]
+    assert logs["items"][0]["detail"]["updated"] == 2
 
 
 
@@ -793,6 +1163,12 @@ def test_report_summary_distinguishes_market_data_quality(client):
     assert data["groups"][0]["drilldowns"]["picks"]["filters"]["strategy_code"] == "2560"
     assert data["groups"][0]["drilldowns"]["backtests"]["page"] == "strategies"
     assert data["groups"][0]["data_quality"]["mock"] == 1
+    assert data["attribution"]["schema_version"] == "report-attribution/v1"
+    assert data["attribution"]["dimensions"]["strategy"][0]["key"] == "2560"
+    assert data["attribution"]["dimensions"]["strategy"][0]["total"] == 3
+    quality_keys = {item["key"] for item in data["attribution"]["dimensions"]["data_quality"]}
+    assert {"primary", "fallback", "mock"} <= quality_keys
+    assert data["attribution"]["dimensions"]["source"][0]["drilldown"]["page"] == "picks"
 
 
 def test_report_summary_export_rejects_unknown_format(client):
@@ -830,6 +1206,578 @@ def test_market_sync_requires_admin_role(client):
     assert allowed.status_code == 202
     assert allowed_data["data"]["tenant_id"] == 1
     assert allowed_data["data"]["name"] == "market.sync"
+    task_id = allowed_data["data"]["id"]
+    from backend.infrastructure.tasks.queue import get_task
+    import time
+
+    for _ in range(60):
+        task = get_task(task_id) or {}
+        if task.get("status") in {"completed", "failed", "cancelled", "stale"}:
+            break
+        time.sleep(0.05)
+
+
+def test_market_sync_persists_local_bars_and_exposes_coverage(client):
+    from backend.application.sync_api_service import SyncApiService
+
+    result = SyncApiService()._sync_market_data(["000001"], "2026-05-01", "2026-05-04", "qfq")
+
+    assert result["synced_symbols"] == 1
+    assert result["persisted_bars"] >= 1
+    assert result["symbols"][0]["last_trade_date"] == "2026-05-04"
+
+    admin = login_as(client, "admin_market_coverage", role="admin")
+    response = admin.get("/api/v1/market-data/coverage?keyword=000001", headers=tenant_headers(admin))
+    data = response.get_json()["data"]
+
+    assert response.status_code == 200
+    assert data["summary"]["synced_symbols"] == 1
+    assert data["summary"]["last_trade_date"] == "2026-05-04"
+    assert data["items"][0]["symbol"] == "000001"
+    assert data["items"][0]["synced"] is True
+    assert data["items"][0]["last_trade_date"] == "2026-05-04"
+    assert data["items"][0]["last_trade_time"].startswith("2026-05-04T")
+    assert data["items"][0]["adjusts"] == ["qfq"]
+    assert data["items"][0]["intervals"] == ["1d"]
+
+    state_response = admin.get("/api/v1/market-data/sync/state?keyword=000001&interval=1d", headers=tenant_headers(admin))
+    state_data = state_response.get_json()["data"]
+
+    assert state_response.status_code == 200
+    assert state_data["summary"]["success_count"] == 1
+    assert state_data["items"][0]["status"] == "success"
+    assert state_data["items"][0]["adjust"] == "qfq"
+    assert state_data["items"][0]["interval"] == "1d"
+    assert state_data["items"][0]["coverage_end_date"] == "2026-05-04"
+
+
+def test_market_sync_keeps_adjust_variants_separate(client):
+    from backend.application.sync_api_service import SyncApiService
+    from backend.repositories import market_data_repo
+
+    service = SyncApiService()
+    service._sync_market_data(["000001"], "2026-05-01", "2026-05-04", "qfq")
+    service._sync_market_data(["000001"], "2026-05-01", "2026-05-04", "hfq")
+
+    qfq_bars = market_data_repo.get_daily_bars("000001", "2026-05-01", "2026-05-04", adjust="qfq")
+    hfq_bars = market_data_repo.get_daily_bars("000001", "2026-05-01", "2026-05-04", adjust="hfq")
+    coverage = market_data_repo.list_coverage(keyword="000001")
+
+    assert qfq_bars
+    assert hfq_bars
+    assert {bar["adjust"] for bar in qfq_bars} == {"qfq"}
+    assert {bar["adjust"] for bar in hfq_bars} == {"hfq"}
+    assert {"qfq", "hfq"}.issubset(set(coverage["items"][0]["adjusts"]))
+
+
+def test_market_snapshot_sync_persists_and_exposes_latest_quotes(client):
+    from backend.application.sync_api_service import SyncApiService
+
+    result = SyncApiService()._sync_quote_snapshots(["000001", "600519"])
+
+    assert result["snapshot_count"] == 2
+    assert result["persisted_snapshots"] == 2
+
+    admin = login_as(client, "admin_market_snapshots", role="admin")
+    response = admin.get("/api/v1/market-data/snapshots?keyword=000001", headers=tenant_headers(admin))
+    data = response.get_json()["data"]
+
+    assert response.status_code == 200
+    assert data["summary"]["snapshot_count"] == 2
+    assert data["items"][0]["symbol"] == "000001"
+    assert data["items"][0]["last_price"] is not None
+
+
+def test_market_sync_incremental_starts_from_local_latest_bar(client):
+    from datetime import date, timedelta
+    from decimal import Decimal
+
+    from backend.application.sync_api_service import SyncApiService
+    from backend.infrastructure.market_data.provider import DailyBar, HealthCheckResult, QuoteSnapshot, StockInfo
+    from backend.repositories import market_data_repo
+
+    class RecordingProvider:
+        name = "recording"
+
+        def __init__(self):
+            self.calls = []
+
+        def get_stock_list(self):
+            return [StockInfo("000001", "Ping An", "SZ")]
+
+        def get_daily_bars(self, symbol, start_date, end_date, adjust="qfq", interval="1d"):
+            self.calls.append((symbol, start_date, end_date, adjust, interval))
+            start = date.fromisoformat(start_date)
+            end = date.fromisoformat(end_date)
+            current = start
+            bars = []
+            while current <= end:
+                if current.weekday() < 5:
+                    bars.append(DailyBar(symbol, current, Decimal("10"), Decimal("11"), Decimal("9"), Decimal("10.5"), 100, Decimal("1050"), source=self.name))
+                current += timedelta(days=1)
+            return bars
+
+        def get_quote_snapshots(self, symbols):
+            return [QuoteSnapshot(symbol=symbol, trade_time="2026-05-08T09:30:00", last_price=Decimal("10"), open=Decimal("10"), high=Decimal("10"), low=Decimal("10"), source=self.name) for symbol in symbols]
+
+        def get_trading_dates(self, start_date, end_date):
+            return []
+
+        def health_check(self):
+            return HealthCheckResult(provider=self.name, ok=True)
+
+    market_data_repo.upsert_daily_bars(
+        [DailyBar("000001", date(2026, 5, 4), Decimal("10"), Decimal("11"), Decimal("9"), Decimal("10.5"), 100, Decimal("1050"), source="recording")],
+        adjust="qfq",
+    )
+    provider = RecordingProvider()
+    result = SyncApiService(provider)._sync_market_data(
+        ["000001"],
+        "",
+        "2026-05-08",
+        "qfq",
+        tenant_id=1,
+        incremental=True,
+        bootstrap_days=180,
+        correction_days=0,
+    )
+    states = market_data_repo.list_sync_states(1, keyword="000001")
+
+    assert provider.calls[0][1] == "2026-05-05"
+    assert result["incremental"] is True
+    assert result["symbols"][0]["window"]["latest_local_trade_date"] == "2026-05-04"
+    assert states["items"][0]["last_success_trade_date"] == "2026-05-08"
+
+
+def test_market_indicator_precompute_and_qfq_repair_tasks(client):
+    from datetime import date, timedelta
+    from decimal import Decimal
+
+    from backend.infrastructure.cache.redis_client import get_json
+    from backend.infrastructure.market_data.provider import DailyBar, StockInfo
+    from backend.infrastructure.tasks.queue import get_task
+    from backend.repositories import market_data_repo
+
+    market_data_repo.upsert_stocks([StockInfo("000001", "Ping An", "SZ")])
+    end = date.today()
+    start = end - timedelta(days=95)
+    bars = []
+    current = start
+    index = 0
+    while current <= end:
+        if current.weekday() < 5:
+            close = Decimal("10") + Decimal(index) / Decimal("100")
+            bars.append(DailyBar("000001", current, close, close + Decimal("0.1"), close - Decimal("0.1"), close, 1000 + index, close * Decimal("1000"), source="unit"))
+            index += 1
+        current += timedelta(days=1)
+    market_data_repo.upsert_daily_bars(bars, adjust="qfq")
+
+    admin = login_as(client, "admin_indicator_precompute", role="admin")
+    precompute_response = admin.post(
+        "/api/v1/market-data/indicators/precompute",
+        json={"symbols": ["000001"], "adjust": "qfq", "interval": "1d", "lookback_days": 180},
+        headers=tenant_headers(admin, include_csrf=True),
+    )
+    precompute_task = get_task(precompute_response.get_json()["data"]["id"])
+
+    assert precompute_response.status_code == 202
+    assert precompute_task["status"] == "completed"
+    assert precompute_task["result"]["schema_version"] == "indicator-precompute/2560/v1"
+    assert precompute_task["result"]["cached_symbols"] == 1
+    cache_index = get_json(precompute_task["result"]["cache_index_key"])
+    cache_item = get_json(precompute_task["result"]["items"][0]["cache_key"])
+    assert cache_index["symbols"] == ["000001"]
+    assert cache_item["ready"] is True
+    assert cache_item["ma25"] > 0
+    assert cache_item["ma60"] > 0
+
+    repair_response = admin.post(
+        "/api/v1/market-data/qfq/repair",
+        json={"symbols": ["000001"], "max_symbols": 1, "correction_days": 3},
+        headers=tenant_headers(admin, include_csrf=True),
+    )
+    repair_task = get_task(repair_response.get_json()["data"]["id"])
+
+    assert repair_response.status_code == 202
+    assert repair_task["name"] == "market.qfq.repair"
+    assert repair_task["status"] == "completed"
+    assert repair_task["result"]["adjust"] == "qfq"
+
+
+def test_paper_trading_service_creates_order_fill_and_position(client):
+    from datetime import datetime
+    from decimal import Decimal
+
+    from backend.application.paper_trading_service import PaperTradingService
+    from backend.infrastructure.market_data.provider import QuoteSnapshot
+    from backend.repositories import market_data_repo
+
+    market_data_repo.upsert_quote_snapshots(
+        [
+            QuoteSnapshot(
+                symbol="000001",
+                trade_time=datetime(2026, 5, 5, 9, 30),
+                last_price=Decimal("10"),
+                open=Decimal("10"),
+                high=Decimal("10.5"),
+                low=Decimal("9.8"),
+                source="mock",
+            )
+        ]
+    )
+    result = PaperTradingService().apply_strategy_scan(
+        1,
+        {"id": 1, "code": "2560"},
+        {
+            "market_data": {
+                "sample_symbols": [
+                    {
+                        "symbol": "000001",
+                        "trade_date": "2026-05-05",
+                        "signal": "缩量回踩",
+                        "signal_type": "WATCH",
+                        "signal_subtype": "volume_lock_shrink",
+                        "volume_phase": "lock_shrink",
+                        "score": 88,
+                        "total_score": 88,
+                        "ma60": 9.8,
+                    },
+                    {
+                        "symbol": "000002",
+                        "trade_date": "2026-05-05",
+                        "signal": "低分观察",
+                        "signal_subtype": "volume_impulse",
+                        "score": 60,
+                    },
+                ]
+            }
+        },
+        {"cash_per_trade": 10000, "max_paper_positions": 3, "min_signal_score": 80},
+    )
+
+    assert result["enabled"] is True
+    assert result["orders"][0]["side"] == "BUY"
+    assert result["skipped"][0]["reason"] == "score_below_threshold"
+    assert result["summary"]["active_positions"] == 1
+
+    authed = login_as(client, "editor_paper_trading")
+    positions = authed.get("/api/v1/trading/paper/positions", headers=tenant_headers(authed)).get_json()["data"]
+    orders = authed.get("/api/v1/trading/paper/orders", headers=tenant_headers(authed)).get_json()["data"]
+    signals = authed.get("/api/v1/trading/signals", headers=tenant_headers(authed)).get_json()["data"]
+
+    assert positions["items"][0]["symbol"] == "000001"
+    assert positions["items"][0]["quantity"] > 0
+    assert orders["items"][0]["symbol"] == "000001"
+    assert signals["items"][0]["symbol"] == "000001"
+    assert signals["items"][0]["score"] == 88
+    assert signals["items"][0]["payload"]["signal_subtype"] == "volume_lock_shrink"
+    assert signals["items"][0]["payload"]["volume_phase"] == "lock_shrink"
+    assert signals["items"][0]["payload"]["ma60"] == 9.8
+
+
+def test_paper_trading_persists_convertible_bond_interval_and_lot_size(client):
+    from datetime import datetime
+    from decimal import Decimal
+
+    from backend.application.paper_trading_service import PaperTradingService
+    from backend.infrastructure.market_data.provider import QuoteSnapshot
+    from backend.repositories import market_data_repo
+
+    market_data_repo.upsert_quote_snapshots(
+        [
+            QuoteSnapshot(
+                symbol="123001",
+                trade_time=datetime(2026, 5, 5, 10, 30),
+                last_price=Decimal("100"),
+                open=Decimal("99"),
+                high=Decimal("101"),
+                low=Decimal("98"),
+                source="mock",
+            )
+        ]
+    )
+    result = PaperTradingService().apply_strategy_scan(
+        1,
+        {"id": 2, "code": "bond_t0", "target_security_type": "convertible_bond", "bar_interval": "15m"},
+        {
+            "market_data": {
+                "sample_symbols": [
+                    {
+                        "symbol": "123001",
+                        "trade_date": "2026-05-05",
+                        "signal": "intraday bond match",
+                        "security_type": "convertible_bond",
+                        "bar_interval": "15m",
+                    }
+                ]
+            }
+        },
+        {"cash_per_trade": 1000, "max_paper_positions": 3},
+    )
+
+    assert result["enabled"] is True
+    assert result["orders"][0]["quantity"] == 10
+    assert result["orders"][0]["security_type"] == "convertible_bond"
+    assert result["orders"][0]["bar_interval"] == "15m"
+    assert result["summary"]["active_positions"] == 1
+
+    authed = login_as(client, "editor_paper_trading_bond")
+    positions = authed.get("/api/v1/trading/paper/positions", headers=tenant_headers(authed)).get_json()["data"]
+    signals = authed.get("/api/v1/trading/signals", headers=tenant_headers(authed)).get_json()["data"]
+
+    assert positions["items"][0]["security_type"] == "convertible_bond"
+    assert positions["items"][0]["bar_interval"] == "15m"
+    assert signals["items"][0]["security_type"] == "convertible_bond"
+    assert signals["items"][0]["bar_interval"] == "15m"
+
+
+def test_paper_trading_generates_technical_exit_from_local_ma60(client, monkeypatch):
+    from datetime import date, datetime, timedelta
+    from decimal import Decimal
+
+    from backend.application import paper_trading_service
+    from backend.application.paper_trading_service import PaperTradingService
+    from backend.infrastructure.market_data.provider import DailyBar, QuoteSnapshot
+    from backend.repositories import market_data_repo
+
+    class FixedDate(date):
+        @classmethod
+        def today(cls):
+            return cls(2026, 5, 5)
+
+    monkeypatch.setattr(paper_trading_service, "date", FixedDate)
+    service = PaperTradingService()
+    trade_time = datetime(2026, 5, 5, 10, 0)
+    market_data_repo.upsert_quote_snapshots(
+        [
+            QuoteSnapshot(
+                symbol="000001",
+                trade_time=trade_time,
+                last_price=Decimal("10"),
+                open=Decimal("10"),
+                high=Decimal("10.2"),
+                low=Decimal("9.8"),
+                source="mock",
+            )
+        ]
+    )
+    buy_result = service.apply_strategy_scan(
+        1,
+        {"id": 3, "code": "2560"},
+        {
+            "market_data": {
+                "sample_symbols": [
+                    {"symbol": "000001", "trade_date": "2026-05-05", "signal": "缩量回踩", "score": 88, "total_score": 88}
+                ]
+            }
+        },
+        {"cash_per_trade": 10000, "max_paper_positions": 3, "allow_t0": True},
+    )
+    account_id = buy_result["account"]["id"]
+    start = date(2026, 2, 5)
+    bars = []
+    for index in range(90):
+        trade_date = start + timedelta(days=index)
+        close = Decimal("10.00")
+        if index == 89:
+            close = Decimal("9.50")
+        bars.append(
+            DailyBar(
+                symbol="000001",
+                trade_date=trade_date,
+                open=close,
+                high=close + Decimal("0.10"),
+                low=close - Decimal("0.10"),
+                close=close,
+                volume=1000,
+                amount=close * Decimal("1000"),
+                source="unit",
+            )
+        )
+    market_data_repo.upsert_daily_bars(bars, adjust="qfq")
+    market_data_repo.upsert_quote_snapshots(
+        [
+            QuoteSnapshot(
+                symbol="000001",
+                trade_time=trade_time,
+                last_price=Decimal("9.5"),
+                open=Decimal("9.5"),
+                high=Decimal("9.6"),
+                low=Decimal("9.4"),
+                source="mock",
+            )
+        ]
+    )
+
+    exit_result = service.apply_strategy_scan(
+        1,
+        {"id": 3, "code": "2560"},
+        {"market_data": {"sample_symbols": []}},
+        {"paper_account_id": account_id, "allow_t0": True, "technical_exit_enabled": True},
+    )
+
+    assert exit_result["exits"]["orders"][0]["side"] == "SELL"
+    assert exit_result["exits"]["orders"][0]["reason"] == "ma60_breakdown"
+    assert exit_result["summary"]["active_positions"] == 0
+
+
+def test_strategy_production_run_blocks_without_realtime_snapshot(client):
+    authed = login_as(client, "editor_production_gate")
+    strategies_response = authed.get("/api/v1/strategies", headers=tenant_headers(authed))
+    strategy = next(item for item in strategies_response.get_json()["data"]["items"] if item["code"] == "2560")
+
+    response = authed.post(
+        f"/api/v1/strategies/{strategy['id']}/production-run",
+        json={"params": {"sample_size": 5}},
+        headers=tenant_headers(authed, include_csrf=True),
+    )
+    data = response.get_json()["data"]
+
+    assert response.status_code == 202
+    assert data["production_contract"]["data_policy"] == "local_snapshot_and_history_first"
+    assert data["production_contract"]["local_only_required"] is True
+    assert data["production_contract"]["security_type"] == "stock"
+    assert data["production_contract"]["bar_interval"] == "1d"
+    assert data["production_contract"]["adjust"] == "qfq"
+    assert data["production_contract"]["local_coverage"]["security_type"] == "stock"
+    assert data["params"]["local_only"] is True
+
+    from backend.infrastructure.tasks.queue import get_task
+
+    task = get_task(data["task"]["id"])
+    assert task["status"] == "completed"
+    assert task["result"]["production_status"] == "blocked_no_snapshot"
+    assert task["result"]["production_contract"]["local_only_required"] is True
+    assert task["result"]["scan_params"]["local_only"] is True
+    assert task["result"]["scan_params"]["local_coverage"]["security_type"] == "stock"
+    assert task["result"]["warnings"]
+
+
+def test_market_sync_all_uses_plan_and_child_batches(client):
+    admin = login_as(client, "admin_market_sync_plan", role="admin")
+    response = admin.post(
+        "/api/v1/market-data/sync",
+        json={
+            "symbols": ["all"],
+            "start_date": "2026-05-01",
+            "end_date": "2026-05-04",
+            "adjust": "qfq",
+            "batch_size": 2,
+        },
+        headers=tenant_headers(admin, include_csrf=True),
+    )
+    data = response.get_json()["data"]
+
+    assert response.status_code == 202
+    assert data["name"] == "market.sync.plan"
+
+    from backend.infrastructure.tasks.queue import get_task
+
+    task = get_task(data["id"])
+    assert task["status"] == "completed"
+    assert task["result"]["batch_count"] == 3
+    assert len(task["result"]["child_tasks"]) == 3
+
+
+def test_strategy_production_run_blocks_without_local_history(client):
+    from backend.application.sync_api_service import SyncApiService
+
+    SyncApiService()._sync_quote_snapshots(["000001"])
+    authed = login_as(client, "editor_production_history_gate")
+    strategies_response = authed.get("/api/v1/strategies", headers=tenant_headers(authed))
+    strategy = next(item for item in strategies_response.get_json()["data"]["items"] if item["code"] == "2560")
+
+    response = authed.post(
+        f"/api/v1/strategies/{strategy['id']}/production-run",
+        json={"params": {"sample_size": 5}},
+        headers=tenant_headers(authed, include_csrf=True),
+    )
+    data = response.get_json()["data"]
+
+    from backend.infrastructure.tasks.queue import get_task
+
+    task = get_task(data["task"]["id"])
+    assert task["status"] == "completed"
+    assert task["result"]["production_status"] == "blocked_no_history"
+    assert task["result"]["local_coverage"]["synced_symbols"] == 0
+    assert task["result"]["local_coverage"]["security_type"] == "stock"
+    assert task["result"]["local_coverage"]["adjust"] == "qfq"
+    assert task["result"]["scan_params"]["bar_interval"] == "1d"
+    assert task["result"]["scan_params"]["adjust"] == "qfq"
+    assert task["result"]["scan_params"]["local_only"] is True
+
+
+def test_strategy_production_run_carries_local_contract_into_scan_params(client, monkeypatch):
+    from datetime import date, datetime
+    from decimal import Decimal
+
+    from backend.application import strategy_api_service
+    from backend.infrastructure.market_data.provider import DailyBar, QuoteSnapshot
+    from backend.repositories import market_data_repo
+
+    class EmptyStrategy:
+        def scan(self, target_date=None):
+            return []
+
+    monkeypatch.setattr(strategy_api_service.registry, "get", lambda code: EmptyStrategy())
+    market_data_repo.upsert_quote_snapshots(
+        [
+            QuoteSnapshot(
+                "000001",
+                datetime(2026, 5, 5, 9, 30, 0),
+                Decimal("10"),
+                Decimal("10"),
+                Decimal("10.5"),
+                Decimal("9.8"),
+                source="unit",
+            )
+        ]
+    )
+    market_data_repo.upsert_daily_bars(
+        [
+            DailyBar(
+                "000001",
+                date(2026, 5, 4),
+                Decimal("10"),
+                Decimal("10.5"),
+                Decimal("9.8"),
+                Decimal("10.2"),
+                1000,
+                Decimal("10200"),
+                source="unit",
+            )
+        ],
+        adjust="qfq",
+    )
+    authed = login_as(client, "editor_production_scan_contract")
+    strategies_response = authed.get("/api/v1/strategies", headers=tenant_headers(authed))
+    strategy = next(item for item in strategies_response.get_json()["data"]["items"] if item["code"] == "2560")
+
+    response = authed.post(
+        f"/api/v1/strategies/{strategy['id']}/production-run",
+        json={"params": {"sample_size": 5, "bar_interval": "1d", "adjust": "qfq", "paper_trade": False}},
+        headers=tenant_headers(authed, include_csrf=True),
+    )
+    data = response.get_json()["data"]
+
+    from backend.infrastructure.tasks.queue import get_task
+
+    task = get_task(data["task"]["id"])
+    result = task["result"]
+
+    assert response.status_code == 202
+    assert data["params"]["local_only"] is True
+    assert data["production_contract"]["local_coverage"]["coverage_ratio"] == 1
+    assert result["production_status"] == "completed"
+    assert result["scan_params"]["security_type"] == "stock"
+    assert result["scan_params"]["bar_interval"] == "1d"
+    assert result["scan_params"]["adjust"] == "qfq"
+    assert result["scan_params"]["local_only"] is True
+    assert result["scan_params"]["disable_market_sample_fallback"] is True
+    assert result["scan_params"]["local_coverage"]["coverage_ratio"] == 1
+    assert result["scan"]["params"]["local_only"] is True
+    assert result["scan"]["params"]["local_coverage"]["security_type"] == "stock"
+    assert result["scan"]["market_data"]["sample_symbols"] == []
 
 
 
@@ -1075,31 +2023,11 @@ def test_strategy_backtest_api_returns_structured_summary_and_audit(client, monk
     assert logs["items"][0]["integrity_hash"]
 
 
-def test_strategy_backtest_builds_real_benchmark_curve_from_market_data(client, monkeypatch):
-    from datetime import date
-    from decimal import Decimal
-
+def test_strategy_backtest_uses_synthetic_benchmark_when_local_missing(client, monkeypatch):
     from backend.application import backtest_api_service
-    from backend.infrastructure.market_data.provider import DailyBar
-
-    class FakeBenchmarkProvider:
-        name = "akshare"
-
-        def usage_metadata(self):
-            return {
-                "actual_provider": "akshare",
-                "data_quality": "primary",
-                "fallback_used": False,
-            }
-
-        def get_daily_bars(self, symbol, start_date, end_date, adjust="qfq"):
-            return [
-                DailyBar(symbol=symbol, trade_date=date(2026, 1, 1), open=Decimal("10"), high=Decimal("10"), low=Decimal("10"), close=Decimal("10"), volume=1, amount=Decimal("10"), source="akshare"),
-                DailyBar(symbol=symbol, trade_date=date(2026, 1, 2), open=Decimal("11"), high=Decimal("11"), low=Decimal("11"), close=Decimal("11"), volume=1, amount=Decimal("11"), source="akshare"),
-                DailyBar(symbol=symbol, trade_date=date(2026, 1, 5), open=Decimal("12"), high=Decimal("12"), low=Decimal("12"), close=Decimal("12"), volume=1, amount=Decimal("12"), source="akshare"),
-            ]
 
     def fake_run_backtest(strategy_code, start_date, end_date, *, holding_days=5, max_positions_per_day=3):
+        assert os.environ.get("MARKET_DATA_LOCAL_ONLY") == "1"
         return {
             "success": True,
             "results": {
@@ -1113,7 +2041,6 @@ def test_strategy_backtest_builds_real_benchmark_curve_from_market_data(client, 
         }
 
     monkeypatch.setattr(backtest_api_service, "run_backtest", fake_run_backtest)
-    monkeypatch.setattr(backtest_api_service, "create_fallback_market_data_provider", lambda: FakeBenchmarkProvider())
     authed = login_as(client, "editor_real_benchmark")
 
     response = authed.post(
@@ -1125,17 +2052,59 @@ def test_strategy_backtest_builds_real_benchmark_curve_from_market_data(client, 
     data_contract = response.get_json()["data"]["summary"]["data_contract"]
 
     assert response.status_code == 202
-    assert benchmark["source"] == "akshare"
-    assert benchmark["data_quality"] == "primary"
+    assert benchmark["source"] == "synthetic"
+    assert benchmark["data_quality"] == "derived"
+    assert benchmark["fallback_used"] is True
+    assert benchmark["message"] == "local benchmark data unavailable; external provider disabled for backtest"
+    assert data_contract["benchmark_source"] == "synthetic"
+    assert data_contract["backtest_data_policy"] == "local_only_no_external_provider"
+    assert data_contract["external_provider_disabled"] is True
+    assert data_contract["mock_or_fallback"] is True
+    assert benchmark["total_return"] == 0.0
+    assert benchmark["curve"][-1]["return_pct"] == 0.0
+
+
+def test_strategy_backtest_uses_local_data_center_before_external_provider(client, monkeypatch):
+    from datetime import date
+    from decimal import Decimal
+
+    from backend.application import backtest_api_service
+    from backend.infrastructure.market_data.provider import DailyBar
+    from backend.repositories import market_data_repo
+
+    def fake_run_backtest(strategy_code, start_date, end_date, *, holding_days=5, max_positions_per_day=3):
+        return {
+            "success": True,
+            "results": {
+                "total_trades": 1,
+                "win_rate": 1,
+                "total_return": 0.01,
+                "trades": [{"code": "000001", "entry_price": 10, "exit_price": 11, "return_pct": 0.1}],
+            },
+            "meta": {"strategy_code": strategy_code, "strategy_name": "2560", "start_date": start_date, "end_date": end_date},
+        }
+
+    market_data_repo.upsert_daily_bars(
+        [
+            DailyBar("000300", date(2026, 1, 1), Decimal("10"), Decimal("10"), Decimal("10"), Decimal("10"), 100, Decimal("1000"), source="mootdx"),
+            DailyBar("000300", date(2026, 1, 31), Decimal("11"), Decimal("11"), Decimal("11"), Decimal("11"), 100, Decimal("1100"), source="mootdx"),
+        ],
+        adjust="qfq",
+    )
+    monkeypatch.setattr(backtest_api_service, "run_backtest", fake_run_backtest)
+    authed = login_as(client, "editor_local_benchmark")
+
+    response = authed.post(
+        "/api/v1/strategies/2560/backtest",
+        json={"start_date": "2026-01-01", "end_date": "2026-01-31", "benchmark_code": "000300"},
+        headers=tenant_headers(authed, include_csrf=True),
+    )
+    benchmark = response.get_json()["data"]["summary"]["benchmark"]
+
+    assert response.status_code == 202
+    assert benchmark["source"] == "local:mootdx"
+    assert benchmark["message"] == "benchmark curve built from local data center"
     assert benchmark["fallback_used"] is False
-    assert benchmark["bars_total"] == 3
-    assert benchmark["usable_bars"] == 3
-    assert benchmark["missing_bar_ratio"] == 0
-    assert data_contract["benchmark_source"] == "akshare"
-    assert data_contract["trading_calendar_source"] == "akshare"
-    assert data_contract["mock_or_fallback"] is False
-    assert benchmark["total_return"] == 0.2
-    assert benchmark["curve"][-1]["return_pct"] == 0.2
 
 
 def test_strategy_backtest_rejects_invalid_date(client):
@@ -1401,6 +2370,13 @@ def test_scan_explanation_includes_strategy_signal_fields():
             "total_score": 88,
             "vol_ratio": 1.8,
             "ma25": 10.1,
+            "ma60": 9.8,
+            "ma25_slope_5": 0.4,
+            "ma60_slope_10": 0.2,
+            "vr5_60": 1.3,
+            "vr1_60": 1.9,
+            "volume_phase": "active",
+            "signal_subtype": "ma25_breakout",
         },
         {"actual_provider": "mock", "provider_chain": ["mock"], "fallback_used": False, "data_quality": "mock"},
         "2560",
@@ -1412,9 +2388,88 @@ def test_scan_explanation_includes_strategy_signal_fields():
     assert "策略信号：站上25日均线" in explanation["reasons"]
     assert explanation["indicators"]["risk_score"] == 72
     assert explanation["indicators"]["vol_ratio"] == 1.8
+    assert explanation["indicators"]["ma60"] == 9.8
+    assert explanation["indicators"]["ma25_slope_5"] == 0.4
+    assert explanation["indicators"]["ma60_slope_10"] == 0.2
+    assert explanation["indicators"]["vr5_60"] == 1.3
+    assert explanation["indicators"]["vr1_60"] == 1.9
+    assert explanation["indicators"]["volume_phase"] == "active"
+    assert explanation["indicators"]["signal_subtype"] == "ma25_breakout"
     assert explanation["indicator_groups"]["technical"]["ma25"] == 10.1
+    assert explanation["indicator_groups"]["technical"]["ma60"] == 9.8
     assert "action_suggestion" in explanation
     assert "策略风险偏高" in explanation["risk_tags"]
+
+
+def test_scan_explanation_accepts_2560_signal_sections():
+    from backend.application.scan_api_service import ScanApiService
+
+    service = ScanApiService()
+    explanation = service._build_explanation(
+        {
+            "schema_version": "strategy-signal/2560/v1",
+            "signal": "25/60共振",
+            "indicators": {
+                "ma25": 10.2,
+                "ma60": 9.7,
+                "ma25_slope_5": 0.35,
+                "ma60_slope_10": 0.18,
+                "vr5_60": 1.4,
+                "vr1_60": 2.1,
+            },
+            "phase": {
+                "volume_phase": "expansion",
+                "signal_subtype": "resonance",
+            },
+            "risk": {"risk_score": 22},
+            "data": {"score": 82, "total_score": 86},
+        },
+        {"actual_provider": "mock", "provider_chain": ["mock"], "fallback_used": False, "data_quality": "primary"},
+        "2560",
+    )
+
+    assert explanation["score"] == 86
+    assert explanation["indicators"]["score"] == 82
+    assert explanation["indicators"]["total_score"] == 86
+    assert explanation["indicators"]["ma60"] == 9.7
+    assert explanation["indicators"]["ma25_slope_5"] == 0.35
+    assert explanation["indicators"]["ma60_slope_10"] == 0.18
+    assert explanation["indicators"]["vr5_60"] == 1.4
+    assert explanation["indicators"]["vr1_60"] == 2.1
+    assert explanation["indicator_groups"]["signal"]["signal_subtype"] == "resonance"
+    assert explanation["indicator_groups"]["technical"]["volume_phase"] == "expansion"
+    assert explanation["indicator_groups"]["risk"]["risk_score"] == 22
+
+
+def test_scan_normalized_strategy_pick_preserves_2560_signal_sections():
+    from backend.application.scan_api_service import ScanApiService
+
+    service = ScanApiService()
+    normalized = service._normalize_strategy_pick(
+        {
+            "code": "000001",
+            "name": "Ping An",
+            "signal": "25/60共振",
+            "indicators": {
+                "ma60": 9.7,
+                "ma25_slope_5": 0.35,
+                "ma60_slope_10": 0.18,
+                "vr5_60": 1.4,
+                "vr1_60": 2.1,
+            },
+            "phase": {"volume_phase": "expansion", "signal_subtype": "resonance"},
+            "risk": {"risk_score": 22},
+            "data": {"score": 82, "total_score": 86},
+        },
+        {"actual_provider": "mock", "provider_chain": ["mock"], "fallback_used": False, "data_quality": "primary"},
+        "2560",
+    )
+
+    assert normalized["ma60"] == 9.7
+    assert normalized["volume_phase"] == "expansion"
+    assert normalized["signal_subtype"] == "resonance"
+    assert normalized["explanation"]["indicators"]["total_score"] == 86
+    assert normalized["explanation"]["indicator_groups"]["technical"]["vr5_60"] == 1.4
 
 
 def test_audit_log_integrity_hash_is_stable_for_same_payload():

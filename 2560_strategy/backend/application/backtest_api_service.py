@@ -2,19 +2,36 @@
 
 from __future__ import annotations
 
+import os
+from contextlib import contextmanager
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
 from backend.application.audit_log_service import audit_log_service
 from backend.core.errors import AppError, NotFoundError
-from backend.infrastructure.market_data.factory import create_fallback_market_data_provider
 from backend.services.strategy_pool_service import get_strategy_backtest, run_backtest
+from backend.repositories import market_data_repo
 from backend.strategies import registry
+
+SECURITY_TYPES = {"stock", "etf", "index", "convertible_bond", "bond", "fund", "b_share"}
+BAR_INTERVALS = {"1d", "15m", "30m", "5m", "1h", "1m"}
 
 
 class BacktestApiService:
     """Builds validated, API-friendly strategy backtest responses."""
+
+    @contextmanager
+    def _local_market_data_only(self):
+        original = os.environ.get("MARKET_DATA_LOCAL_ONLY")
+        os.environ["MARKET_DATA_LOCAL_ONLY"] = "1"
+        try:
+            yield
+        finally:
+            if original is None:
+                os.environ.pop("MARKET_DATA_LOCAL_ONLY", None)
+            else:
+                os.environ["MARKET_DATA_LOCAL_ONLY"] = original
 
     def _validate_date(self, value: str | None, field: str) -> str:
         if not value:
@@ -56,6 +73,13 @@ class BacktestApiService:
             raise AppError(f"invalid {field}, expected {minimum}-{maximum}")
         return normalized
 
+    def _validate_choice(self, value: Any, field: str, *, default: str, allowed: set[str], aliases: dict[str, str] | None = None) -> str:
+        text = str(value or default).strip().lower()
+        text = (aliases or {}).get(text, text)
+        if text not in allowed:
+            raise AppError(f"invalid {field}, expected one of {sorted(allowed)}")
+        return text
+
     def _safe_float(self, value: Any, default: float = 0.0) -> float:
         try:
             if value is None:
@@ -79,6 +103,64 @@ class BacktestApiService:
             return value.strip().lower() in {"1", "true", "yes", "y", "on", "limit", "limited", "suspended"}
         return bool(value)
 
+    def _metadata_sources(self, trade: dict[str, Any]) -> list[dict[str, Any]]:
+        sources: list[dict[str, Any]] = []
+        for key in ("metadata", "metadata_json", "phase", "indicators", "risk", "data"):
+            value = trade.get(key)
+            if isinstance(value, dict):
+                sources.append(value)
+        sources.append(trade)
+        return sources
+
+    def _metadata_value(self, trade: dict[str, Any], keys: tuple[str, ...]) -> Any:
+        for source in self._metadata_sources(trade):
+            for key in keys:
+                if key in source and source.get(key) not in (None, ""):
+                    return source.get(key)
+        return None
+
+    def _extract_trade_metadata(self, trade: dict[str, Any]) -> dict[str, Any]:
+        fields = {
+            "pullback_days": (
+                "pullback_days",
+                "retracement_days",
+                "callback_days",
+                "backtest_pullback_days",
+                "days_since_pullback",
+            ),
+            "volume_shrink_ratio": (
+                "volume_shrink_ratio",
+                "shrink_ratio",
+                "vol_shrink_ratio",
+                "volume_ratio",
+                "vol_ratio",
+                "vr1_60",
+                "vr5_60",
+            ),
+            "drawdown_depth": (
+                "drawdown_depth",
+                "pullback_depth",
+                "retracement_depth",
+                "drawdown_pct",
+                "max_drawdown",
+                "dist25",
+            ),
+            "market_sentiment": (
+                "market_sentiment",
+                "sentiment",
+                "market_emotion",
+                "emotion",
+                "market_mood",
+                "risk_level",
+            ),
+        }
+        extracted = {}
+        for field, keys in fields.items():
+            value = self._metadata_value(trade, keys)
+            if value not in (None, ""):
+                extracted[field] = value
+        return extracted
+
     def _risk_level(self, *, max_drawdown: float, win_rate: float, total_trades: int) -> str:
         if total_trades < 3 or max_drawdown >= 0.25 or win_rate < 0.35:
             return "high"
@@ -92,6 +174,10 @@ class BacktestApiService:
         return round(min(1.0, sample_score + quality_score), 2)
 
     def _normalize_trade(self, trade: dict[str, Any], index: int) -> dict[str, Any]:
+        phase = trade.get("phase") if isinstance(trade.get("phase"), dict) else {}
+        signal_subtype = trade.get("signal_subtype") or phase.get("signal_subtype")
+        volume_phase = trade.get("volume_phase") or phase.get("volume_phase")
+        metadata = self._extract_trade_metadata(trade)
         return {
             "index": index + 1,
             "strategy_code": trade.get("strategy_code"),
@@ -99,6 +185,8 @@ class BacktestApiService:
             "code": trade.get("code"),
             "name": trade.get("name"),
             "signal": trade.get("signal") or trade.get("reason_tag"),
+            "signal_subtype": signal_subtype,
+            "volume_phase": volume_phase,
             "signal_date": trade.get("signal_date"),
             "entry_date": trade.get("entry_date"),
             "exit_date": trade.get("exit_date"),
@@ -110,14 +198,21 @@ class BacktestApiService:
             "score": self._safe_float(trade.get("score")),
             "execution_flags": {
                 "suspended": self._has_flag(trade, ("suspended", "is_suspended", "halted", "is_halted")),
-                "limit_up": self._has_flag(trade, ("limit_up", "is_limit_up", "entry_limit_up", "is_entry_limit_up")),
-                "limit_down": self._has_flag(trade, ("limit_down", "is_limit_down", "exit_limit_down", "is_exit_limit_down")),
+                "limit_up": self._has_flag(trade, ("limit_up", "is_limit_up", "entry_limit_up", "is_entry_limit_up", "limit_up_buy")),
+                "limit_down": self._has_flag(trade, ("limit_down", "is_limit_down", "exit_limit_down", "is_exit_limit_down", "limit_down_sell")),
+                "t_plus_one": self._has_flag(trade, ("t_plus_one", "t_plus_1", "t1_execution", "next_day_entry")),
             },
+            "metadata": metadata,
+            "pullback_days": metadata.get("pullback_days"),
+            "volume_shrink_ratio": metadata.get("volume_shrink_ratio"),
+            "drawdown_depth": metadata.get("drawdown_depth"),
+            "market_sentiment": metadata.get("market_sentiment"),
             "note": trade.get("note") or "",
         }
 
     def _has_flag(self, trade: dict[str, Any], keys: tuple[str, ...]) -> bool:
-        return any(self._safe_bool(trade.get(key)) for key in keys)
+        flags = trade.get("execution_flags") if isinstance(trade.get("execution_flags"), dict) else {}
+        return any(self._safe_bool(trade.get(key)) or self._safe_bool(flags.get(key)) for key in keys)
 
     def _has_invalid_price(self, raw_trade: dict[str, Any]) -> bool:
         price_keys = ("entry_price", "exit_price")
@@ -132,17 +227,79 @@ class BacktestApiService:
                 return True
         return False
 
-    def _constraint_reason(self, raw_trade: dict[str, Any], normalized_trade: dict[str, Any], *, enabled: bool) -> str | None:
+    def _constraint_reason(self, raw_trade: dict[str, Any], normalized_trade: dict[str, Any], *, enabled: bool) -> tuple[str, str] | None:
         flags = normalized_trade.get("execution_flags") or {}
         if self._has_invalid_price(raw_trade):
-            return "invalid_price"
+            return ("invalid_price", "invalid_price")
         if enabled and flags.get("suspended"):
-            return "suspended"
+            return ("suspended", "suspended_trade")
         if enabled and flags.get("limit_up"):
-            return "limit_up"
+            return ("limit_up", "limit_up_buy")
         if enabled and flags.get("limit_down"):
-            return "limit_down"
+            return ("limit_down", "limit_down_sell")
         return None
+
+    def _normalize_skipped_trade(self, raw_trade: dict[str, Any], index: int) -> dict[str, Any]:
+        metadata = self._extract_trade_metadata(raw_trade)
+        return {
+            "index": index + 1,
+            "code": raw_trade.get("code"),
+            "name": raw_trade.get("name"),
+            "signal_date": raw_trade.get("signal_date"),
+            "entry_date": raw_trade.get("entry_date") or raw_trade.get("intended_entry_date"),
+            "exit_date": raw_trade.get("exit_date") or raw_trade.get("intended_exit_date"),
+            "reason": raw_trade.get("reason") or raw_trade.get("skip_reason") or "skipped",
+            "action": raw_trade.get("action") or raw_trade.get("blocked_action"),
+            "metadata": metadata,
+        }
+
+    def _skipped_reason(self, skipped_trade: dict[str, Any]) -> tuple[str, str]:
+        reason = str(skipped_trade.get("reason") or "").strip().lower()
+        action = str(skipped_trade.get("action") or "").strip().lower()
+        text = f"{reason} {action}"
+        if "invalid" in text or "price" in text:
+            return ("invalid_price", "invalid_price")
+        if "suspend" in text or "halt" in text:
+            return ("suspended", "suspended_trade")
+        if "limit_up" in text or "up_buy" in text:
+            return ("limit_up", "limit_up_buy")
+        if "limit_down" in text or "down_sell" in text:
+            return ("limit_down", "limit_down_sell")
+        return ("invalid_price", "invalid_price")
+
+    def _t_plus_one_stats(self, raw_trades: list[dict[str, Any]], skipped_trades: list[dict[str, Any]]) -> dict[str, Any]:
+        candidates = raw_trades + skipped_trades
+        executed_count = 0
+        same_day_count = 0
+        unknown_count = 0
+        samples = []
+        for raw_trade in candidates:
+            signal_date = raw_trade.get("signal_date")
+            entry_date = raw_trade.get("entry_date") or raw_trade.get("intended_entry_date")
+            t1_flag = self._has_flag(raw_trade, ("t_plus_one", "t_plus_1", "t1_execution", "next_day_entry"))
+            if t1_flag or (signal_date and entry_date and str(entry_date) > str(signal_date)):
+                executed_count += 1
+                if len(samples) < 20:
+                    samples.append(
+                        {
+                            "code": raw_trade.get("code"),
+                            "signal_date": signal_date,
+                            "entry_date": entry_date,
+                        }
+                    )
+            elif signal_date and entry_date and str(entry_date) == str(signal_date):
+                same_day_count += 1
+            else:
+                unknown_count += 1
+        return {
+            "enabled": True,
+            "mode": "next_trading_day_entry",
+            "candidate_count": len(candidates),
+            "executed_count": executed_count,
+            "same_day_count": same_day_count,
+            "unknown_count": unknown_count,
+            "samples": samples,
+        }
 
     def _apply_trade_constraints(
         self,
@@ -150,32 +307,53 @@ class BacktestApiService:
         trades: list[dict[str, Any]],
         *,
         enabled: bool,
+        skipped_trades: list[dict[str, Any]] | None = None,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        skipped_trades = skipped_trades or []
         reasons = {"invalid_price": 0, "suspended": 0, "limit_up": 0, "limit_down": 0}
+        blocked_actions = {"invalid_price": 0, "suspended_trade": 0, "limit_up_buy": 0, "limit_down_sell": 0}
         filtered: list[dict[str, Any]] = []
         excluded: list[dict[str, Any]] = []
 
         for raw_trade, trade in zip(raw_trades, trades):
-            reason = self._constraint_reason(raw_trade, trade, enabled=enabled)
-            if reason:
+            constraint = self._constraint_reason(raw_trade, trade, enabled=enabled)
+            if constraint:
+                reason, action = constraint
                 reasons[reason] += 1
+                blocked_actions[action] += 1
                 excluded.append(
                     {
                         "index": trade.get("index"),
                         "code": trade.get("code"),
                         "name": trade.get("name"),
                         "reason": reason,
+                        "action": action,
                     }
                 )
                 continue
             filtered.append(trade)
 
+        normalized_skipped = [self._normalize_skipped_trade(trade, index + len(raw_trades)) for index, trade in enumerate(skipped_trades)]
+        for skipped in normalized_skipped:
+            reason, action = self._skipped_reason(skipped)
+            reasons[reason] += 1
+            blocked_actions[action] += 1
+            excluded.append({**skipped, "reason": reason, "action": action})
+
         excluded_count = len(excluded)
+        candidate_count = len(raw_trades) + len(skipped_trades)
+        excluded_ratio = round(excluded_count / candidate_count, 6) if candidate_count else 0.0
         return filtered, {
             "enabled": enabled,
             "included_count": len(filtered),
             "excluded_count": excluded_count,
+            "candidate_count": candidate_count,
+            "skipped_count": excluded_count,
+            "excluded_ratio": excluded_ratio,
+            "skipped_ratio": excluded_ratio,
             "reasons": reasons,
+            "blocked_actions": blocked_actions,
+            "t_plus_one": self._t_plus_one_stats(raw_trades, skipped_trades),
             "excluded_samples": excluded[:20],
         }
 
@@ -213,15 +391,158 @@ class BacktestApiService:
             "profit_factor": round(gross_profit / gross_loss, 6) if gross_loss > 0 else (999.0 if gross_profit > 0 else 0.0),
         }
 
+    def _signal_attribution(self, trades: list[dict[str, Any]]) -> dict[str, Any]:
+        groups: dict[str, dict[str, Any]] = {}
+        for trade in trades:
+            subtype = str(trade.get("signal_subtype") or trade.get("signal") or "unknown")
+            bucket = groups.setdefault(
+                subtype,
+                {
+                    "signal_subtype": subtype,
+                    "trade_count": 0,
+                    "win_count": 0,
+                    "loss_count": 0,
+                    "return_sum": 0.0,
+                    "avg_return": 0.0,
+                    "max_drawdown": 0.0,
+                    "volume_phases": {},
+                },
+            )
+            return_pct = self._safe_float(trade.get("return_pct"))
+            bucket["trade_count"] += 1
+            bucket["win_count"] += 1 if return_pct > 0 else 0
+            bucket["loss_count"] += 1 if return_pct <= 0 else 0
+            bucket["return_sum"] = round(bucket["return_sum"] + return_pct, 6)
+            phase = str(trade.get("volume_phase") or "unknown")
+            bucket["volume_phases"][phase] = bucket["volume_phases"].get(phase, 0) + 1
+
+        for bucket in groups.values():
+            count = bucket["trade_count"]
+            returns = [self._safe_float(item.get("return_pct")) for item in trades if str(item.get("signal_subtype") or item.get("signal") or "unknown") == bucket["signal_subtype"]]
+            bucket["win_rate"] = round(bucket["win_count"] / count, 6) if count else 0.0
+            bucket["avg_return"] = round(bucket["return_sum"] / count, 6) if count else 0.0
+            bucket["max_drawdown"] = self._summarize_returns(returns).get("max_drawdown", 0.0)
+        items = sorted(groups.values(), key=lambda item: (-item["trade_count"], item["signal_subtype"]))
+        return {"schema_version": "signal-attribution/v1", "items": items}
+
+    def _holding_day_distribution(self, trades: list[dict[str, Any]]) -> dict[str, Any]:
+        groups: dict[int, dict[str, Any]] = {}
+        for trade in trades:
+            holding_days = max(0, self._safe_int(trade.get("holding_days")))
+            bucket = groups.setdefault(
+                holding_days,
+                {
+                    "holding_days": holding_days,
+                    "trade_count": 0,
+                    "win_count": 0,
+                    "return_sum": 0.0,
+                    "avg_return": 0.0,
+                    "win_rate": 0.0,
+                },
+            )
+            return_pct = self._safe_float(trade.get("return_pct"))
+            bucket["trade_count"] += 1
+            bucket["win_count"] += 1 if return_pct > 0 else 0
+            bucket["return_sum"] = round(bucket["return_sum"] + return_pct, 6)
+
+        for bucket in groups.values():
+            count = bucket["trade_count"]
+            bucket["win_rate"] = round(bucket["win_count"] / count, 6) if count else 0.0
+            bucket["avg_return"] = round(bucket["return_sum"] / count, 6) if count else 0.0
+
+        return {
+            "schema_version": "holding-day-distribution/v1",
+            "items": [groups[key] for key in sorted(groups)],
+        }
+
+    def _numeric_bucket(self, value: Any, buckets: tuple[tuple[float, str], ...], default: str = "unknown") -> str:
+        try:
+            number = abs(float(value))
+        except (TypeError, ValueError):
+            return default
+        for upper_bound, label in buckets:
+            if number <= upper_bound:
+                return label
+        return buckets[-1][1] if buckets else default
+
+    def _attribution_bucket(self, field: str, value: Any) -> str:
+        if value in (None, ""):
+            return "unknown"
+        if field == "pullback_days":
+            return str(max(0, self._safe_int(value)))
+        if field == "volume_shrink_ratio":
+            return self._numeric_bucket(
+                value,
+                (
+                    (0.5, "<=0.50"),
+                    (0.8, "0.50-0.80"),
+                    (1.0, "0.80-1.00"),
+                    (float("inf"), ">1.00"),
+                ),
+            )
+        if field == "drawdown_depth":
+            return self._numeric_bucket(
+                value,
+                (
+                    (0.03, "<=3%"),
+                    (0.08, "3%-8%"),
+                    (0.15, "8%-15%"),
+                    (float("inf"), ">15%"),
+                ),
+            )
+        return str(value).strip().lower() or "unknown"
+
+    def _aggregate_dimension(self, trades: list[dict[str, Any]], field: str) -> dict[str, Any]:
+        groups: dict[str, dict[str, Any]] = {}
+        for trade in trades:
+            value = trade.get(field)
+            bucket_name = self._attribution_bucket(field, value)
+            bucket = groups.setdefault(
+                bucket_name,
+                {
+                    "bucket": bucket_name,
+                    "trade_count": 0,
+                    "win_count": 0,
+                    "loss_count": 0,
+                    "return_sum": 0.0,
+                    "avg_return": 0.0,
+                    "win_rate": 0.0,
+                },
+            )
+            return_pct = self._safe_float(trade.get("return_pct"))
+            bucket["trade_count"] += 1
+            bucket["win_count"] += 1 if return_pct > 0 else 0
+            bucket["loss_count"] += 1 if return_pct <= 0 else 0
+            bucket["return_sum"] = round(bucket["return_sum"] + return_pct, 6)
+
+        for bucket in groups.values():
+            count = bucket["trade_count"]
+            bucket["win_rate"] = round(bucket["win_count"] / count, 6) if count else 0.0
+            bucket["avg_return"] = round(bucket["return_sum"] / count, 6) if count else 0.0
+
+        items = sorted(groups.values(), key=lambda item: (-item["trade_count"], item["bucket"]))
+        return {"field": field, "items": items}
+
+    def _factor_attribution(self, trades: list[dict[str, Any]]) -> dict[str, Any]:
+        return {
+            "schema_version": "backtest-attribution/v1",
+            "pullback_days": self._aggregate_dimension(trades, "pullback_days"),
+            "volume_shrink_ratio": self._aggregate_dimension(trades, "volume_shrink_ratio"),
+            "drawdown_depth": self._aggregate_dimension(trades, "drawdown_depth"),
+            "market_sentiment": self._aggregate_dimension(trades, "market_sentiment"),
+        }
+
     def _normalize_summary(self, result: dict[str, Any], *, include_trades: bool, trade_limit: int, request_options: dict[str, Any] | None = None) -> dict[str, Any]:
         request_options = request_options or {}
         raw_summary = result.get("results") or {}
         raw_trades = [trade for trade in (raw_summary.get("trades") or []) if isinstance(trade, dict)]
+        raw_skipped_trades = [trade for trade in (raw_summary.get("skipped_trades") or []) if isinstance(trade, dict)]
         trades = [self._normalize_trade(trade, index) for index, trade in enumerate(raw_trades)]
         trades, execution_constraints = self._apply_trade_constraints(
             raw_trades,
             trades,
             enabled=bool(request_options.get("limit_up_down_guard", True)),
+            skipped_trades=raw_skipped_trades,
         )
         returns = [self._safe_float(trade.get("return_pct")) for trade in trades]
         winning_returns = [value for value in returns if value > 0]
@@ -260,6 +581,8 @@ class BacktestApiService:
             benchmark_total_return=benchmark_total_return,
             net_total_return=net_total_return,
         )
+        signal_attribution = self._signal_attribution(trades)
+        factor_attribution = self._factor_attribution(trades)
 
         normalized = {
             **raw_summary,
@@ -279,6 +602,7 @@ class BacktestApiService:
             "avg_loss_return": self._safe_float(raw_summary.get("avg_loss_return")),
             "risk_level": risk_level,
             "raw_trade_count": len(raw_trades),
+            "skipped_trade_count": len(raw_skipped_trades),
             "execution_constraints": execution_constraints,
             "return_distribution": {
                 "win_count": len(winning_returns),
@@ -287,6 +611,7 @@ class BacktestApiService:
                 "positive_return_sum": round(sum(winning_returns), 6),
                 "negative_return_sum": round(sum(losing_returns), 6),
             },
+            "holding_day_distribution": self._holding_day_distribution(trades),
             "equity_curve": equity_curve,
             "benchmark": {
                 "code": benchmark_code,
@@ -306,13 +631,19 @@ class BacktestApiService:
                 "benchmark_source": benchmark["source"],
                 "benchmark_data_quality": benchmark["data_quality"],
                 "benchmark_fallback_used": benchmark["fallback_used"],
-                "adjust": "qfq",
+                "backtest_data_policy": "local_only_no_external_provider",
+                "external_provider_disabled": True,
+                "adjust": request_options.get("adjust") or "qfq",
+                "security_type": request_options.get("security_type") or "stock",
+                "bar_interval": request_options.get("bar_interval") or "1d",
                 "trading_calendar_source": benchmark["source"] if benchmark["source"] != "synthetic" else "strategy_sample",
                 "missing_bar_ratio": benchmark.get("missing_bar_ratio"),
                 "mock_or_fallback": benchmark["fallback_used"] or benchmark["data_quality"] == "mock",
             },
             "portfolio_curve": portfolio_curve,
             "risk_attribution": risk_attribution,
+            "signal_attribution": signal_attribution,
+            "factor_attribution": factor_attribution,
             "experiment": {
                 "label": request_options.get("experiment_label") or "current",
                 "params": {
@@ -322,6 +653,9 @@ class BacktestApiService:
                     "slippage_bps": request_options.get("slippage_bps"),
                     "limit_up_down_guard": request_options.get("limit_up_down_guard"),
                     "benchmark_code": benchmark_code,
+                    "security_type": request_options.get("security_type"),
+                    "bar_interval": request_options.get("bar_interval"),
+                    "adjust": request_options.get("adjust"),
                 },
             },
             "trade_page": {
@@ -359,40 +693,49 @@ class BacktestApiService:
             return fallback
         if not start_date or not end_date:
             return fallback
-        try:
-            provider = create_fallback_market_data_provider()
-            bars = provider.get_daily_bars(code, start_date, end_date)
-            closes = [bar.close for bar in bars if bar.close is not None and Decimal(bar.close) > 0]
-            if len(closes) < 2:
-                return {
-                    **fallback,
-                    "message": "benchmark provider returned insufficient bars",
-                    "bars_total": len(bars),
-                    "usable_bars": len(closes),
-                    "missing_bar_ratio": self._missing_bar_ratio(len(bars), len(closes)),
-                }
-            first_close = Decimal(closes[0])
-            curve = []
-            target_points = max(2, points or len(closes))
-            for index in range(target_points):
-                source_index = min(len(closes) - 1, round(index * (len(closes) - 1) / (target_points - 1)))
-                close = Decimal(closes[source_index])
-                return_pct = float((close / first_close) - Decimal("1"))
-                curve.append({"step": index, "equity": round(1 + return_pct, 6), "return_pct": round(return_pct, 6)})
-            usage = provider.usage_metadata() if hasattr(provider, "usage_metadata") else {}
+        local_bars = market_data_repo.get_daily_bars(code, start_date, end_date, adjust="qfq")
+        local_closes = [self._decimal_from_bar(item.get("close")) for item in local_bars]
+        local_closes = [value for value in local_closes if value is not None and value > 0]
+        if len(local_closes) >= 2:
+            curve = self._curve_from_closes(local_closes, points)
+            sources = sorted({item.get("source") or "local" for item in local_bars})
             return {
                 "curve": curve,
                 "total_return": curve[-1]["return_pct"],
-                "source": usage.get("actual_provider") or getattr(provider, "name", "market_data"),
-                "data_quality": usage.get("data_quality") or "primary",
-                "fallback_used": bool(usage.get("fallback_used", False)),
-                "message": "benchmark curve built from market data",
-                "bars_total": len(bars),
-                "usable_bars": len(closes),
-                "missing_bar_ratio": self._missing_bar_ratio(len(bars), len(closes)),
+                "source": "local:" + ",".join(sources),
+                "data_quality": "primary",
+                "fallback_used": False,
+                "message": "benchmark curve built from local data center",
+                "bars_total": len(local_bars),
+                "usable_bars": len(local_closes),
+                "missing_bar_ratio": self._missing_bar_ratio(len(local_bars), len(local_closes)),
             }
-        except Exception as exc:
-            return {**fallback, "message": f"benchmark provider unavailable: {exc}"}
+        return {
+            **fallback,
+            "message": "local benchmark data unavailable; external provider disabled for backtest",
+            "bars_total": len(local_bars),
+            "usable_bars": len(local_closes),
+            "missing_bar_ratio": self._missing_bar_ratio(len(local_bars), len(local_closes)),
+        }
+
+    def _decimal_from_bar(self, value: Any) -> Decimal | None:
+        if value in (None, ""):
+            return None
+        try:
+            return Decimal(str(value))
+        except Exception:
+            return None
+
+    def _curve_from_closes(self, closes: list[Decimal], points: int) -> list[dict[str, Any]]:
+        first_close = Decimal(closes[0])
+        curve = []
+        target_points = max(2, points or len(closes))
+        for index in range(target_points):
+            source_index = min(len(closes) - 1, round(index * (len(closes) - 1) / (target_points - 1)))
+            close = Decimal(closes[source_index])
+            return_pct = float((close / first_close) - Decimal("1"))
+            curve.append({"step": index, "equity": round(1 + return_pct, 6), "return_pct": round(return_pct, 6)})
+        return curve
 
     def _missing_bar_ratio(self, total_bars: int, usable_bars: int) -> float | None:
         if total_bars <= 0:
@@ -572,6 +915,8 @@ class BacktestApiService:
                     "holding_days": meta.get("holding_days"),
                     "max_positions_per_day": meta.get("max_positions_per_day"),
                 },
+                "signal_attribution": summary.get("signal_attribution", {}),
+                "factor_attribution": summary.get("factor_attribution", {}),
             },
             "risk_level": risk_level,
             "risk_tags": risk_tags,
@@ -597,6 +942,15 @@ class BacktestApiService:
             "slippage_bps": self._validate_float(payload.get("slippage_bps"), "slippage_bps", default=0.0, minimum=0.0, maximum=500.0),
             "limit_up_down_guard": self._validate_bool(payload.get("limit_up_down_guard"), default=True),
             "benchmark_code": (payload.get("benchmark_code") or "000300").strip() or "000300",
+            "security_type": self._validate_choice(payload.get("security_type") or payload.get("target_security_type"), "security_type", default="stock", allowed=SECURITY_TYPES),
+            "bar_interval": self._validate_choice(
+                payload.get("bar_interval") or payload.get("interval"),
+                "bar_interval",
+                default="1d",
+                allowed=BAR_INTERVALS,
+                aliases={"day": "1d", "daily": "1d", "15": "15m", "30": "30m", "60m": "1h"},
+            ),
+            "adjust": str(payload.get("adjust") or ("none" if str(payload.get("bar_interval") or payload.get("interval") or "1d").lower() != "1d" else "qfq")).strip().lower(),
             "experiment_label": (payload.get("experiment_label") or "current").strip() or "current",
             "benchmark_return_pct": self._validate_float(
                 payload.get("benchmark_return_pct"),
@@ -625,13 +979,14 @@ class BacktestApiService:
 
     def _run_single_backtest(self, strategy_code: str, start_date: str, end_date: str, options: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
         options = {**options, "start_date": start_date, "end_date": end_date}
-        raw = run_backtest(
-            strategy_code,
-            start_date,
-            end_date,
-            holding_days=options["holding_days"],
-            max_positions_per_day=options["max_positions_per_day"],
-        )
+        with self._local_market_data_only():
+            raw = run_backtest(
+                strategy_code,
+                start_date,
+                end_date,
+                holding_days=options["holding_days"],
+                max_positions_per_day=options["max_positions_per_day"],
+            )
         if not raw.get("success"):
             raise AppError(raw.get("message") or "backtest failed")
         meta = {
@@ -667,6 +1022,8 @@ class BacktestApiService:
                         "fee_bps": group_options["fee_bps"],
                         "slippage_bps": group_options["slippage_bps"],
                         "benchmark_code": group_options["benchmark_code"],
+                        "security_type": group_options["security_type"],
+                        "bar_interval": group_options["bar_interval"],
                     },
                     "summary": {
                         "total_trades": group_summary["total_trades"],

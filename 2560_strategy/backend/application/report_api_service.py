@@ -13,7 +13,7 @@ from backend.repositories import picks_repo
 
 
 class ReportApiService:
-    REVIEWED_STATUSES = {"validated", "rejected", "reviewed", "done"}
+    REVIEWED_STATUSES = {"validated", "verified", "rejected", "reviewed", "done"}
 
     def list_reports(self, tenant_id: int, pagination: PaginationParams, symbol: str | None = None) -> dict:
         where = "WHERE code=?" if symbol else ""
@@ -23,6 +23,7 @@ class ReportApiService:
             args,
             limit=pagination.page_size,
             offset=(pagination.page - 1) * pagination.page_size,
+            tenant_id=tenant_id,
         )
         latest = picks_repo.get_latest_research_map([row.get("id") for row in picks])
         items = [self._report_payload(report, tenant_id) for report in latest.values()]
@@ -41,7 +42,7 @@ class ReportApiService:
             raise AppError("symbol is required")
         title = payload.get("title") or "Untitled research report"
         analysis_date = payload.get("analysis_date") or datetime.now().strftime("%Y-%m-%d")
-        pick = self._find_or_create_report_pick(symbol, title)
+        pick = self._find_or_create_report_pick(tenant_id, symbol, title)
         metrics = {
             "last_analysis_date": analysis_date,
             "technical_score": payload.get("technical_score", 0),
@@ -88,7 +89,7 @@ class ReportApiService:
 
     def summary(self, tenant_id: int, period: str = "week") -> dict:
         normalized_period = period if period in {"week", "month"} else "week"
-        rows = picks_repo.list_picks("WHERE COALESCE(archived,0)=0", [], limit=1000)
+        rows = picks_repo.list_picks("WHERE COALESCE(archived,0)=0", [], limit=1000, tenant_id=tenant_id)
         groups: dict[str, dict] = {}
         total_return = 0.0
         return_count = 0
@@ -97,6 +98,7 @@ class ReportApiService:
         deal_count = 0
         win_count = 0
         quality_counts = self._empty_quality_counts()
+        attribution_buckets = self._empty_attribution_dimensions()
 
         for row in rows:
             strategy = row.get("strategy_name") or row.get("source") or "unknown"
@@ -105,32 +107,46 @@ class ReportApiService:
             status = row.get("review_status") or ""
             deal_status = row.get("deal_status") or ""
             risk = row.get("result_grade") or ""
-            return_pct = row.get("return_pct")
+            source = self._bucket_value(row.get("source"))
+            risk_level = self._risk_bucket(row)
+            return_pct = self._float_or_none(row.get("return_pct"))
             quality_bucket = self._quality_bucket(row)
+            holding_bucket = self._holding_days_bucket(row.get("holding_days"))
             quality_counts[quality_bucket] += 1
             group["quality_counts"][quality_bucket] += 1
 
-            if status in self.REVIEWED_STATUSES:
+            if self._is_reviewed(status):
                 reviewed_count += 1
                 group["reviewed"] += 1
-            if deal_status in {"dealt", "已成交"}:
+            if self._is_deal(deal_status):
                 deal_count += 1
                 group["deals"] += 1
-            if str(risk).lower() == "high":
+            if self._is_high_risk(risk):
                 high_risk_count += 1
                 group["high_risk"] += 1
             if return_pct is not None:
-                numeric_return = float(return_pct)
-                total_return += numeric_return
+                total_return += return_pct
                 return_count += 1
-                group["return_sum"] += numeric_return
+                group["return_sum"] += return_pct
                 group["return_count"] += 1
-                if numeric_return > 0:
+                if return_pct > 0:
                     win_count += 1
                     group["wins"] += 1
+            self._add_attribution_row(
+                attribution_buckets,
+                strategy=strategy,
+                source=source,
+                risk_level=risk_level,
+                data_quality=quality_bucket,
+                holding_period=holding_bucket,
+                status=status,
+                deal_status=deal_status,
+                return_pct=return_pct,
+            )
 
         group_items = [self._finalize_group(group) for group in groups.values()]
         total = len(rows)
+        attribution = self._finalize_attribution(attribution_buckets, total, total_return)
         return {
             "tenant_id": tenant_id,
             "period": normalized_period,
@@ -147,6 +163,7 @@ class ReportApiService:
                 "data_quality": self._finalize_quality_counts(quality_counts, total),
             },
             "groups": sorted(group_items, key=lambda item: item["total"], reverse=True),
+            "attribution": attribution,
             "drilldowns": {
                 "picks": {"page": "picks", "filters": {"from_report_period": normalized_period}},
                 "reviewed": {"page": "picks", "filters": {"status": "reviewed", "from_report_period": normalized_period}},
@@ -208,14 +225,28 @@ class ReportApiService:
                 item["data_quality"]["mock"],
                 item["data_quality"]["unknown"],
             ])
+        writer.writerow([])
+        writer.writerow(["section", "dimension", "key", "total", "total_share", "win_rate", "average_return_pct", "return_contribution_rate"])
+        for dimension, items in payload["attribution"]["dimensions"].items():
+            for item in items:
+                writer.writerow([
+                    "attribution",
+                    dimension,
+                    item["key"],
+                    item["total"],
+                    item["total_share"],
+                    item["win_rate"],
+                    item["average_return_pct"],
+                    item["return_contribution_rate"],
+                ])
         return {
             "filename": filename,
             "content_type": "text/csv; charset=utf-8",
             "body": output.getvalue(),
         }
 
-    def _find_or_create_report_pick(self, symbol: str, title: str) -> dict:
-        existing = picks_repo.list_picks("WHERE code=?", [symbol], limit=1)
+    def _find_or_create_report_pick(self, tenant_id: int, symbol: str, title: str) -> dict:
+        existing = picks_repo.list_picks("WHERE code=?", [symbol], limit=1, tenant_id=tenant_id)
         if existing:
             return existing[0]
         today = datetime.now().strftime("%Y-%m-%d")
@@ -238,8 +269,9 @@ class ReportApiService:
             deal_status="pending",
             secondary_spread="no",
             strategy_name="2560",
+            tenant_id=tenant_id,
         )
-        pick = picks_repo.get_pick_by_unique(today, symbol, "api_report")
+        pick = picks_repo.get_pick_by_unique(today, symbol, "api_report", tenant_id=tenant_id)
         if not pick:
             raise AppError("failed to create report pick")
         return pick
@@ -310,6 +342,149 @@ class ReportApiService:
             },
         }
 
+    def _empty_attribution_dimensions(self) -> dict:
+        return {
+            "strategy": {},
+            "source": {},
+            "risk_level": {},
+            "data_quality": {},
+            "holding_period": {},
+        }
+
+    def _add_attribution_row(
+        self,
+        dimensions: dict,
+        *,
+        strategy: str,
+        source: str,
+        risk_level: str,
+        data_quality: str,
+        holding_period: str,
+        status,
+        deal_status,
+        return_pct: float | None,
+    ) -> None:
+        for dimension, key in (
+            ("strategy", strategy),
+            ("source", source),
+            ("risk_level", risk_level),
+            ("data_quality", data_quality),
+            ("holding_period", holding_period),
+        ):
+            bucket = dimensions[dimension].setdefault(key, self._empty_attribution_bucket(key))
+            bucket["total"] += 1
+            bucket["quality_counts"][data_quality] += 1
+            if self._is_reviewed(status):
+                bucket["reviewed"] += 1
+            if self._is_deal(deal_status):
+                bucket["deals"] += 1
+            if self._is_high_risk(risk_level):
+                bucket["high_risk"] += 1
+            if return_pct is None:
+                continue
+            bucket["return_sum"] += return_pct
+            bucket["return_count"] += 1
+            if return_pct > 0:
+                bucket["wins"] += 1
+                bucket["positive_return_sum"] += return_pct
+            elif return_pct < 0:
+                bucket["losses"] += 1
+                bucket["negative_return_sum"] += return_pct
+
+    def _empty_attribution_bucket(self, key: str) -> dict:
+        return {
+            "key": key,
+            "total": 0,
+            "reviewed": 0,
+            "deals": 0,
+            "wins": 0,
+            "losses": 0,
+            "high_risk": 0,
+            "return_sum": 0.0,
+            "positive_return_sum": 0.0,
+            "negative_return_sum": 0.0,
+            "return_count": 0,
+            "quality_counts": self._empty_quality_counts(),
+        }
+
+    def _finalize_attribution(self, dimensions: dict, total: int, total_return: float) -> dict:
+        finalized = {}
+        for dimension, buckets in dimensions.items():
+            items = [
+                self._finalize_attribution_bucket(dimension, key, bucket, total, total_return)
+                for key, bucket in buckets.items()
+            ]
+            finalized[dimension] = sorted(
+                items,
+                key=lambda item: (item["total"], abs(item["total_return_pct"])),
+                reverse=True,
+            )
+        strategy_items = finalized.get("strategy", [])
+        return {
+            "schema_version": "report-attribution/v1",
+            "basis": {
+                "population": "active_picks",
+                "return_metric": "sum_return_pct",
+                "dimensions": list(finalized.keys()),
+            },
+            "dimensions": finalized,
+            "highlights": {
+                "top_positive_contributors": [
+                    item for item in sorted(strategy_items, key=lambda item: item["total_return_pct"], reverse=True) if item["total_return_pct"] > 0
+                ][:5],
+                "top_negative_contributors": [
+                    item for item in sorted(strategy_items, key=lambda item: item["total_return_pct"]) if item["total_return_pct"] < 0
+                ][:5],
+                "largest_sources": finalized.get("source", [])[:5],
+            },
+        }
+
+    def _finalize_attribution_bucket(self, dimension: str, key: str, bucket: dict, total: int, total_return: float) -> dict:
+        bucket_total = bucket["total"]
+        return_count = bucket["return_count"]
+        return_sum = bucket["return_sum"]
+        return {
+            "key": key,
+            "label": key,
+            "total": bucket_total,
+            "total_share": round(bucket_total / total, 4) if total else 0,
+            "reviewed": bucket["reviewed"],
+            "review_rate": round(bucket["reviewed"] / bucket_total, 4) if bucket_total else 0,
+            "deals": bucket["deals"],
+            "deal_rate": round(bucket["deals"] / bucket_total, 4) if bucket_total else 0,
+            "wins": bucket["wins"],
+            "losses": bucket["losses"],
+            "win_rate": round(bucket["wins"] / return_count, 4) if return_count else 0,
+            "average_return_pct": round(return_sum / return_count, 4) if return_count else 0,
+            "total_return_pct": round(return_sum, 4),
+            "positive_return_pct": round(bucket["positive_return_sum"], 4),
+            "negative_return_pct": round(bucket["negative_return_sum"], 4),
+            "return_contribution_rate": round(return_sum / total_return, 4) if total_return else 0,
+            "high_risk": bucket["high_risk"],
+            "high_risk_rate": round(bucket["high_risk"] / bucket_total, 4) if bucket_total else 0,
+            "data_quality": self._finalize_quality_counts(bucket["quality_counts"], bucket_total),
+            "drilldown": {"page": "picks", "filters": self._attribution_filters(dimension, key)},
+            "explainability": {
+                "metric": "return_pct",
+                "covered_return_rows": return_count,
+                "missing_return_rows": bucket_total - return_count,
+            },
+        }
+
+    def _attribution_filters(self, dimension: str, key: str) -> dict:
+        filters = {"from_report_attribution": dimension}
+        if dimension == "strategy":
+            filters["strategy_code"] = key
+        elif dimension == "source":
+            filters["source"] = key
+        elif dimension == "risk_level":
+            filters["risk_level"] = key
+        elif dimension == "data_quality":
+            filters["data_quality"] = key
+        elif dimension == "holding_period":
+            filters["holding_period"] = key
+        return filters
+
     def _empty_quality_counts(self) -> dict:
         return {"primary": 0, "fallback": 0, "mock": 0, "unknown": 0}
 
@@ -325,6 +500,44 @@ class ReportApiService:
         if quality in {"primary", "real", "live"}:
             return "primary"
         return "unknown"
+
+    def _bucket_value(self, value, default: str = "unknown") -> str:
+        text = str(value or "").strip()
+        return text or default
+
+    def _risk_bucket(self, row: dict) -> str:
+        value = self._bucket_value(row.get("result_grade"))
+        return value.lower() if value.isascii() else value
+
+    def _holding_days_bucket(self, value) -> str:
+        try:
+            days = int(value)
+        except (TypeError, ValueError):
+            return "unrealized"
+        if days <= 3:
+            return "0-3d"
+        if days <= 7:
+            return "4-7d"
+        if days <= 20:
+            return "8-20d"
+        return "20d+"
+
+    def _float_or_none(self, value) -> float | None:
+        if value in (None, ""):
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _is_reviewed(self, status) -> bool:
+        return str(status or "").strip().lower() in self.REVIEWED_STATUSES
+
+    def _is_deal(self, deal_status) -> bool:
+        return str(deal_status or "").strip().lower() in {"dealt", "filled", "done", "closed", "\u5df2\u6210\u4ea4"}
+
+    def _is_high_risk(self, risk) -> bool:
+        return str(risk or "").strip().lower() in {"high", "\u9ad8", "\u9ad8\u98ce\u9669"}
 
     def _finalize_quality_counts(self, counts: dict, total: int) -> dict:
         return {

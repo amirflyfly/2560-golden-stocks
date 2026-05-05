@@ -357,7 +357,7 @@ def test_mysql_schema_validator_requires_picks_v1_contract():
         EXPECTED_UNIQUE_CONSTRAINTS,
     )
 
-    assert EXPECTED_ALEMBIC_REVISION == "0011_user_engagement_fields"
+    assert EXPECTED_ALEMBIC_REVISION == "0018_limit_up_return_rules"
     assert {"points", "last_checkin"} <= EXPECTED_COLUMNS["users"]
     assert V1_PICK_TARGET_COLUMNS <= EXPECTED_COLUMNS["picks"]
     assert "tenant_id" in EXPECTED_COLUMNS["picks"]
@@ -368,9 +368,12 @@ def test_mysql_schema_validator_requires_picks_v1_contract():
     assert {"strategy_code", "start_date", "end_date", "total_trades", "win_rate", "avg_return", "max_return", "max_drawdown", "sharpe_ratio", "total_return"} <= EXPECTED_COLUMNS["backtest_results"]
     assert {"pick_id", "analysis_date", "technical_score", "total_score", "research_summary"} <= EXPECTED_COLUMNS["research_reports"]
     assert {"code", "name", "category", "description", "enabled", "is_active", "sort_order"} <= EXPECTED_COLUMNS["strategies"]
+    assert {"is_st", "board_type", "limit_rule_profile", "is_suspended", "is_delisting"} <= EXPECTED_COLUMNS["stocks"]
+    assert {"exchange", "board_type", "security_type", "risk_warning", "effective_from", "limit_up_rate", "limit_down_rate"} <= EXPECTED_COLUMNS["limit_rule_calendar"]
     assert "uk_picks_tenant_date_symbol_source" in EXPECTED_UNIQUE_CONSTRAINTS["picks"]
     assert "uk_strategy_pools_strategy_code" in EXPECTED_UNIQUE_CONSTRAINTS["strategy_pools"]
     assert "uk_research_reports_pick_analysis" in EXPECTED_UNIQUE_CONSTRAINTS["research_reports"]
+    assert "uk_limit_rule_calendar_profile_start" in EXPECTED_UNIQUE_CONSTRAINTS["limit_rule_calendar"]
 
 
 def test_mysql_research_reports_path_fails_closed_when_schema_is_missing(monkeypatch):
@@ -436,7 +439,7 @@ class _FakeConnection:
     def __init__(self, version, *, tenant_id=1, strategy_codes=None):
         self.version = version
         self.tenant_id = tenant_id
-        self.strategy_codes = strategy_codes or {"2560", "first_limit_up"}
+        self.strategy_codes = strategy_codes or {"2560", "first_limit_up", "LIMIT_UP_RETURN"}
 
     def execute(self, statement, _params=None):
         sql = str(statement)

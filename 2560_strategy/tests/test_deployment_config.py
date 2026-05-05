@@ -52,11 +52,21 @@ def test_backend_wsgi_tuning_is_exposed_in_compose_and_env_template():
     compose = (PROJECT_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
     env_template = (PROJECT_ROOT / ".env.example").read_text(encoding="utf-8")
 
-    for key in ("WEB_WORKERS", "WEB_THREADS", "WEB_TIMEOUT", "WEB_GRACEFUL_TIMEOUT"):
+    for key in ("WEB_WORKERS", "WEB_THREADS", "WEB_TIMEOUT", "WEB_GRACEFUL_TIMEOUT", "CACHE_BACKEND", "TASK_QUEUE_BACKEND", "TASK_EXECUTION_MODE"):
         assert key in compose
         assert key in env_template
 
     assert "Docker uses gunicorn instead of Flask dev server" in env_template
+
+
+def test_production_compose_runs_standalone_task_worker():
+    compose = (PROJECT_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+
+    assert "\n  worker:" in compose
+    assert "python -m backend.infrastructure.tasks.worker" in compose
+    assert "--alert-interval-seconds ${ALERT_EVALUATION_INTERVAL_SECONDS:-300}" in compose
+    assert "TASK_QUEUE_BACKEND: ${TASK_QUEUE_BACKEND:-redis}" in compose
+    assert "TASK_EXECUTION_MODE: ${TASK_EXECUTION_MODE:-worker}" in compose
 
 
 def test_production_repository_backends_are_exposed_in_compose_and_env_template():
@@ -91,6 +101,32 @@ def test_production_rejects_init_sqlite_schema(monkeypatch):
     monkeypatch.setenv("INIT_SQLITE_SCHEMA", "1")
 
     with pytest.raises(RuntimeError, match="INIT_SQLITE_SCHEMA"):
+        Settings.from_env()
+
+
+def test_production_rejects_non_redis_task_queue(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("APP_DEBUG", "0")
+    monkeypatch.setenv("SECRET_KEY", "x" * 40)
+    monkeypatch.setenv("DATABASE_URL", "mysql+pymysql://strategy:strong-password@mysql:3306/strategy_2560")
+    monkeypatch.setenv("MARKET_DATA_PROVIDER", "mootdx")
+    monkeypatch.setenv("MARKET_DATA_FALLBACKS", "akshare")
+    monkeypatch.setenv("TASK_QUEUE_BACKEND", "memory")
+
+    with pytest.raises(RuntimeError, match="TASK_QUEUE_BACKEND"):
+        Settings.from_env()
+
+
+def test_production_rejects_web_thread_task_execution(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("APP_DEBUG", "0")
+    monkeypatch.setenv("SECRET_KEY", "x" * 40)
+    monkeypatch.setenv("DATABASE_URL", "mysql+pymysql://strategy:strong-password@mysql:3306/strategy_2560")
+    monkeypatch.setenv("MARKET_DATA_PROVIDER", "mootdx")
+    monkeypatch.setenv("MARKET_DATA_FALLBACKS", "akshare")
+    monkeypatch.setenv("TASK_EXECUTION_MODE", "threadpool")
+
+    with pytest.raises(RuntimeError, match="TASK_EXECUTION_MODE"):
         Settings.from_env()
 
 

@@ -62,6 +62,8 @@ def test_non_repository_runtime_code_does_not_import_sqlite_helper_directly():
         project_root / "backend" / "__init__.py",
         project_root / "backend" / "repositories" / "audit_logs_repo.py",
         project_root / "backend" / "repositories" / "logs_repo.py",
+        project_root / "backend" / "repositories" / "market_data_repo.py",
+        project_root / "backend" / "repositories" / "paper_trading_repo.py",
         project_root / "backend" / "repositories" / "picks_repo.py",
         project_root / "backend" / "repositories" / "sessions_repo.py",
         project_root / "backend" / "repositories" / "settings_repo.py",

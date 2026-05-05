@@ -1,0 +1,63 @@
+# 重构完成记录
+
+- [x] 生成重构 TODO 清单
+- [x] 建立架构规划文档
+- [x] 建立数据库规划文档
+- [x] 建立迁移计划文档
+- [x] 建立 ADR 文档
+- [x] 建立当前功能基线文档
+- [x] 建立 API 映射文档
+- [x] 建立 Claude Code / Codex 协作约定
+- [x] 建立前端规划文档
+- [x] 建立后端规划文档
+- [x] 建立 mootdx 接入规划文档
+- [x] 建立测试计划文档
+- [x] 新增多租户隔离 repository 与测试
+- [x] 新增 MarketDataProvider fallback 降级能力与测试
+- [x] 新增策略、扫描、选股 API v1 骨架与测试
+- [x] 新增测试套件 11 项通过
+- [x] 新增研究报告 API v1 骨架与测试
+- [x] 扫描任务创建流程接入统一 MarketDataProvider 健康检查与股票样本
+- [x] 新增 frontend 独立 React/Vite 应用目录、API client、租户切换、首页看板、策略管理、策略扫描、研究报告页面骨架
+- [x] 后端新增测试 13 项通过，前端独立应用构建通过
+- [x] 迁移股票 K 线、选股池、后台管理到独立 React 前端，并接入 /api/v1 market/picks/tasks 接口
+- [x] 引入 Redis 配置适配器、内存降级缓存、线程任务队列、扫描异步任务、行情同步任务和任务状态 API
+- [x] 建立 docker-compose.yml，覆盖 MySQL、Redis、后端 API、前端应用
+- [x] 建立 LEGACY_CLEANUP.md，标记废弃 Jinja 页面和根目录遗留脚本归档规则
+- [x] 修复轻量测试环境下 akshare/pandas 缺失导致的导入失败；完整后端测试 32 项通过，前端构建通过
+- [x] 启动新阶段：在 TODO.md 新增“生产验收与安全加固”阶段，覆盖环境变量、Docker 联调、MySQL 迁移、/api/v1 E2E、React E2E、安全基线、mootdx 真实链路、legacy 脚本收敛和上线检查清单
+- [x] 完成生产环境变量模板与安全默认值治理：新增 .env.example 与 .gitignore；docker-compose 改为读取 .env 并启用 Redis 密码；后端生产环境禁止弱 SECRET_KEY、debug、弱数据库密码和默认 admin/admin123；app.py 改为 APP_DEBUG 控制；核心测试 13 项、Python 编译检查、前端构建通过
+- [x] 推进 Docker Compose 联调：生成本地 .env，`docker-compose config --quiet` 通过；发现本机只支持 `docker-compose` 而不是 `docker compose`；尝试实启时 Docker Desktop 无法连接 Docker Hub 拉取 mysql/redis/node 基础镜像，故实启验收暂阻塞；同时修复 Dockerfile 健康检查依赖 curl 缺失，并将健康检查地址改为 /api/v1/health
+- [x] 推进真实 MySQL schema 迁移验收前置：新增 Alembic 首版迁移 0001_initial_mysql_schema.py，覆盖 tenants/users/roles/permissions/market/strategy/scan/picks 等表、索引与回滚；新增 scripts/validate_mysql_schema.py 只读验收脚本；新增 scripts/bootstrap_mysql_seed.py 幂等初始化默认 tenant、权限、admin role、初始 admin 和 user_tenants；当前受 Docker/MySQL 不可用限制，用 SQLite 兼容库完成 upgrade、downgrade、seed 幂等和 schema 验收，核心后端回归 13 项通过
+- [x] 完成 /api/v1 端到端验收自动化：新增 tests/test_api_v1_e2e.py，覆盖 health、market-data health、stocks、kline、strategies、scans、scan results、picks、reports、market sync、tasks 以及缺失/非法租户头错误场景；使用托管 Python 默认虚拟环境运行 pytest，6 项 E2E 测试全部通过
+- [x] 完成 React 前端端到端验收：安装 playwright-cli 与浏览器，启动本地 Flask(8765) 与 Vite(5174) 验收环境；修复 frontend/vite.config.js 开发代理端口从 5000 到 8765；浏览器实测通过租户切换、本地存储 tenant_id、首页看板、策略管理、策略扫描创建任务、股票 K 线、选股池新增记录、研究报告、后台管理等核心流程
+- [x] 完成认证与多租户边界加固：/api/v1 的 strategies、market、tasks、picks、reports、scans、market sync 路由统一切换到登录会话 + X-Tenant-ID 双校验，写接口补齐 admin/editor 角色约束、market sync 收紧为 admin；scan results 跨租户访问改为 404；前端 API client 显式携带 same-origin cookie；新增 pytest 17 项覆盖未登录、缺失租户头、viewer 禁止写入、admin 才能 sync、X-User-ID 不匹配、跨租户任务/扫描结果隔离，回归全部通过；frontend build 通过。
+- [x] 补充认证安全回归测试：在 test_api_v1.py 与 test_api_v1_e2e.py 新增登出后 API 失效、停用用户会话拒绝并清理、过期 session 拒绝并删除、viewer 仅读权限、重新登录恢复访问、过期会话访问扫描结果被拒绝等场景；pytest 回归扩展到 23 项全部通过。
+- [x] 二次补充认证安全回归测试：新增安全响应头与 cookie 属性断言、跨站 Sec-Fetch-Site/Origin/Referer 写请求拦截、同源 + 合法 CSRF 放行、伪造 session token 访问后清理 Flask session；同时修复 API 认证上下文在 session token 无效时未清理 `auth_token` 的问题；完整 pytest 58 项通过。
+- [x] 完成安全基线加固：后端新增同源校验 + CSRF token 防护、统一安全响应头、可配置 CORS 白名单与生产日志级别；登录页移除默认口令提示，旧版模板/React API client/测试全部接入 CSRF；错误信息改为脱敏并记录到服务端日志；回归验证 tests/test_app.py、tests/test_api_v1.py、tests/test_api_v1_e2e.py 共 45 项通过，frontend build 通过。
+- [x] 完成根目录遗留脚本首轮收敛：新增 scripts/maintenance/ 目录并迁入 ensure_extended_schema、init_tracker_db、import_picks_csv、ingest_daily_picks、bulk_update_reviews、build_dashboard_html 等维护脚本；根目录保留兼容包装入口，scheduler.py 与 start_flask.sh 优先改用新路径；脚本帮助与兼容入口已验证可运行。
+- [x] 完成 mootdx 真实链路验收与阶段报告：在独立虚拟环境中安装 mootdx，验证 provider 健康检查、股票列表与日线数据真实拉取成功；修复 mootdx 返回带时间字符串时的日期解析兼容问题并补充测试；新增 docs/refactor/STAGE8_ACCEPTANCE_REPORT.md，汇总阶段成果、阻塞项、fallback 触发条件与上线检查清单。
+- [x] 完成 Docker Compose 与真实 MySQL 实机验收：MySQL、Redis、backend、frontend 四容器均已启动，MySQL/Redis/backend healthy，frontend Vite 首页 HTTP 200；backend /api/v1/health 返回 production + mootdx；容器内 Alembic upgrade head、bootstrap_mysql_seed.py、validate_mysql_schema.py 均通过；MySQL 核心表 tenants/users/roles/permissions/user_tenants 与 alembic_version 已核对。
+- [x] 启动第 9 阶段“功能增强与生产部署完善”：新增 TODO 覆盖生产监控与日志面板、用户/租户后台管理、行情同步任务可视化、策略扫描性能优化、React 页面增强、前端正式构建与 nginx 部署、最终验收报告。
+- [x] 完成第 9 阶段功能增强：新增 monitoring/admin API 与测试，任务列表支持 name/status 过滤、任务详情摘要和取消标记，行情同步返回进度摘要，扫描创建改为快速返回并将重任务放入后台；React 新增生产监控、行情同步页面并增强后台管理；前端改为 nginx 多阶段生产镜像与 /api 反代；完整 pytest 63 项通过，frontend build 通过，docker-compose config 与 nginx 反代验收通过。
+- [x] 建立第 10 阶段“生产硬化与可观测性增强”候选清单：基于第 9 阶段注意事项拆分结构化日志与轮转、nginx 安全与性能配置、后台管理 CRUD、任务队列可恢复性、扫描/任务性能基线、前端可观测性和最终验收报告。
+- [x] 完成第 10 阶段首批生产硬化：后端新增 JSON 结构化日志落盘与 RotatingFileHandler 轮转，监控日志接口可读取真实日志文件；nginx 增加 CSP、Permissions-Policy、COOP、HSTS、gzip、静态缓存、server_tokens off、代理超时和上传限制；线程任务队列在取消后不再被 runner 覆盖为 running/completed，并补充回归测试。验证：tests/test_stage9_api.py 6 passed，frontend build 通过，docker-compose config --quiet 通过。
+- [x] 完成第 10 阶段后台管理 CRUD 增强：SQLite 轻量库补齐 tenants/user_tenants 表与默认租户绑定；admin API 新增租户创建、更新/启停，用户创建、密码重置、租户绑定/解绑；列表返回用户租户绑定信息；保留 admin-only、CSRF、最后管理员保护和至少一个租户绑定保护。验证：tests/test_stage9_api.py 8 passed，完整 pytest 66 passed，frontend build 通过，docker-compose config --quiet 通过。
+- [x] 完成第 10 阶段最终收尾：新增任务列表/扫描接口轻量性能基线测试，验证分页、过滤与响应时间；React 生产监控页增加健康告警、失败任务聚合和日志关键词筛选，行情同步页增加运行/失败任务聚合与告警提示；完整 pytest 67 passed，frontend build 通过，docker-compose config --quiet 通过，MySQL/Redis/backend/frontend 容器均 healthy。
+- [x] 启动第 11 阶段“生产可靠性与强隔离增强”：基于深度架构复盘新增 TODO，优先覆盖多租户绑定强校验、生产禁用静默 mock 行情、生产 WSGI、Compose 暴露面收敛、HTTPS/HSTS 拓扑、CI、前端 E2E、审计日志、legacy 下线、备份恢复和策略结果可解释性。
+- [x] 完成第 11 阶段首项强隔离增强：租户上下文统一校验用户租户绑定与租户 active 状态，API 角色改为使用租户级 user_tenants.role；新建用户自动绑定默认租户，补充未绑定租户、停用租户、租户级角色覆盖全局角色回归测试。验证：tests/test_api_v1.py 25 passed。
+- [x] 完成第 11 阶段生产行情 fallback 可见化：生产环境默认禁止 MARKET_DATA_PROVIDER=mock 和 MARKET_DATA_FALLBACKS 包含 mock（除非显式 ALLOW_MOCK_MARKET_DATA=1），Docker/.env 模板移除生产 mock fallback；fallback provider 记录 primary/actual provider、provider_chain、fallback_used、data_quality、errors；扫描创建与结果返回行情来源、数据质量，并在扫描结果条目标记 market_data_source/data_quality/fallback_used。验证：tests/test_market_data_provider.py tests/test_api_v1.py 共 33 passed，docker-compose config --quiet 通过。
+- [x] 完成第 11 阶段后端生产 WSGI 改造：requirements 引入 gunicorn，Dockerfile 启动命令由 `python app.py` 切换为 `gunicorn app:app`，配置 bind 8765、workers、threads、timeout、graceful-timeout、stdout/stderr access/error log 和 capture-output；docker-compose 与 .env.example 暴露 WEB_WORKERS/WEB_THREADS/WEB_TIMEOUT/WEB_GRACEFUL_TIMEOUT 调优参数；新增部署配置回归测试防止退回 Flask dev server。验证：tests/test_deployment_config.py tests/test_api_v1.py 共 28 passed，docker-compose config --quiet 通过。
+- [x] 完成第 11 阶段 Compose 生产暴露面收敛：docker-compose 移除 MySQL、Redis、backend 的宿主机 ports 映射，改为 expose 3306/6379/8765 仅供 Compose 内部网络访问；保留 frontend/nginx 5174 作为唯一对外入口，nginx 继续通过服务名 backend:8765 反代 /api 和 /dist；.env.example 说明生产只发布前端网关端口；新增部署配置测试覆盖端口收敛和内部反代。验证：tests/test_deployment_config.py tests/test_api_v1.py 共 30 passed，docker-compose config --quiet 通过。
+- [x] 完成第 11 阶段 HTTPS/HSTS 部署拓扑明确：SECURITY_PLAN 固化选择“外部网关终止 TLS”，容器 nginx 仅 HTTP 5174 静态托管与内网反代；明确 Browser HTTPS -> External TLS Gateway -> frontend:5174 -> backend:8765 -> MySQL/Redis 链路；要求外部网关负责证书、80 到 443 跳转、X-Forwarded-*、HSTS，容器侧不发布 443、不挂载证书，保留 nginx HSTS 安全头作为二层保护；.env.example 与部署配置测试同步覆盖该拓扑。验证：tests/test_deployment_config.py tests/test_api_v1.py 共 31 passed，docker-compose config --quiet 通过。
+- [x] 完成第 11 阶段 CI 流水线：新增 .github/workflows/ci.yml，拆分 backend-tests、frontend-build、deployment-config 三个 job；覆盖 Python 3.11 安装依赖与 `python -m pytest`、Node 24 前端 `npm ci && npm run build`、CI .env 生成、`docker compose config --quiet`、backend/frontend 镜像 docker build 检查；新增部署配置测试锁定 CI 覆盖范围。验证：tests/test_deployment_config.py tests/test_api_v1.py 共 32 passed，docker-compose config --quiet 通过，npm run build 通过。
+- [x] 完成第 11 阶段 Playwright 前端 E2E 补齐：新增 Playwright 配置、E2E 隔离后端启动脚本、登录/API helper 与 auth/tenant-switch/scans/admin/permissions specs；覆盖登录、会话保持、租户切换与 X-Tenant-ID、扫描创建、后台管理用户/租户表、角色变更、viewer/editor 权限拒绝、未绑定租户和停用租户错误；关键前端组件补充 data-testid 并接入 CI 前端 job。验证：Playwright E2E 14 passed，tests/test_api_v1.py + tests/test_stage9_api.py 35 passed，tests/test_deployment_config.py + tests/test_api_v1.py 32 passed，frontend build 通过，docker-compose config --quiet 通过。
+- [x] 启动第 16 阶段“质量、运维、策略与合规增强”：新增 TODO 覆盖前端通用组件重构、生产部署 runbook、只读部署预检、v1 策略回测 API、扫描 explanation 策略字段增强、审计完整性哈希与合规说明、最终验证回写。
+- [x] 完成第 16 阶段质量、运维、策略与合规增强：前端抽取 AppShell/NavSidebar/Topbar/PageHeader/MetricCard/StatusBadge/DataTable/EmptyState/SectionCard，并应用到 App、Dashboard、Monitoring；新增 PRODUCTION_DEPLOY_RUNBOOK 与只读 deploy_preflight.py；新增 v1 策略回测 API 与结构化回测 explanation；扫描 explanation 纳入 signal/note/risk_score/total_score/vol_ratio/ma25；审计 detail 增加完整性哈希并新增 AUDIT_COMPLIANCE_POLICY。验证：相关 pytest 52 passed，frontend build 通过，Playwright E2E 14 passed。
+- [x] 启动并完成第 17 阶段“策略回测与解释 API 深化”：回测 API 新增 holding_days、max_positions_per_day、trade_limit、include_trades 校验与请求选项回显；响应补充风险分级、收益分布、权益曲线和分页交易明细；回测 explanation 升级到 backtest-explanation/v2，含 confidence、verdict、indicator_groups、warnings、action_suggestion、assumptions；历史接口支持分页并补解释摘要；扫描 explanation 升级到 scan-explanation/v2 / scan-task-explanation/v2，支持 confidence、risk_level、indicator_groups、warnings、action_suggestion，并对旧结果自动补齐解释字段。
+- [x] 启动第 18 阶段“仓库卫生与 legacy 收口”：将深度分析建议写入 TODO，第一轮只读盘点已完成，不移动/不删除文件；发现重点包括根目录与 frontend 前端双轨、node_modules/dist/__pycache__/venv/data cache/logs 等生成物和缓存污染、旧 `/api`/Jinja 蓝图仍注册、启动时仍调用 SQLite `ensure_schema()`、多处服务/页面仍引用 `backend.repositories.db`，并已同步更新 LEGACY_RETIREMENT_PLAN 的只读盘点和验收状态。
+- [x] 完成第 18 阶段第 2 项 `.gitignore` 边界扩展：补充 Python/Node 缓存、本地工具缓存、`.opencode/node_modules/`、`data/cache/`、`logs/*.log`、Playwright 报告、构建产物、临时运行产物等忽略规则；本次仅更新规则和文档，不删除、不移动任何文件。
+- [x] 完成第 18 阶段第 3 项生成物清理清单：只读统计 `__pycache__`、`*.pyc`、`node_modules`、`dist`、`.pytest_cache`、Playwright/test-results 和日志文件，标记已跟踪/未跟踪/忽略状态及风险归属；清单已写入 LEGACY_RETIREMENT_PLAN，本次不删除、不移动、不执行索引移除。
+- [x] 完成第 18 阶段第 4 项项目数据分层清单：只读盘点 `data/*.db`、`data/cache/*.pkl`、`data/e2e/`、`backups/`、CSV 导入导出模板、JSON/HTML 数据资产，区分需备份资产、可再生成缓存、测试运行数据和待确认研究资产；清单已写入 LEGACY_RETIREMENT_PLAN，本次不删除、不移动任何数据文件。
+- [x] 完成第 18 阶段第 5 项前端工程边界收口：确认 `frontend/` 为唯一正式 React/Vite 工程，依据包括 docker-compose、frontend Dockerfile/nginx、CI frontend job 与 API client；根目录 package/vite/index/dist 判定为旧 K 线/Vite 工程或历史构建产物，`static/dist/` 和 `/dist` 代理仍作为 legacy 兼容路径保留。本轮只记录边界，不删除、不移动文件。
+- [x] 完成第 18 阶段第 6 项 Python 根目录入口收口清单：只读梳理 app.py、已迁移维护脚本包装、web_panel.py、scheduler.py、策略/回测/报表/研究脚本、add_pick.py、根目录测试/演示文件和 werkzeug_patch.py 的归属、引用关系与迁移顺序；清单已写入 LEGACY_RETIREMENT_PLAN，本次不删除、不移动文件。

@@ -1,610 +1,894 @@
-"""2560 Strategy implementation - Optimized Version.
+"""2560 strategy implementation.
 
-Wrapped version of the original strategy_2560.py using the new multi-strategy framework.
-Added features:
-- Real-time market data scanning
-- Multiple signal types support
-- Risk management parameters
-- Performance tracking
-- Configurable filters
+The strategy is expressed as an explainable signal model:
+
+- MA25 describes the medium-term price trend.
+- MAVOL5/MAVOL60 describes short-term volume activity against a 60-bar base.
+- MA60 is an added platform filter for trend quality and risk, not the original
+  folk-strategy definition.
 """
 
-from typing import List, Dict, Any, Optional, Tuple
+from __future__ import annotations
+
+import json
+import os
+from datetime import datetime, timedelta
+from typing import Any
+
 from backend.strategies import BaseStrategy, register_strategy
+
 try:
     import akshare as ak
 except ModuleNotFoundError:  # pragma: no cover - local test fallback
     ak = None
 try:
-    import pandas as pd
-except ModuleNotFoundError:  # pragma: no cover - local test fallback
-    pd = None
-try:
     import numpy as np
 except ModuleNotFoundError:  # pragma: no cover - local test fallback
     np = None
-from datetime import datetime, timedelta
-import json
-import os
+try:
+    import pandas as pd
+except ModuleNotFoundError:  # pragma: no cover - local test fallback
+    pd = None
+
+
+SIGNAL_SCHEMA_VERSION = "strategy-signal/2560/v1"
 
 
 @register_strategy
 class Strategy2560(BaseStrategy):
-    """2560战法: 25日均线+60日均量选股策略 - 优化版.
-    
-    核心逻辑:
-    1. MA25趋势向上（当日MA25 > 昨日MA25）
-    2. 量能条件：5日均量 > 60日均量 × 量能比
-    3. 价格过滤：收盘价 < 30元（可配置）
-    4. 信号类型：
-       - 缩量回踩：价格接近MA25且缩量
-       - 放量突破：突破MA25且放量>1.5倍
-    
-    优化功能:
-    - 支持历史数据回测
-    - 多种信号类型识别
-    - 风险评分系统
-    - 实时市场扫描
-    - 智能过滤系统
-    """
-    
+    """25/60 volume-and-trend strategy."""
+
+    essential_cols = ["date", "open", "close", "high", "low", "volume"]
+
     def __init__(self):
         super().__init__()
         self.config = self._load_config()
-        self.essential_cols = ['date', 'open', 'close', 'high', 'low', 'volume']
-        
-    def _load_config(self) -> dict:
-        """加载策略配置."""
-        config_path = "config.json"
-        default_config = {
-            'strategy': {
-                'vol_ratio': 1.0,
-                'price_limit': 30.0,
-                'exclude_st': True,
-                'exclude_kechuang': True,
-                'select_count': 5,
-                'scan_limit': 500,
-                'ma_period': 25,
-                'vol_short_period': 5,
-                'vol_long_period': 60,
-                'near_ma_threshold': 0.05,  # 接近MA25的阈值
-                'breakout_vol_ratio': 1.5,  # 突破时的量能倍数
-                'min_data_days': 65,  # 最小数据天数
-                'risk_score_enabled': True,  # 启用风险评分
-            },
-            'output': {
-                'file_path': 'data/daily_selection.json'
-            }
-        }
-        
-        if os.path.exists(config_path):
-            try:
-                with open(config_path, 'r', encoding='utf-8') as f:
-                    loaded_config = json.load(f)
-                    # 合并默认配置和加载的配置
-                    for key, value in default_config.items():
-                        if key not in loaded_config:
-                            loaded_config[key] = value
-                        elif isinstance(value, dict):
-                            for sub_key, sub_value in value.items():
-                                if sub_key not in loaded_config[key]:
-                                    loaded_config[key][sub_key] = sub_value
-                    return loaded_config
-            except Exception as e:
-                print(f"加载配置失败: {e}, 使用默认配置")
-                return default_config
-        return default_config
-    
+
     def get_code(self) -> str:
-        return '2560'
-    
+        return "2560"
+
     def get_name(self) -> str:
-        return '2560战法'
-    
+        return "2560战法"
+
     def get_description(self) -> str:
-        return '25日均线趋势向上，5日均量大于60日均量，价格接近25日均线且缩量，或突破25日均线且放量'
-    
+        return "基于MA25趋势、MAVOL5/MAVOL60量能阶段、MA60趋势过滤的可解释选股策略"
+
     def get_category(self) -> str:
-        return '趋势策略'
-    
-    def get_parameters(self) -> Dict[str, Any]:
-        """返回策略可调参数."""
+        return "趋势量能策略"
+
+    def get_parameters(self) -> dict[str, Any]:
         return {
-            'vol_ratio': {
-                'name': '量能比',
-                'type': 'float',
-                'default': 1.0,
-                'min': 0.5,
-                'max': 3.0,
-                'description': '5日均量相对于60日均量的倍数'
+            "vol_ratio": {
+                "name": "量能基准倍数",
+                "type": "float",
+                "default": 1.0,
+                "min": 0.5,
+                "max": 3.0,
+                "description": "MAVOL5相对MAVOL60的最低倍数",
             },
-            'price_limit': {
-                'name': '价格上限',
-                'type': 'float',
-                'default': 30.0,
-                'min': 10.0,
-                'max': 1000.0,
-                'description': '选股价格上限'
+            "price_limit": {
+                "name": "价格上限",
+                "type": "float",
+                "default": 30.0,
+                "min": 1.0,
+                "max": 1000.0,
+                "description": "选股价格上限，0表示不限制",
             },
-            'select_count': {
-                'name': '选股数量',
-                'type': 'int',
-                'default': 5,
-                'min': 1,
-                'max': 20,
-                'description': '最终选出的股票数量'
+            "near_ma_threshold": {
+                "name": "贴近MA25阈值",
+                "type": "float",
+                "default": 0.05,
+                "min": 0.01,
+                "max": 0.15,
+                "description": "收盘价偏离MA25的最大比例",
             },
-            'near_ma_threshold': {
-                'name': '接近均线阈值',
-                'type': 'float',
-                'default': 0.05,
-                'min': 0.01,
-                'max': 0.10,
-                'description': '价格接近MA25的百分比阈值'
+            "breakout_vol_ratio": {
+                "name": "突破放量倍数",
+                "type": "float",
+                "default": 1.3,
+                "min": 1.0,
+                "max": 5.0,
+                "description": "突破时当日成交量相对MAVOL60的最低倍数",
             },
-            'breakout_vol_ratio': {
-                'name': '突破量能比',
-                'type': 'float',
-                'default': 1.5,
-                'min': 1.0,
-                'max': 3.0,
-                'description': '突破时的量能倍数'
-            }
+            "bar_interval": {
+                "name": "K线周期",
+                "type": "string",
+                "default": "1d",
+                "description": "默认日K；可转债等策略可使用15m/30m独立模板",
+            },
+            "adjust": {
+                "name": "复权口径",
+                "type": "string",
+                "default": "qfq",
+                "description": "日K默认前复权，分钟线默认none",
+            },
         }
-    
-    def _rename_hist_cols(self, df):
-        """重命名历史数据列."""
+
+    def _load_config(self) -> dict[str, Any]:
+        default_config = {
+            "strategy": {
+                "vol_ratio": 1.0,
+                "price_limit": 30.0,
+                "exclude_st": True,
+                "exclude_kechuang": False,
+                "select_count": 5,
+                "scan_limit": 500,
+                "ma_period": 25,
+                "ma_long_period": 60,
+                "vol_short_period": 5,
+                "vol_long_period": 60,
+                "near_ma_threshold": 0.05,
+                "breakout_vol_ratio": 1.3,
+                "strong_breakout_vol_ratio": 1.5,
+                "extreme_vol_ratio": 3.0,
+                "min_data_days": 65,
+                "min_score": 55,
+                "bar_interval": "1d",
+                "adjust": "qfq",
+                "include_risk_signals": False,
+                "risk_score_enabled": True,
+            },
+            "output": {"file_path": "data/daily_selection.json"},
+        }
+        config_path = "config.json"
+        if not os.path.exists(config_path):
+            return default_config
+        try:
+            with open(config_path, "r", encoding="utf-8") as handle:
+                loaded_config = json.load(handle)
+        except Exception as exc:
+            print(f"加载2560配置失败，使用默认配置: {exc}")
+            return default_config
+
+        for section, defaults in default_config.items():
+            loaded_config.setdefault(section, defaults)
+            if isinstance(defaults, dict) and isinstance(loaded_config.get(section), dict):
+                for key, value in defaults.items():
+                    loaded_config[section].setdefault(key, value)
+        return loaded_config
+
+    def _strategy_config(self) -> dict[str, Any]:
+        return self.config.setdefault("strategy", {})
+
+    def _float_config(self, key: str, default: float) -> float:
+        try:
+            return float(self._strategy_config().get(key, default))
+        except (TypeError, ValueError):
+            return default
+
+    def _int_config(self, key: str, default: int) -> int:
+        try:
+            return int(self._strategy_config().get(key, default))
+        except (TypeError, ValueError):
+            return default
+
+    def _normalize_hist_cols(self, df):
+        if df is None or getattr(df, "empty", True):
+            return df
+        if pd is None:
+            return df
+
+        aliases = {
+            "date": ["date", "trade_date", "datetime", "日期", "交易日期", "鏃ユ湡"],
+            "open": ["open", "开盘", "开盘价", "寮€鐩?"],
+            "close": ["close", "收盘", "收盘价", "最新价", "鏀剁洏"],
+            "high": ["high", "最高", "最高价", "鏈€楂?"],
+            "low": ["low", "最低", "最低价", "鏈€浣?"],
+            "volume": ["volume", "vol", "成交量", "成交量(手)", "鎴愪氦閲?"],
+            "amount": ["amount", "成交额", "成交额(元)", "鎴愪氦棰?"],
+            "turnover": ["turnover", "turnover_rate", "换手率", "鎹㈡墜鐜?"],
+            "source": ["source", "数据源"],
+            "adjust": ["adjust", "复权"],
+            "interval": ["interval", "bar_interval", "周期"],
+        }
+        rename_map: dict[str, str] = {}
+        lower_to_col = {str(col).strip().lower(): col for col in df.columns}
+        for target, candidates in aliases.items():
+            for candidate in candidates:
+                original = lower_to_col.get(str(candidate).strip().lower())
+                if original is not None:
+                    rename_map[original] = target
+                    break
+        normalized = df.rename(columns=rename_map).copy()
+
+        for col in self.essential_cols:
+            if col not in normalized.columns:
+                normalized[col] = None
+        normalized["date"] = pd.to_datetime(normalized["date"], errors="coerce")
+        normalized = normalized.dropna(subset=["date"]).sort_values("date")
+        normalized["date"] = normalized["date"].dt.strftime("%Y-%m-%d")
+
+        for col in ["open", "close", "high", "low", "volume", "amount", "turnover"]:
+            if col in normalized.columns:
+                normalized[col] = pd.to_numeric(normalized[col], errors="coerce")
+        normalized = normalized.dropna(subset=["open", "close", "high", "low", "volume"])
+        normalized = normalized.drop_duplicates(subset=["date"], keep="last")
+        if "amount" not in normalized.columns or normalized["amount"].isna().all():
+            normalized["amount"] = normalized["close"] * normalized["volume"]
+        if "turnover" not in normalized.columns:
+            normalized["turnover"] = 0.0
+        return normalized.reset_index(drop=True)
+
+    def _calculate_indicators(self, df):
+        if pd is None or df is None or df.empty:
+            return df
+
+        config = self._strategy_config()
+        ma_period = int(config.get("ma_period", 25))
+        ma_long = int(config.get("ma_long_period", 60))
+        vol_short = int(config.get("vol_short_period", 5))
+        vol_long = int(config.get("vol_long_period", 60))
+
+        df = self._normalize_hist_cols(df)
         if df is None or df.empty:
             return df
-        
-        mapping_cn = {
-            '日期': 'date',
-            '开盘': 'open',
-            '收盘': 'close',
-            '最高': 'high',
-            '最低': 'low',
-            '成交量': 'volume',
-            '成交额': 'amount',
-            '振幅': 'amplitude',
-            '涨跌幅': 'pct_chg',
-            '涨跌额': 'chg_amt',
-            '换手率': 'turnover',
-        }
-        
-        cols = list(df.columns)
-        rename_map = {}
-        for c in cols:
-            if c in mapping_cn:
-                rename_map[c] = mapping_cn[c]
-            else:
-                rename_map[c] = c
-        return df.rename(columns=rename_map)
-    
-    def _calculate_indicators(self, df):
-        """计算技术指标."""
-        config = self.config['strategy']
-        ma_period = config.get('ma_period', 25)
-        vol_short = config.get('vol_short_period', 5)
-        vol_long = config.get('vol_long_period', 60)
-        
-        # 计算均线
-        df['ma25'] = df['close'].rolling(window=ma_period, min_periods=ma_period).mean()
-        
-        # 计算量能均线
-        df['ma5_vol'] = df['volume'].rolling(window=vol_short, min_periods=vol_short).mean()
-        df['ma60_vol'] = df['volume'].rolling(window=vol_long, min_periods=vol_long).mean()
-        
-        # 计算额外指标
-        df['price_to_ma25'] = (df['close'] - df['ma25']) / df['ma25']
-        df['vol_ratio'] = df['ma5_vol'] / df['ma60_vol']
-        
+
+        safe_mavol60 = df["volume"].rolling(window=vol_long, min_periods=vol_long).mean()
+        safe_mavol60 = safe_mavol60.replace(0, np.nan if np is not None else None)
+
+        df["ma25"] = df["close"].rolling(window=ma_period, min_periods=ma_period).mean()
+        df["ma60"] = df["close"].rolling(window=ma_long, min_periods=ma_long).mean()
+        df["mavol5"] = df["volume"].rolling(window=vol_short, min_periods=vol_short).mean()
+        df["mavol60"] = safe_mavol60
+        df["ma5_vol"] = df["mavol5"]
+        df["ma60_vol"] = df["mavol60"]
+        df["vr5_60"] = df["mavol5"] / df["mavol60"]
+        df["vr1_60"] = df["volume"] / df["mavol60"]
+        df["vol_ratio"] = df["vr5_60"]
+        df["dist25"] = (df["close"] - df["ma25"]) / df["ma25"]
+        df["dist60"] = (df["close"] - df["ma60"]) / df["ma60"]
+        df["price_to_ma25"] = df["dist25"]
+        df["ma25_slope_5"] = (df["ma25"] / df["ma25"].shift(5)) - 1
+        df["ma60_slope_10"] = (df["ma60"] / df["ma60"].shift(10)) - 1
+        df["high20"] = df["high"].shift(1).rolling(window=20, min_periods=20).max()
+        df["amount_ma20"] = df["amount"].rolling(window=20, min_periods=1).mean()
+        df["volume_cross_up"] = (df["mavol5"] >= df["mavol60"]) & (df["mavol5"].shift(1) < df["mavol60"].shift(1))
+        df["max_vr5_60_20"] = df["vr5_60"].rolling(window=20, min_periods=1).max()
+        df["close_center_10"] = df["close"].rolling(window=10, min_periods=1).mean()
+        df["close_center_20"] = df["close"].rolling(window=20, min_periods=1).mean()
+        df["up_volume"] = df["volume"].where(df["close"] >= df["close"].shift(1), 0)
+        df["down_volume"] = df["volume"].where(df["close"] < df["close"].shift(1), 0)
+        df["up_down_volume_10"] = (
+            df["up_volume"].rolling(window=10, min_periods=1).sum()
+            / df["down_volume"].rolling(window=10, min_periods=1).sum().replace(0, np.nan if np is not None else None)
+        )
+        df["volatility_20"] = df["close"].pct_change().rolling(window=20, min_periods=5).std()
         return df
-    
-    def _calculate_risk_score(self, df) -> float:
-        """计算风险评分 (0-100, 分数越低风险越小)."""
-        if len(df) < 30:
-            return 50.0
-        
-        last = df.iloc[-1]
-        
-        # 波动性评分 (基于20日标准差)
-        volatility = df['close'].tail(20).std() / df['close'].tail(20).mean()
-        vol_score = min(volatility * 1000, 30)
-        
-        # 流动性评分 (基于成交量)
-        avg_volume = df['volume'].tail(20).mean()
-        liquidity_score = 20 if avg_volume > 1000000 else 30 if avg_volume > 500000 else 40
-        
-        # 趋势强度评分
-        trend_strength = abs(last['price_to_ma25']) * 100
-        trend_score = min(trend_strength, 20)
-        
-        # 综合评分
-        total_score = vol_score + liquidity_score + trend_score
-        return min(total_score, 100)
-    
-    def _analyze_stock(self, stock_code: str, stock_name: str, 
-                      market: str, target_date: str = None) -> Tuple[bool, str, Dict[str, Any]]:
-        """分析单只股票.
-        
-        Returns:
-            (是否匹配, 信号类型, 详细信息)
-        """
-        config = self.config['strategy']
-        
+
+    def _bool_at(self, df, column: str, tail_count: int = 1) -> bool:
+        if column not in df.columns or df.empty:
+            return False
+        return bool(df[column].tail(tail_count).fillna(False).any())
+
+    def _is_valid_number(self, value: Any) -> bool:
+        if pd is not None:
+            return bool(pd.notna(value))
+        return value not in (None, "")
+
+    def _safe_float(self, value: Any, default: float = 0.0) -> float:
         try:
-            from backend.services.stock_data_service import get_stock_data_service
-            stock_data = get_stock_data_service()
-            
-            # 获取历史数据
-            if target_date:
-                # 回测模式：获取到目标日期的数据
-                end_date = datetime.strptime(target_date, '%Y-%m-%d')
-                start_date = end_date - timedelta(days=180)
-                start_str = start_date.strftime('%Y-%m-%d')
-                end_str = end_date.strftime('%Y-%m-%d')
-                
-                df = stock_data.get_stock_hist(
-                    symbol=stock_code, 
-                    start_date=start_str,
-                    end_date=end_str,
-                    adjust="qfq"
-                )
-                
-                # 如果获取失败，使用模拟数据
-                if df is None or df.empty:
-                    print(f"无法获取{stock_code}的数据，使用模拟数据")
-                    df = self._generate_mock_data(target_date)
-            else:
-                # 实时模式
-                end_date = datetime.now()
-                start_date = end_date - timedelta(days=180)
-                start_str = start_date.strftime('%Y-%m-%d')
-                end_str = end_date.strftime('%Y-%m-%d')
-                
-                df = stock_data.get_stock_hist(
-                    symbol=stock_code, 
-                    start_date=start_str,
-                    end_date=end_str,
-                    adjust="qfq"
-                )
-                
-                # 如果获取失败，使用模拟数据
-                if df is None or df.empty:
-                    print(f"无法获取{stock_code}的数据，使用模拟数据")
-                    df = self._generate_mock_data(end_str)
-            
-            if df is None or df.empty:
-                return False, "无数据", {}
-            
-            df = self._rename_hist_cols(df)
-            
-            # 检查必要列
-            for col in self.essential_cols:
-                if col not in df.columns:
-                    return False, "字段缺失", {}
-            
-            # 计算指标
+            if value is None:
+                return default
+            if pd is not None and pd.isna(value):
+                return default
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    def _safe_int(self, value: Any, default: int = 0) -> int:
+        try:
+            if value is None:
+                return default
+            if pd is not None and pd.isna(value):
+                return default
+            return int(float(value))
+        except (TypeError, ValueError):
+            return default
+
+    def _near_ma25(self, last, threshold: float) -> bool:
+        ma25 = self._safe_float(last.get("ma25"))
+        if ma25 <= 0:
+            return False
+        close = self._safe_float(last.get("close"))
+        low = self._safe_float(last.get("low"))
+        dist25 = abs(self._safe_float(last.get("dist25")))
+        return low <= ma25 * (1 + threshold) and close >= ma25 * 0.985 and dist25 <= threshold
+
+    def _failed_breakout(self, df) -> bool:
+        if len(df) < 7:
+            return False
+        prior = df.iloc[-6:-1]
+        current_close = self._safe_float(df.iloc[-1].get("close"))
+        breakout_rows = prior[
+            (prior["close"] > prior["high20"] * 1.01)
+            & (prior["vr1_60"] >= self._float_config("breakout_vol_ratio", 1.3))
+        ]
+        if breakout_rows.empty:
+            return False
+        breakout_price = self._safe_float(breakout_rows.iloc[-1].get("high20"))
+        return breakout_price > 0 and current_close < breakout_price * 0.99
+
+    def _classify_signal(self, df) -> dict[str, Any]:
+        config = self._strategy_config()
+        last = df.iloc[-1]
+        near_threshold = self._float_config("near_ma_threshold", 0.05)
+        breakout_ratio = self._float_config("breakout_vol_ratio", 1.3)
+        strong_breakout_ratio = self._float_config("strong_breakout_vol_ratio", 1.5)
+        extreme_ratio = self._float_config("extreme_vol_ratio", 3.0)
+        min_score = self._float_config("min_score", 55)
+
+        close = self._safe_float(last.get("close"))
+        high = self._safe_float(last.get("high"))
+        ma25 = self._safe_float(last.get("ma25"))
+        ma60 = self._safe_float(last.get("ma60"))
+        mavol5 = self._safe_float(last.get("mavol5"))
+        mavol60 = self._safe_float(last.get("mavol60"))
+        vr5_60 = self._safe_float(last.get("vr5_60"))
+        vr1_60 = self._safe_float(last.get("vr1_60"))
+        dist25 = self._safe_float(last.get("dist25"))
+        high20 = self._safe_float(last.get("high20"))
+        ma25_slope_5 = self._safe_float(last.get("ma25_slope_5"))
+        ma60_slope_10 = self._safe_float(last.get("ma60_slope_10"))
+
+        trend_core = ma25 > 0 and ma25_slope_5 > 0 and close >= ma25 * 0.985
+        trend_strong = trend_core and ma60 > 0 and close > ma60 and ma25 >= ma60
+        volume_base_ok = mavol60 > 0 and mavol5 >= mavol60 * self._float_config("vol_ratio", 1.0)
+        near_ma25 = self._near_ma25(last, near_threshold)
+        failed_breakout = self._failed_breakout(df)
+        volume_impulse = self._bool_at(df, "volume_cross_up", 3) and close >= ma25 * 0.985 and trend_core
+        volume_build = (
+            self._safe_float(last.get("max_vr5_60_20")) >= 1.05
+            and 0.85 <= vr5_60 <= 1.25
+            and close >= ma25 * 0.985
+            and ma25_slope_5 > 0
+        )
+        lock_shrink = (
+            trend_core
+            and near_ma25
+            and int((df["vr5_60"].tail(10) >= 1.0).sum()) >= 5
+            and self._safe_float(last.get("volume")) <= self._safe_float(df["volume"].tail(5).min()) * 1.05
+            and close >= ma25
+        )
+        pullback_shrink = trend_core and near_ma25 and self._safe_float(last.get("volume")) <= mavol5 and vr1_60 <= 1.0
+        breakout_volume = trend_core and high20 > 0 and close > high20 * 1.01 and vr1_60 >= breakout_ratio and close >= high * 0.97
+
+        if failed_breakout:
+            volume_phase = "failed_breakout"
+        elif vr1_60 >= extreme_ratio:
+            volume_phase = "extreme_risk"
+        elif lock_shrink or pullback_shrink:
+            volume_phase = "lock_shrink"
+        elif breakout_volume:
+            volume_phase = "breakout_expand"
+        elif volume_impulse:
+            volume_phase = "impulse"
+        elif volume_build:
+            volume_phase = "build"
+        elif volume_base_ok:
+            volume_phase = "active"
+        else:
+            volume_phase = "insufficient"
+
+        if failed_breakout:
+            signal_subtype = "failed_breakout"
+            signal = "失败突破"
+            signal_type = "RISK"
+            signal_strength = 0
+        elif lock_shrink or pullback_shrink:
+            signal_subtype = "volume_lock_shrink"
+            signal = "缩量回踩"
+            signal_type = "WATCH"
+            signal_strength = 4
+        elif breakout_volume:
+            signal_subtype = "breakout_volume"
+            signal = "放量突破"
+            signal_type = "WATCH"
+            signal_strength = 3 if vr1_60 < strong_breakout_ratio else 4
+        elif volume_build and volume_base_ok:
+            signal_subtype = "volume_build"
+            signal = "做量蓄势"
+            signal_type = "WATCH"
+            signal_strength = 3
+        elif volume_impulse:
+            signal_subtype = "volume_impulse"
+            signal = "冲量启动"
+            signal_type = "WATCH"
+            signal_strength = 2
+        elif trend_core and volume_base_ok and close >= ma25:
+            signal_subtype = "mild_breakout"
+            signal = "温和突破"
+            signal_type = "WATCH"
+            signal_strength = 1
+        else:
+            signal_subtype = ""
+            signal = ""
+            signal_type = "NONE"
+            signal_strength = 0
+
+        risk_flags = []
+        if failed_breakout:
+            risk_flags.append("failed_breakout")
+        if vr1_60 >= extreme_ratio:
+            risk_flags.append("extreme_volume")
+        if dist25 >= 0.12:
+            risk_flags.append("overextended_ma25")
+        if ma60 > 0 and close < ma60:
+            risk_flags.append("below_ma60")
+        if self._safe_float(last.get("amount_ma20")) < 20_000_000:
+            risk_flags.append("low_liquidity")
+
+        total_score = self._score_signal(last, signal_subtype, trend_core, trend_strong, volume_phase, risk_flags)
+        risk_score = self._calculate_risk_score(df, risk_flags)
+        risk_level = "high" if risk_score >= 70 else "medium" if risk_score >= 45 else "low"
+        matched = bool(signal_subtype and signal_type != "RISK" and total_score >= min_score)
+        if signal_type == "RISK" and bool(config.get("include_risk_signals", False)):
+            matched = True
+
+        return {
+            "matched": matched,
+            "signal": signal,
+            "signal_type": signal_type,
+            "signal_subtype": signal_subtype,
+            "signal_strength": signal_strength,
+            "volume_phase": volume_phase,
+            "trend_core": trend_core,
+            "trend_strong": trend_strong,
+            "volume_base_ok": volume_base_ok,
+            "near_ma25": near_ma25,
+            "failed_breakout": failed_breakout,
+            "breakout_confirmed": breakout_volume,
+            "risk_flags": risk_flags,
+            "risk_score": round(risk_score, 1),
+            "risk_level": risk_level,
+            "total_score": round(total_score, 1),
+        }
+
+    def _score_signal(self, last, signal_subtype: str, trend_core: bool, trend_strong: bool, volume_phase: str, risk_flags: list[str]) -> float:
+        score = 0.0
+
+        if trend_core:
+            score += 14
+        if trend_strong:
+            score += 10
+        score += min(max(self._safe_float(last.get("ma25_slope_5")) * 600, 0), 6)
+
+        vr5_60 = self._safe_float(last.get("vr5_60"))
+        vr1_60 = self._safe_float(last.get("vr1_60"))
+        if vr5_60 >= 1.0:
+            score += min(16, 8 + (vr5_60 - 1.0) * 12)
+        if vr1_60 >= 1.0:
+            score += min(9, (vr1_60 - 1.0) * 8 + 4)
+
+        phase_score = {
+            "lock_shrink": 20,
+            "breakout_expand": 17,
+            "build": 15,
+            "impulse": 11,
+            "active": 7,
+            "extreme_risk": 3,
+            "failed_breakout": 0,
+        }
+        score += phase_score.get(volume_phase, 0)
+
+        subtype_score = {
+            "volume_lock_shrink": 10,
+            "breakout_volume": 8,
+            "volume_build": 7,
+            "volume_impulse": 5,
+            "mild_breakout": 3,
+        }
+        score += subtype_score.get(signal_subtype, 0)
+
+        amount_ma20 = self._safe_float(last.get("amount_ma20"))
+        if amount_ma20 >= 100_000_000:
+            score += 10
+        elif amount_ma20 >= 20_000_000:
+            score += 6
+        else:
+            score += 2
+
+        score += 5
+        if "extreme_volume" in risk_flags:
+            score -= 10
+        if "overextended_ma25" in risk_flags:
+            score -= 10
+        if "failed_breakout" in risk_flags:
+            score -= 25
+        if "below_ma60" in risk_flags:
+            score -= 5
+        if "low_liquidity" in risk_flags:
+            score -= 6
+        return max(0.0, min(100.0, score))
+
+    def _calculate_risk_score(self, df, risk_flags: list[str] | None = None) -> float:
+        if df is None or len(df) < 30:
+            return 50.0
+        risk_flags = risk_flags or []
+        last = df.iloc[-1]
+        volatility = self._safe_float(last.get("volatility_20"))
+        dist25 = abs(self._safe_float(last.get("dist25")))
+        dist60 = abs(self._safe_float(last.get("dist60")))
+        score = 20.0 + min(volatility * 500, 25) + min(dist25 * 120, 20) + min(dist60 * 60, 15)
+        if "extreme_volume" in risk_flags:
+            score += 15
+        if "failed_breakout" in risk_flags:
+            score += 25
+        if "low_liquidity" in risk_flags:
+            score += 10
+        if "below_ma60" in risk_flags:
+            score += 8
+        return max(0.0, min(100.0, score))
+
+    def _build_reason(self, signal: dict[str, Any], last) -> str:
+        if signal["signal_subtype"] == "volume_lock_shrink":
+            return "MA25上行，MAVOL5高于MAVOL60，近端缩量回踩MA25且未有效跌破。"
+        if signal["signal_subtype"] == "breakout_volume":
+            return "MA25上行，收盘突破20日平台高点，并出现相对MAVOL60的放量确认。"
+        if signal["signal_subtype"] == "volume_build":
+            return "前期短期均量站上60日均量，当前量能回到合理区间，价格仍守住MA25。"
+        if signal["signal_subtype"] == "volume_impulse":
+            return "MAVOL5近期上穿MAVOL60，价格保持在MA25附近或上方，属于冲量启动。"
+        if signal["signal_subtype"] == "failed_breakout":
+            return "近期放量突破后快速跌回突破位下方，属于失败突破风险。"
+        return "MA25趋势和量能条件达到最低观察要求。"
+
+    def _signal_payload(
+        self,
+        *,
+        stock_code: str,
+        stock_name: str,
+        security_type: str,
+        bar_interval: str,
+        adjust: str,
+        df,
+        signal: dict[str, Any],
+    ) -> dict[str, Any]:
+        last = df.iloc[-1]
+        price_change_5d = 0.0
+        price_change_20d = 0.0
+        if len(df) >= 6:
+            base = self._safe_float(df.iloc[-6].get("close"))
+            price_change_5d = ((self._safe_float(last.get("close")) - base) / base * 100) if base else 0.0
+        if len(df) >= 21:
+            base = self._safe_float(df.iloc[-21].get("close"))
+            price_change_20d = ((self._safe_float(last.get("close")) - base) / base * 100) if base else 0.0
+
+        indicators = {
+            "ma25": round(self._safe_float(last.get("ma25")), 4),
+            "ma60": round(self._safe_float(last.get("ma60")), 4),
+            "ma25_slope_5": round(self._safe_float(last.get("ma25_slope_5")), 6),
+            "ma60_slope_10": round(self._safe_float(last.get("ma60_slope_10")), 6),
+            "mavol5": round(self._safe_float(last.get("mavol5")), 2),
+            "mavol60": round(self._safe_float(last.get("mavol60")), 2),
+            "ma5_vol": round(self._safe_float(last.get("ma5_vol")), 2),
+            "ma60_vol": round(self._safe_float(last.get("ma60_vol")), 2),
+            "vol_ratio": round(self._safe_float(last.get("vol_ratio")), 4),
+            "vr5_60": round(self._safe_float(last.get("vr5_60")), 4),
+            "vr1_60": round(self._safe_float(last.get("vr1_60")), 4),
+            "dist25": round(self._safe_float(last.get("dist25")), 6),
+            "dist60": round(self._safe_float(last.get("dist60")), 6),
+            "price_to_ma25": round(self._safe_float(last.get("dist25")) * 100, 2),
+            "high20": round(self._safe_float(last.get("high20")), 4),
+            "amount": round(self._safe_float(last.get("amount")), 2),
+            "amount_ma20": round(self._safe_float(last.get("amount_ma20")), 2),
+            "turnover_rate": round(self._safe_float(last.get("turnover")), 4),
+        }
+        phase = {
+            "volume_phase": signal["volume_phase"],
+            "trend_core": signal["trend_core"],
+            "trend_strong": signal["trend_strong"],
+            "volume_base_ok": signal["volume_base_ok"],
+            "near_ma25": signal["near_ma25"],
+            "failed_breakout": signal["failed_breakout"],
+            "breakout_confirmed": signal["breakout_confirmed"],
+        }
+        risk = {
+            "risk_score": signal["risk_score"],
+            "risk_level": signal["risk_level"],
+            "risk_flags": signal["risk_flags"],
+        }
+        data_meta = {
+            "source": str(last.get("source") or "local"),
+            "provider": str(last.get("source") or "local"),
+            "data_quality": "primary",
+            "fallback_used": False,
+            "bar_count": int(len(df)),
+            "latest_bar_time": str(last.get("date")),
+        }
+        reason = self._build_reason(signal, last)
+        payload = {
+            "schema_version": SIGNAL_SCHEMA_VERSION,
+            "strategy_code": self.get_code(),
+            "symbol": stock_code,
+            "code": stock_code,
+            "name": stock_name,
+            "stock_name": stock_name,
+            "security_type": security_type or "stock",
+            "bar_interval": bar_interval,
+            "interval": bar_interval,
+            "adjust": adjust,
+            "signal_date": str(last.get("date")),
+            "trade_date": str(last.get("date")),
+            "date": str(last.get("date")),
+            "signal_type": signal["signal_type"],
+            "signal_subtype": signal["signal_subtype"],
+            "signal": signal["signal"],
+            "reason_tag": signal["signal"],
+            "signal_strength": signal["signal_strength"],
+            "score": signal["total_score"],
+            "total_score": signal["total_score"],
+            "price_ref": round(self._safe_float(last.get("close")), 4),
+            "pick_price": round(self._safe_float(last.get("close")), 4),
+            "last_price": round(self._safe_float(last.get("close")), 4),
+            "ma25": indicators["ma25"],
+            "ma60": indicators["ma60"],
+            "ma5_vol": indicators["ma5_vol"],
+            "ma60_vol": indicators["ma60_vol"],
+            "vol_ratio": indicators["vol_ratio"],
+            "vr5_60": indicators["vr5_60"],
+            "vr1_60": indicators["vr1_60"],
+            "ma25_slope_5": indicators["ma25_slope_5"],
+            "ma60_slope_10": indicators["ma60_slope_10"],
+            "price_to_ma25": indicators["price_to_ma25"],
+            "risk_score": signal["risk_score"],
+            "risk_level": signal["risk_level"],
+            "risk_flags": signal["risk_flags"],
+            "volume_phase": signal["volume_phase"],
+            "price_change_5d": round(price_change_5d, 2),
+            "price_change_20d": round(price_change_20d, 2),
+            "volume": self._safe_int(last.get("volume")),
+            "turnover": indicators["turnover_rate"],
+            "indicators": indicators,
+            "phase": phase,
+            "risk": risk,
+            "data": data_meta,
+            "reason": reason,
+            "note": reason,
+        }
+        return payload
+
+    def _get_hist(self, stock_code: str, target_date: str | None, bar_interval: str, adjust: str):
+        from backend.services.stock_data_service import get_stock_data_service
+
+        end_date = datetime.strptime(target_date, "%Y-%m-%d") if target_date else datetime.now()
+        start_date = end_date - timedelta(days=240)
+        stock_data = get_stock_data_service()
+        try:
+            return stock_data.get_stock_hist(
+                symbol=stock_code,
+                start_date=start_date.strftime("%Y-%m-%d"),
+                end_date=end_date.strftime("%Y-%m-%d"),
+                adjust=adjust,
+                interval=bar_interval,
+            )
+        except TypeError:
+            return stock_data.get_stock_hist(
+                symbol=stock_code,
+                start_date=start_date.strftime("%Y-%m-%d"),
+                end_date=end_date.strftime("%Y-%m-%d"),
+                adjust=adjust,
+            )
+
+    def _analyze_stock(
+        self,
+        stock_code: str,
+        stock_name: str,
+        market: str,
+        target_date: str | None = None,
+        security_type: str = "stock",
+        bar_interval: str | None = None,
+        adjust: str | None = None,
+    ) -> tuple[bool, str, dict[str, Any]]:
+        if pd is None:
+            return False, "pandas不可用", {}
+
+        config = self._strategy_config()
+        bar_interval = str(bar_interval or config.get("bar_interval") or "1d")
+        adjust = str(adjust or config.get("adjust") or ("qfq" if bar_interval == "1d" else "none")).lower()
+        if bar_interval != "1d":
+            adjust = "none"
+
+        try:
+            df = self._get_hist(stock_code, target_date, bar_interval, adjust)
+            if df is None or getattr(df, "empty", True):
+                if os.getenv("MARKET_DATA_LOCAL_ONLY", "").strip() == "1":
+                    return False, "本地历史K线缺失", {}
+                df = self._generate_mock_data(target_date or datetime.now().strftime("%Y-%m-%d"))
             df = self._calculate_indicators(df)
-            
-            # 检查数据充足性
-            min_days = config.get('min_data_days', 65)
+            if df is None or df.empty:
+                return False, "无有效K线数据", {}
+
+            min_days = self._int_config("min_data_days", 65)
             if len(df) < min_days:
-                return False, "数据不足", {}
-            
+                return False, "历史K线样本不足", {}
+
             last = df.iloc[-1]
-            prev = df.iloc[-2] if len(df) > 1 else last
-            
-            # 检查NaN值
-            if pd.isna(last['ma25']) or pd.isna(last['ma5_vol']) or pd.isna(last['ma60_vol']):
-                return False, "指标计算失败", {}
-            
-            # 核心条件检查
-            trend_up = last['ma25'] > prev['ma25']
-            vol_active = last['ma5_vol'] > (last['ma60_vol'] * float(config.get('vol_ratio', 1.0)))
-            price_filter = last['close'] < float(config.get('price_limit', 30.0))
-            
-            # 打印调试信息
-            print(f"  股票: {stock_code} - {stock_name}")
-            print(f"  MA25趋势向上: {trend_up} (last: {last['ma25']:.2f}, prev: {prev['ma25']:.2f})")
-            print(f"  量能活跃: {vol_active} (MA5: {last['ma5_vol']:.0f}, MA60: {last['ma60_vol']:.0f}, 比率: {last['ma5_vol']/last['ma60_vol']:.2f})")
-            print(f"  价格过滤: {price_filter} (close: {last['close']:.2f}, limit: {config.get('price_limit', 30.0)})")
-            
-            if not (trend_up and vol_active and price_filter):
-                return False, "不匹配", {}
-            
-            # 信号识别
-            near_threshold = config.get('near_ma_threshold', 0.05)
-            breakout_ratio = config.get('breakout_vol_ratio', 1.5)
-            
-            is_near_ma25 = abs(last['price_to_ma25']) < near_threshold
-            is_shrink_vol = last['volume'] < last['ma5_vol']
-            is_breakout = last['close'] > last['ma25']
-            is_vol_explosion = last['volume'] > (last['ma5_vol'] * breakout_ratio)
-            
-            if is_near_ma25 and is_shrink_vol:
-                signal_type = "缩量回踩"
-                signal_strength = 3  # 强信号
-            elif is_breakout and is_vol_explosion:
-                signal_type = "放量突破"
-                signal_strength = 2  # 中等信号
-            elif is_breakout and last['volume'] > last['ma5_vol']:
-                signal_type = "温和突破"
-                signal_strength = 1  # 弱信号
-            else:
-                return False, "信号不强", {}
-            
-            # 计算风险评分
-            risk_score = self._calculate_risk_score(df) if config.get('risk_score_enabled', True) else 50
-            
-            # 计算额外指标
-            vol_ratio = float(last['vol_ratio']) if not pd.isna(last['vol_ratio']) else 0
-            price_change_5d = ((last['close'] - df.iloc[-6]['close']) / df.iloc[-6]['close'] * 100) if len(df) >= 6 else 0
-            price_change_20d = ((last['close'] - df.iloc[-21]['close']) / df.iloc[-21]['close'] * 100) if len(df) >= 21 else 0
-            
-            result = {
-                'code': stock_code,
-                'name': stock_name,
-                'pick_price': float(last['close']),
-                'signal': signal_type,
-                'signal_strength': signal_strength,
-                'ma25': float(last['ma25']),
-                'vol_ratio': round(vol_ratio, 2),
-                'price_to_ma25': round(float(last['price_to_ma25']) * 100, 2),  # 百分比
-                'risk_score': round(risk_score, 1),
-                'price_change_5d': round(price_change_5d, 2),
-                'price_change_20d': round(price_change_20d, 2),
-                'volume': int(last['volume']),
-                'turnover': float(last.get('turnover', 0)),
-                'date': str(last['date']),
-                'reason_tag': signal_type,
-                'note': f"MA25: {last['ma25']:.2f}, 量比: {vol_ratio:.2f}, 风险分: {risk_score:.1f}"
-            }
-            
-            return True, signal_type, result
-            
-        except Exception as e:
-            return False, f"错误:{str(e)}", {}
-    
-    def scan(self, date: str = None) -> List[Dict[str, Any]]:
-        """Run 2560 strategy scan.
-        
-        Args:
-            date: 目标日期 (YYYY-MM-DD格式), None表示今天
-            
-        Returns:
-            选股结果列表
-        """
-        print(f"🚀 启动2560战法选股... 时间: {datetime.now()}")
-        if date:
-            print(f"📅 回测日期: {date}")
-        
-        config = self.config['strategy']
-        
-        # 获取股票列表
+            required = ["ma25", "ma60", "mavol5", "mavol60", "vr5_60", "vr1_60"]
+            if any(not self._is_valid_number(last.get(col)) for col in required):
+                return False, "指标计算样本不足", {}
+
+            price_limit = self._float_config("price_limit", 30.0)
+            if price_limit > 0 and self._safe_float(last.get("close")) > price_limit:
+                return False, "价格超过上限", {}
+
+            signal = self._classify_signal(df)
+            if not signal["matched"]:
+                return False, signal["signal"] or "未达到2560信号阈值", {}
+
+            result = self._signal_payload(
+                stock_code=stock_code,
+                stock_name=stock_name,
+                security_type=security_type,
+                bar_interval=bar_interval,
+                adjust=adjust,
+                df=df,
+                signal=signal,
+            )
+            return True, result["signal"], result
+        except Exception as exc:
+            return False, f"策略分析异常:{exc}", {}
+
+    def scan(self, date: str | None = None) -> list[dict[str, Any]]:
+        if pd is None:
+            return []
+        print(f"启动2560战法扫描: {datetime.now().isoformat(timespec='seconds')}")
+        config = self._strategy_config()
         stock_list = self._get_stock_list()
-        print(f"股票列表行数: {len(stock_list)}")
-        if stock_list.empty:
-            print("未获取到股票列表")
+        if stock_list is None or getattr(stock_list, "empty", True):
+            print("未获取到证券列表")
             return []
-        
-        code_col = '代码' if '代码' in stock_list.columns else ('code' if 'code' in stock_list.columns else None)
-        name_col = '名称' if '名称' in stock_list.columns else ('name' if 'name' in stock_list.columns else None)
-        
-        print(f"代码列: {code_col}, 名称列: {name_col}")
+
+        code_col = self._find_column(stock_list, ["代码", "证券代码", "symbol", "code", "浠ｇ爜"])
+        name_col = self._find_column(stock_list, ["名称", "证券简称", "name", "stock_name", "鍚嶇О"])
+        type_col = self._find_column(stock_list, ["security_type", "type", "证券类型", "类型"])
         if not code_col or not name_col:
-            print("股票列表字段异常")
+            print("证券列表缺少代码或名称字段")
             return []
-        
-        # 限制扫描数量
-        scan_limit = config.get('scan_limit', 500)
+
+        scan_limit = self._int_config("scan_limit", 500)
         if scan_limit > 0 and len(stock_list) > scan_limit:
             stock_list = stock_list.head(scan_limit)
-        
-        print(f"📊 开始扫描 {len(stock_list)} 只股票...")
-        
-        selected_stocks = []
-        processed = 0
-        
+
+        selected: list[dict[str, Any]] = []
         for _, row in stock_list.iterrows():
-            code = str(row[code_col])
-            name = str(row[name_col])
-            
-            print(f"  处理股票: {code} - {name}")
-            
-            # 过滤股票
-            if self._should_exclude(code, name):
-                print(f"  排除股票: {code} - {name}")
+            code = str(row.get(code_col) or "").strip()
+            name = str(row.get(name_col) or code).strip()
+            security_type = str(row.get(type_col) or "stock").strip().lower() if type_col else "stock"
+            if not code or self._should_exclude(code, name, security_type):
                 continue
-            
-            # 分析股票
-            match, reason, result = self._analyze_stock(
-                code, name, 
-                'sh' if code.startswith('6') else 'sz',
-                date
+            matched, reason, result = self._analyze_stock(
+                code,
+                name,
+                "sh" if code.startswith("6") else "sz",
+                date,
+                security_type=security_type,
+                bar_interval=str(config.get("bar_interval") or "1d"),
+                adjust=str(config.get("adjust") or "qfq"),
             )
-            
-            print(f"  分析结果: {match}, 原因: {reason}")
-            
-            if match:
-                selected_stocks.append(result)
-                print(f"  选中股票: {code} - {name}")
-            
-            processed += 1
-            if processed % 100 == 0:
-                print(f"  已处理 {processed}/{len(stock_list)} 只, 选中 {len(selected_stocks)} 只")
-        
-        print(f"✅ 扫描完成: 共处理 {processed} 只, 选中 {len(selected_stocks)} 只")
-        
-        # 排序和筛选
-        selected_stocks = self._sort_and_filter(selected_stocks)
-        
-        # 保存结果
-        self._save_results(selected_stocks, date)
-        
-        return selected_stocks
-    
+            if matched:
+                selected.append(result)
+            elif len(selected) < 3:
+                print(f"跳过 {code} {name}: {reason}")
+
+        selected = self._sort_and_filter(selected)
+        self._save_results(selected, date)
+        print(f"2560扫描完成: 命中 {len(selected)} 条")
+        return selected
+
+    def _find_column(self, df, candidates: list[str]) -> str | None:
+        lower_to_col = {str(col).strip().lower(): col for col in df.columns}
+        for candidate in candidates:
+            col = lower_to_col.get(str(candidate).strip().lower())
+            if col is not None:
+                return col
+        return None
+
     def _get_stock_list(self):
-        """获取股票列表，带多源降级."""
         from backend.services.stock_data_service import get_stock_data_service
-        stock_data = get_stock_data_service()
-        return stock_data.get_stock_list()
-    
-    def _should_exclude(self, code: str, name: str) -> bool:
-        """检查是否应该排除该股票."""
-        config = self.config['strategy']
-        
-        if config.get('exclude_st', True) and ('ST' in name.upper()):
+
+        return get_stock_data_service().get_stock_list()
+
+    def _should_exclude(self, code: str, name: str, security_type: str = "stock") -> bool:
+        config = self._strategy_config()
+        upper_name = str(name or "").upper()
+        if config.get("exclude_st", True) and ("ST" in upper_name or "退" in upper_name):
             return True
-        if config.get('exclude_kechuang', True) and code.startswith('688'):
+        if config.get("exclude_kechuang", False) and code.startswith("688"):
             return True
-        if code.startswith('8') or code.startswith('4'):
-            return True
-        
         return False
-    
-    def _sort_and_filter(self, stocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """排序和筛选股票."""
-        config = self.config['strategy']
-        
-        # 按信号强度和量能比排序
-        def sort_key(x):
-            signal_rank = {'缩量回踩': 0, '放量突破': 1, '温和突破': 2}
-            return (
-                signal_rank.get(x['signal'], 3),
-                -x['vol_ratio'],
-                x['risk_score']  # 风险分低的优先
+
+    def _sort_and_filter(self, stocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        stocks.sort(
+            key=lambda item: (
+                -self._safe_float(item.get("total_score")),
+                self._safe_float(item.get("risk_score")),
+                -self._safe_float(item.get("vol_ratio")),
+                str(item.get("code") or ""),
             )
-        
-        stocks.sort(key=sort_key)
-        
-        # 限制数量
-        select_count = config.get('select_count', 5)
-        return stocks[:select_count]
-    
+        )
+        return stocks[: self._int_config("select_count", 5)]
+
     def _generate_mock_data(self, target_date: str):
-        """生成模拟股票数据."""
-        end_date = datetime.strptime(target_date, '%Y-%m-%d')
-        start_date = end_date - timedelta(days=180)
-        
-        # 生成日期序列
-        dates = pd.date_range(start=start_date, end=end_date)
-        
-        # 生成模拟数据
-        data = []
-        
-        # 确保MA25趋势向上，价格在30元以下，量能活跃
-        base_price = 15.0  # 起始价格
-        base_volume = 800000  # 起始成交量
-        
-        # 确保最后几天的价格有明显的向上趋势
-        for i, date in enumerate(dates):
-            # 价格逐渐上涨，但不超过30元
-            price_increase = 0.003 * (1 + i/len(dates))  # 越接近结束日期，涨幅越大
-            base_price *= (1 + price_increase)
-            base_price = min(29.5, base_price)  # 确保价格不超过30元，留一些上涨空间
-            
-            # 成交量逐渐增加
-            volume_increase = 0.005 * (1 + i/len(dates))  # 越接近结束日期，成交量增加越多
-            base_volume *= (1 + volume_increase)
-            base_volume = max(1000000, base_volume)  # 确保成交量足够大
-            
-            # 生成数据行
-            open_price = base_price * 0.995  # 开盘价略低于收盘价
-            high_price = base_price * 1.02  # 最高价
-            low_price = base_price * 0.98  # 最低价
-            close_price = base_price  # 收盘价
-            
-            data.append({
-                '日期': date.strftime('%Y-%m-%d'),
-                '开盘': open_price,
-                '收盘': close_price,
-                '最高': high_price,
-                '最低': low_price,
-                '成交量': base_volume
-            })
-        
-        df = pd.DataFrame(data)
-        return df
-    
-    def _save_results(self, stocks: List[Dict[str, Any]], date: str = None):
-        """保存选股结果."""
-        os.makedirs('data', exist_ok=True)
-        
-        # 保存JSON
-        out_json = self.config['output'].get('file_path', 'data/daily_selection.json')
-        with open(out_json, 'w', encoding='utf-8') as f:
-            json.dump(stocks, f, ensure_ascii=False, indent=2)
-        
-        # 保存CSV
-        if stocks:
-            df = pd.DataFrame(stocks)
-            out_csv = out_json.replace('.json', '.csv')
-            df.to_csv(out_csv, index=False, encoding='utf-8-sig')
-        
-        print(f"💾 结果已保存至: {out_json}")
-    
-    def backtest(self, start_date: str, end_date: str) -> Dict[str, Any]:
-        """回测策略.
-        
-        Args:
-            start_date: 开始日期 (YYYY-MM-DD)
-            end_date: 结束日期 (YYYY-MM-DD)
-            
-        Returns:
-            回测结果统计
-        """
-        print(f"📊 开始回测: {start_date} 至 {end_date}")
-        
-        # 获取交易日历
+        if pd is None:
+            return []
+        end_date = datetime.strptime(target_date, "%Y-%m-%d")
+        dates = pd.bdate_range(end=end_date, periods=120)
+        base_price = 12.0
+        base_volume = 800_000
+        rows = []
+        for index, item_date in enumerate(dates):
+            drift = 0.0015 + index / len(dates) * 0.0008
+            base_price *= 1 + drift
+            volume_wave = 1 + (0.2 if index > len(dates) - 30 else 0) + (0.08 if index % 7 == 0 else 0)
+            base_volume = max(700_000, base_volume * (1 + 0.001))
+            close = min(base_price, 29.5)
+            rows.append(
+                {
+                    "date": item_date.strftime("%Y-%m-%d"),
+                    "open": close * 0.995,
+                    "high": close * 1.02,
+                    "low": close * 0.985,
+                    "close": close,
+                    "volume": int(base_volume * volume_wave),
+                    "amount": close * base_volume * volume_wave,
+                    "turnover": 1.0,
+                    "source": "mock",
+                }
+            )
+        return pd.DataFrame(rows)
+
+    def _save_results(self, stocks: list[dict[str, Any]], date: str | None = None):
+        os.makedirs("data", exist_ok=True)
+        out_json = self.config.get("output", {}).get("file_path", "data/daily_selection.json")
+        with open(out_json, "w", encoding="utf-8") as handle:
+            json.dump(stocks, handle, ensure_ascii=False, indent=2)
+        if stocks and pd is not None:
+            pd.DataFrame(stocks).to_csv(out_json.replace(".json", ".csv"), index=False, encoding="utf-8-sig")
+
+    def backtest(self, start_date: str, end_date: str) -> dict[str, Any]:
+        print(f"开始2560策略信号回测: {start_date} 至 {end_date}")
+        trade_dates = self._trading_dates(start_date, end_date)
+        all_signals: list[dict[str, Any]] = []
+        daily_results: list[dict[str, Any]] = []
+        for trade_date in trade_dates:
+            signals = self.scan(trade_date)
+            daily_results.append({"date": trade_date, "count": len(signals), "signals": signals})
+            all_signals.extend(signals)
+        signal_types: dict[str, int] = {}
+        signal_subtypes: dict[str, int] = {}
+        for item in all_signals:
+            signal_types[item.get("signal") or ""] = signal_types.get(item.get("signal") or "", 0) + 1
+            signal_subtypes[item.get("signal_subtype") or ""] = signal_subtypes.get(item.get("signal_subtype") or "", 0) + 1
+        avg_risk = sum(self._safe_float(item.get("risk_score")) for item in all_signals) / len(all_signals) if all_signals else 0
+        avg_score = sum(self._safe_float(item.get("total_score")) for item in all_signals) / len(all_signals) if all_signals else 0
+        return {
+            "start_date": start_date,
+            "end_date": end_date,
+            "total_trading_days": len(trade_dates),
+            "total_signals": len(all_signals),
+            "avg_signals_per_day": round(len(all_signals) / len(trade_dates), 2) if trade_dates else 0,
+            "signal_types": signal_types,
+            "signal_subtypes": signal_subtypes,
+            "avg_risk_score": round(avg_risk, 2),
+            "avg_total_score": round(avg_score, 2),
+            "daily_results": daily_results,
+        }
+
+    def _trading_dates(self, start_date: str, end_date: str) -> list[str]:
         try:
             if ak is None:
                 raise RuntimeError("akshare unavailable")
             cal = ak.tool_trade_date_hist_sina()
-            trade_dates = cal[cal['trade_date'] >= start_date]['trade_date'].tolist()
-            trade_dates = [d for d in trade_dates if d <= end_date]
+            dates = cal[cal["trade_date"] >= start_date]["trade_date"].tolist()
+            return [item for item in dates if item <= end_date]
         except Exception:
-            # 简化处理：使用所有日期
-            start = datetime.strptime(start_date, '%Y-%m-%d')
-            end = datetime.strptime(end_date, '%Y-%m-%d')
-            trade_dates = []
+            start = datetime.strptime(start_date, "%Y-%m-%d")
+            end = datetime.strptime(end_date, "%Y-%m-%d")
+            dates = []
             current = start
             while current <= end:
                 if current.weekday() < 5:
-                    trade_dates.append(current.strftime('%Y-%m-%d'))
+                    dates.append(current.strftime("%Y-%m-%d"))
                 current += timedelta(days=1)
-        
-        all_signals = []
-        daily_results = []
-        
-        for trade_date in trade_dates:
-            signals = self.scan(trade_date)
-            daily_results.append({
-                'date': trade_date,
-                'count': len(signals),
-                'signals': signals
-            })
-            all_signals.extend(signals)
-        
-        # 统计结果
-        total_signals = len(all_signals)
-        signal_types = {}
-        for s in all_signals:
-            signal_types[s['signal']] = signal_types.get(s['signal'], 0) + 1
-        
-        avg_risk_score = sum(s['risk_score'] for s in all_signals) / total_signals if total_signals > 0 else 0
-        
-        result = {
-            'start_date': start_date,
-            'end_date': end_date,
-            'total_trading_days': len(trade_dates),
-            'total_signals': total_signals,
-            'avg_signals_per_day': round(total_signals / len(trade_dates), 2) if trade_dates else 0,
-            'signal_types': signal_types,
-            'avg_risk_score': round(avg_risk_score, 2),
-            'daily_results': daily_results
-        }
-        
-        print(f"✅ 回测完成: 共 {total_signals} 个信号, 平均每日 {result['avg_signals_per_day']} 个")
-        
-        return result
+            return dates
+

@@ -210,7 +210,7 @@ def create_pick():
     from backend.services.format_service import num, int_num
 
     data = request.get_json(silent=True) or request.form
-    picks_repo.create_or_replace_pick(
+    created_id = picks_repo.create_or_replace_pick(
         pick_date=data.get('pick_date', ''),
         code=data.get('code', ''),
         name=data.get('name', ''),
@@ -230,7 +230,7 @@ def create_pick():
         secondary_spread=data.get('secondary_spread', '否'),
         strategy_name=data.get('strategy_name', '2560'),
     )
-    new_id = picks_repo.last_inserted_id()
+    new_id = int(created_id) if created_id else picks_repo.last_inserted_id()
     log_action('add', [new_id] if new_id else [], f"新增 {data.get('code','')} {data.get('name','')}")
     return jsonify({'success': True, 'id': new_id})
 

@@ -15,6 +15,9 @@ INSECURE_SECRET_KEYS = {
     "your-secret-key-change-in-production",
 }
 INSECURE_DATABASE_PASSWORDS = {"", "password", "strategy_password", "root"}
+PRODUCTION_CACHE_BACKENDS = {"redis"}
+PRODUCTION_TASK_QUEUE_BACKENDS = {"redis"}
+PRODUCTION_TASK_EXECUTION_MODES = {"worker"}
 REPOSITORY_BACKEND_ENV_VARS = (
     "PICKS_REPOSITORY_BACKEND",
     "AUTH_REPOSITORY_BACKEND",
@@ -23,6 +26,7 @@ REPOSITORY_BACKEND_ENV_VARS = (
     "LOGS_REPOSITORY_BACKEND",
     "STRATEGY_POOL_REPOSITORY_BACKEND",
     "STRATEGY_REPOSITORY_BACKEND",
+    "TRADING_REPOSITORY_BACKEND",
 )
 PRODUCTION_REPOSITORY_BACKENDS = {"", "auto", "mysql"}
 
@@ -75,6 +79,9 @@ class Settings:
     access_token_minutes: int = 60
     cors_allowed_origins: tuple[str, ...] = ()
     log_level: str = "INFO"
+    cache_backend: str = "auto"
+    task_queue_backend: str = "memory"
+    task_execution_mode: str = "threadpool"
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -93,6 +100,9 @@ class Settings:
         cors_allowed_origins = os.getenv("CORS_ALLOWED_ORIGINS", "")
         default_log_level = "INFO" if _is_production(environment) else ("DEBUG" if debug else "INFO")
         log_level = os.getenv("LOG_LEVEL", default_log_level).strip().upper() or default_log_level
+        cache_backend = os.getenv("CACHE_BACKEND", "redis" if _is_production(environment) else "auto").strip().lower()
+        task_queue_backend = os.getenv("TASK_QUEUE_BACKEND", "redis" if _is_production(environment) else "memory").strip().lower()
+        task_execution_mode = os.getenv("TASK_EXECUTION_MODE", "worker" if _is_production(environment) else "threadpool").strip().lower()
 
         if _is_production(environment):
             if debug:
@@ -109,6 +119,12 @@ class Settings:
                 raise RuntimeError("MARKET_DATA_PROVIDER=mock is not allowed in production")
             if not allow_mock_market_data and "mock" in market_data_fallbacks:
                 raise RuntimeError("MARKET_DATA_FALLBACKS must not include mock in production")
+            if cache_backend not in PRODUCTION_CACHE_BACKENDS:
+                raise RuntimeError("CACHE_BACKEND must be redis in production")
+            if task_queue_backend not in PRODUCTION_TASK_QUEUE_BACKENDS:
+                raise RuntimeError("TASK_QUEUE_BACKEND must be redis in production")
+            if task_execution_mode not in PRODUCTION_TASK_EXECUTION_MODES:
+                raise RuntimeError("TASK_EXECUTION_MODE must be worker in production")
             _validate_production_repository_backends()
 
         return cls(
@@ -123,6 +139,9 @@ class Settings:
             access_token_minutes=int(os.getenv("ACCESS_TOKEN_MINUTES", "60")),
             cors_allowed_origins=tuple(item.strip() for item in cors_allowed_origins.split(",") if item.strip()),
             log_level=log_level,
+            cache_backend=cache_backend,
+            task_queue_backend=task_queue_backend,
+            task_execution_mode=task_execution_mode,
         )
 
 

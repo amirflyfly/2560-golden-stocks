@@ -96,3 +96,7 @@ def register_strategy(strategy_class):
     strategy = strategy_class()
     registry.register(strategy)
     return strategy_class
+
+
+# Import builtin strategies that should be registered at package import time.
+from backend.strategies.strategy_limit_up_return import StrategyLimitUpReturn  # noqa: E402,F401

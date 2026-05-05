@@ -14,24 +14,30 @@ api_v1_bp = Blueprint("api_v1", __name__, url_prefix="/api/v1")
 monitoring_service = MonitoringService()
 
 from backend.api_v1.routers.admin import bp as admin_bp
+from backend.api_v1.routers.auth import bp as auth_bp
 from backend.api_v1.routers.market import bp as market_bp
 from backend.api_v1.routers.monitoring import bp as monitoring_bp
 from backend.api_v1.routers.picks import bp as picks_bp
 from backend.api_v1.routers.reports import bp as reports_bp
 from backend.api_v1.routers.scans import bp as scans_bp
+from backend.api_v1.routers.settings import bp as settings_bp
 from backend.api_v1.routers.strategies import bp as strategies_bp
 from backend.api_v1.routers.sync import bp as sync_bp
 from backend.api_v1.routers.tasks import bp as tasks_bp
+from backend.api_v1.routers.trading import bp as trading_bp
 
 api_v1_bp.register_blueprint(strategies_bp)
 api_v1_bp.register_blueprint(scans_bp)
 api_v1_bp.register_blueprint(picks_bp)
 api_v1_bp.register_blueprint(reports_bp)
 api_v1_bp.register_blueprint(market_bp)
+api_v1_bp.register_blueprint(settings_bp)
 api_v1_bp.register_blueprint(tasks_bp)
 api_v1_bp.register_blueprint(sync_bp)
+api_v1_bp.register_blueprint(trading_bp)
 api_v1_bp.register_blueprint(monitoring_bp)
 api_v1_bp.register_blueprint(admin_bp)
+api_v1_bp.register_blueprint(auth_bp)
 
 
 @api_v1_bp.get("/health")

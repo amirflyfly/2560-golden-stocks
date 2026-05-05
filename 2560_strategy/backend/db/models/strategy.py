@@ -22,9 +22,17 @@ class Strategy(TenantScopedMixin, TimestampMixin, SoftDeleteMixin, Base):
     category: Mapped[str | None] = mapped_column(String(64), nullable=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     config_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    code_body: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_type: Mapped[str] = mapped_column(String(32), nullable=False, default="builtin")
+    lifecycle_status: Mapped[str] = mapped_column(String(32), nullable=False, default="deployed")
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     enabled: Mapped[bool] = mapped_column(nullable=False, default=True)
     is_active: Mapped[bool] = mapped_column(nullable=False, default=True)
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    deployed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_test_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    last_test_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_test_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_by: Mapped[int | None] = mapped_column(nullable=True)
 
 

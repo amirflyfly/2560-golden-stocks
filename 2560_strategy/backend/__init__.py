@@ -3,6 +3,7 @@ import logging
 import os
 import secrets
 import sys
+from ipaddress import ip_address
 from logging.handlers import RotatingFileHandler
 from urllib.parse import urlparse
 
@@ -75,6 +76,32 @@ def _is_same_origin(candidate: str | None, host_url: str) -> bool:
     return bool(candidate_origin and host_origin and candidate_origin == host_origin)
 
 
+def _is_loopback_origin(value: str | None) -> bool:
+    parsed = urlparse(value or '')
+    host = parsed.hostname
+    if not host:
+        return False
+    if host.lower() == 'localhost':
+        return True
+    try:
+        return ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _is_trusted_write_origin(candidate: str | None, host_url: str, settings) -> bool:
+    normalized = _normalize_origin(candidate)
+    if not normalized:
+        return False
+    if _is_same_origin(candidate, host_url):
+        return True
+    if normalized in settings.cors_allowed_origins:
+        return True
+    if settings.environment.strip().lower() not in {'prod', 'production'}:
+        return _is_loopback_origin(candidate) and _is_loopback_origin(host_url)
+    return False
+
+
 def _should_initialize_sqlite_schema(settings) -> bool:
     if settings.environment.strip().lower() in {'prod', 'production'}:
         return False
@@ -134,9 +161,9 @@ def create_app(config=None):
         sec_fetch_site = (request.headers.get('Sec-Fetch-Site') or '').strip().lower()
         if sec_fetch_site == 'cross-site':
             return _reject_request(request.path)
-        if origin and not _is_same_origin(origin, request.host_url):
+        if origin and not _is_trusted_write_origin(origin, request.host_url, settings):
             return _reject_request(request.path)
-        if not origin and referer and not _is_same_origin(referer, request.host_url):
+        if not origin and referer and not _is_trusted_write_origin(referer, request.host_url, settings):
             return _reject_request(request.path)
 
         csrf_token = request.headers.get('X-CSRF-Token') or request.form.get('csrf_token')

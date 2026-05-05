@@ -89,6 +89,31 @@ def update_pick_review(pick_id: int):
     return success(item)
 
 
+@bp.patch("/picks/batch/review")
+def batch_update_pick_review():
+    context = get_authenticated_tenant_context()
+    require_role(context, "admin", "editor")
+    payload = request.get_json(silent=True) or {}
+    ids = payload.get("ids") or payload.get("pick_ids") or []
+    review_payload = {key: value for key, value in payload.items() if key not in {"ids", "pick_ids"}}
+    result = service.batch_update_review(context.tenant_id, ids, review_payload)
+    audit_log_service.record(
+        context=context,
+        action="pick.review.batch_update",
+        resource_type="pick",
+        resource_id=",".join(str(item.get("id")) for item in result["items"]),
+        detail={
+            "updated": result["updated"],
+            "missing_ids": result["missing_ids"],
+            "status": review_payload.get("status") or review_payload.get("review_status"),
+            "risk_level": review_payload.get("risk_level") or review_payload.get("result_grade"),
+            "deal_status": review_payload.get("deal_status"),
+            "watch_flag": review_payload.get("watch_flag"),
+        },
+    )
+    return success(result)
+
+
 @bp.get("/picks/<int:pick_id>/timeline")
 def get_pick_timeline(pick_id: int):
     context = get_authenticated_tenant_context()

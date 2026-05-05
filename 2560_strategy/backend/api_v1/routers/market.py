@@ -17,18 +17,32 @@ def list_stocks():
     get_authenticated_tenant_context()
     limit = request.args.get("limit", 20, type=int)
     keyword = request.args.get("keyword")
-    return success(service.list_stocks(keyword=keyword, limit=limit))
+    return success(service.list_stocks(keyword=keyword, limit=limit, security_type=request.args.get("security_type")))
+
+
+@bp.get("/market-discovery")
+def get_market_discovery():
+    get_authenticated_tenant_context()
+    return success(
+        service.get_market_discovery(
+            sample_size=request.args.get("sample_size", 8, type=int),
+            lookback_days=request.args.get("lookback_days", 45, type=int),
+        )
+    )
 
 
 @bp.get("/stocks/<symbol>/kline")
 def get_stock_kline(symbol: str):
     get_authenticated_tenant_context()
+    interval = request.args.get("interval", "1d")
+    adjust = request.args.get("adjust") or ("none" if interval != "1d" else "qfq")
     return success(
         service.get_kline(
             symbol=symbol,
             start_date=request.args.get("start_date"),
             end_date=request.args.get("end_date"),
-            adjust=request.args.get("adjust", "qfq"),
+            adjust=adjust,
+            interval=interval,
         )
     )
 

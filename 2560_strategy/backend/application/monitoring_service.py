@@ -36,8 +36,19 @@ def _safe_message(value: Any) -> str:
     return text_value[:500]
 
 
+def _uses_sqlite_repositories(environment: str) -> bool:
+    repository_backends = effective_repository_backends(environment)
+    return bool(repository_backends) and all(backend == "sqlite" for backend in repository_backends.values())
+
+
 class MonitoringService:
     def database_health(self) -> dict:
+        settings = get_settings()
+        repository_backends = effective_repository_backends(settings.environment)
+        production = (settings.environment or "").strip().lower() in {"prod", "production"}
+        if not production and _uses_sqlite_repositories(settings.environment):
+            return self._sqlite_database_health(repository_backends)
+
         engine = get_engine()
         dialect = engine.dialect.name
         try:
@@ -46,7 +57,7 @@ class MonitoringService:
             return {
                 "backend": dialect,
                 "dialect": dialect,
-                "repository_backends": effective_repository_backends(get_settings().environment),
+                "repository_backends": repository_backends,
                 "ok": True,
                 "message": "ok",
             }
@@ -54,7 +65,34 @@ class MonitoringService:
             return {
                 "backend": dialect,
                 "dialect": dialect,
-                "repository_backends": effective_repository_backends(get_settings().environment),
+                "repository_backends": repository_backends,
+                "ok": False,
+                "message": _safe_message(exc),
+            }
+
+    def _sqlite_database_health(self, repository_backends: dict[str, str]) -> dict:
+        from backend.repositories import db as sqlite_db
+
+        try:
+            conn = sqlite_db.db_conn()
+            try:
+                conn.execute("SELECT 1").fetchone()
+            finally:
+                conn.close()
+            db_path = Path(sqlite_db.DB_PATH)
+            return {
+                "backend": "sqlite",
+                "dialect": "sqlite",
+                "repository_backends": repository_backends,
+                "ok": True,
+                "message": "ok",
+                "path": db_path.relative_to(BASE_DIR).as_posix() if db_path.is_relative_to(BASE_DIR) else str(db_path),
+            }
+        except Exception as exc:
+            return {
+                "backend": "sqlite",
+                "dialect": "sqlite",
+                "repository_backends": repository_backends,
                 "ok": False,
                 "message": _safe_message(exc),
             }
@@ -126,6 +164,10 @@ class MonitoringService:
             "tenant_id": tenant_id,
             "database": self.database_health(),
             "cache": cache_health().to_dict(),
+            "task_queue": {
+                "backend": settings.task_queue_backend,
+                "execution_mode": settings.task_execution_mode,
+            },
             "market_data": self.market_data_health(),
             "tasks": self.task_summary(tenant_id),
         }
@@ -144,13 +186,19 @@ class MonitoringService:
         stale_tasks = tasks["by_lifecycle_status"].get("stale", 0)
         running_tasks = tasks["by_lifecycle_status"].get("running", 0) + tasks["by_lifecycle_status"].get("queued", 0)
         task_health_ok = not production or stale_tasks == 0
+        task_queue_ok = not production or (settings.task_queue_backend == "redis" and settings.task_execution_mode == "worker")
         ready = bool(database.get("ok")) and cache_ok and repositories_ok and schema_ok and task_health_ok
+        ready = ready and task_queue_ok
         return {
             "ready": ready,
             "environment": settings.environment,
             "database": database,
             "schema_revision": schema_revision,
             "cache": cache,
+            "task_queue": {
+                "backend": settings.task_queue_backend,
+                "execution_mode": settings.task_execution_mode,
+            },
             "tasks": {
                 "total": tasks["total"],
                 "running_or_queued": running_tasks,
@@ -164,6 +212,7 @@ class MonitoringService:
                 "database": bool(database.get("ok")),
                 "schema_revision": schema_ok,
                 "cache": cache_ok,
+                "task_queue": task_queue_ok,
                 "tasks": task_health_ok,
                 "repository_backends": repositories_ok,
             },

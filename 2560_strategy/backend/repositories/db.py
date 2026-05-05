@@ -252,12 +252,42 @@ def ensure_schema():
                 name TEXT NOT NULL,
                 category TEXT DEFAULT '',
                 description TEXT DEFAULT '',
+                config_json TEXT DEFAULT '{}',
+                code_body TEXT DEFAULT '',
+                source_type TEXT DEFAULT 'builtin',
+                lifecycle_status TEXT DEFAULT 'deployed',
+                version INTEGER DEFAULT 1,
+                enabled INTEGER DEFAULT 1,
                 is_active INTEGER DEFAULT 1,
                 sort_order INTEGER DEFAULT 0,
+                deployed_at TEXT DEFAULT NULL,
+                last_test_status TEXT DEFAULT '',
+                last_test_message TEXT DEFAULT '',
+                last_test_at TEXT DEFAULT NULL,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT DEFAULT CURRENT_TIMESTAMP
             )"""
         )
+        strategy_cols = [r['name'] for r in cur.execute("PRAGMA table_info(strategies)").fetchall()]
+        strategy_alters = []
+        for column_name, ddl in [
+            ("config_json", "ALTER TABLE strategies ADD COLUMN config_json TEXT DEFAULT '{}'"),
+            ("code_body", "ALTER TABLE strategies ADD COLUMN code_body TEXT DEFAULT ''"),
+            ("source_type", "ALTER TABLE strategies ADD COLUMN source_type TEXT DEFAULT 'builtin'"),
+            ("lifecycle_status", "ALTER TABLE strategies ADD COLUMN lifecycle_status TEXT DEFAULT 'deployed'"),
+            ("version", "ALTER TABLE strategies ADD COLUMN version INTEGER DEFAULT 1"),
+            ("enabled", "ALTER TABLE strategies ADD COLUMN enabled INTEGER DEFAULT 1"),
+            ("deployed_at", "ALTER TABLE strategies ADD COLUMN deployed_at TEXT DEFAULT NULL"),
+            ("last_test_status", "ALTER TABLE strategies ADD COLUMN last_test_status TEXT DEFAULT ''"),
+            ("last_test_message", "ALTER TABLE strategies ADD COLUMN last_test_message TEXT DEFAULT ''"),
+            ("last_test_at", "ALTER TABLE strategies ADD COLUMN last_test_at TEXT DEFAULT NULL"),
+        ]:
+            if column_name not in strategy_cols:
+                strategy_alters.append(ddl)
+        for sql in strategy_alters:
+            cur.execute(sql)
+        if "enabled" in [*strategy_cols, "enabled"]:
+            cur.execute("UPDATE strategies SET enabled = COALESCE(enabled, is_active, 1)")
         cur.execute('CREATE INDEX IF NOT EXISTS idx_strategies_active ON strategies(is_active)')
         cur.execute('CREATE INDEX IF NOT EXISTS idx_strategies_sort ON strategies(sort_order)')
 
@@ -322,16 +352,463 @@ def ensure_schema():
         cur.execute('CREATE INDEX IF NOT EXISTS idx_research_reports_analysis_date ON research_reports(analysis_date)')
         cur.execute('CREATE INDEX IF NOT EXISTS idx_research_reports_code_date ON research_reports(code, analysis_date)')
 
-        cur.execute("SELECT COUNT(*) as cnt FROM strategies")
-        if cur.fetchone()['cnt'] == 0:
-            default_strategies = [
-                ('2560', '2560战法', '趋势策略', '25日均线+60日均量选股策略', 1, 10),
-                ('first_limit_up', '首板涨停', '打板策略', '首板涨停识别与次日预期跟踪策略', 1, 20),
-            ]
-            cur.executemany(
-                'INSERT INTO strategies (code, name, category, description, is_active, sort_order) VALUES (?, ?, ?, ?, ?, ?)',
-                default_strategies,
+        default_strategies = [
+            ('2560', '2560战法', '趋势策略', '25日均线+60日均量选股策略', 1, 10),
+            ('first_limit_up', '首板涨停', '打板策略', '首板涨停识别与次日预期跟踪策略', 1, 20),
+            ('LIMIT_UP_RETURN', '涨停回马枪', '短线策略', '涨停锚点、缩量回踩、支撑不破、放量再攻策略', 1, 30),
+        ]
+        cur.executemany(
+            'INSERT OR IGNORE INTO strategies (code, name, category, description, is_active, sort_order) VALUES (?, ?, ?, ?, ?, ?)',
+            default_strategies,
+        )
+
+        cur.execute(
+            """CREATE TABLE IF NOT EXISTS stocks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT NOT NULL UNIQUE,
+                exchange TEXT NOT NULL DEFAULT '',
+                name TEXT NOT NULL DEFAULT '',
+                market TEXT DEFAULT 'A',
+                security_type TEXT NOT NULL DEFAULT 'stock',
+                industry TEXT DEFAULT NULL,
+                listing_date TEXT DEFAULT NULL,
+                status TEXT NOT NULL DEFAULT 'active',
+                is_st INTEGER NOT NULL DEFAULT 0,
+                board_type TEXT DEFAULT '',
+                limit_rule_profile TEXT DEFAULT '{}',
+                is_suspended INTEGER NOT NULL DEFAULT 0,
+                is_delisting INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )"""
+        )
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_stocks_exchange ON stocks(exchange)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_stocks_name ON stocks(name)')
+        stock_cols = [r['name'] for r in cur.execute("PRAGMA table_info(stocks)").fetchall()]
+        if 'security_type' not in stock_cols:
+            cur.execute("ALTER TABLE stocks ADD COLUMN security_type TEXT NOT NULL DEFAULT 'stock'")
+        if 'is_st' not in stock_cols:
+            cur.execute("ALTER TABLE stocks ADD COLUMN is_st INTEGER NOT NULL DEFAULT 0")
+        if 'board_type' not in stock_cols:
+            cur.execute("ALTER TABLE stocks ADD COLUMN board_type TEXT DEFAULT ''")
+        if 'limit_rule_profile' not in stock_cols:
+            cur.execute("ALTER TABLE stocks ADD COLUMN limit_rule_profile TEXT DEFAULT '{}'")
+        if 'is_suspended' not in stock_cols:
+            cur.execute("ALTER TABLE stocks ADD COLUMN is_suspended INTEGER NOT NULL DEFAULT 0")
+        if 'is_delisting' not in stock_cols:
+            cur.execute("ALTER TABLE stocks ADD COLUMN is_delisting INTEGER NOT NULL DEFAULT 0")
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_stocks_security_type ON stocks(security_type)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_stocks_board_type ON stocks(board_type)')
+
+        cur.execute(
+            """CREATE TABLE IF NOT EXISTS limit_rule_calendar (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                exchange TEXT NOT NULL DEFAULT '',
+                board_type TEXT NOT NULL DEFAULT 'main',
+                security_type TEXT NOT NULL DEFAULT 'stock',
+                risk_warning INTEGER NOT NULL DEFAULT 0,
+                effective_from TEXT NOT NULL,
+                effective_to TEXT DEFAULT NULL,
+                limit_up_rate REAL DEFAULT NULL,
+                limit_down_rate REAL DEFAULT NULL,
+                no_limit_first_days INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'active',
+                notes TEXT DEFAULT '',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(exchange, board_type, security_type, risk_warning, effective_from)
+            )"""
+        )
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_limit_rule_calendar_profile ON limit_rule_calendar(exchange, board_type, security_type, risk_warning)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_limit_rule_calendar_effective ON limit_rule_calendar(effective_from, effective_to)')
+        default_limit_rules = [
+            ('SH', 'main', 'stock', 0, '1996-12-16', None, 0.10, 0.10, 0, 'active', '沪市主板普通股票默认涨跌幅'),
+            ('SZ', 'main', 'stock', 0, '1996-12-16', None, 0.10, 0.10, 0, 'active', '深市主板普通股票默认涨跌幅'),
+            ('SH', 'star', 'stock', 0, '2019-07-22', None, 0.20, 0.20, 5, 'active', '科创板普通股票涨跌幅'),
+            ('SZ', 'chinext', 'stock', 0, '2020-08-24', None, 0.20, 0.20, 5, 'active', '创业板普通股票涨跌幅'),
+            ('BJ', 'bse', 'stock', 0, '2021-11-15', None, 0.30, 0.30, 1, 'active', '北交所普通股票涨跌幅'),
+            ('SH', 'main', 'stock', 1, '1996-12-16', '2026-07-05', 0.05, 0.05, 0, 'active', '沪市主板风险警示股票旧规则'),
+            ('SZ', 'main', 'stock', 1, '1996-12-16', None, 0.05, 0.05, 0, 'active', '深市主板风险警示股票默认规则'),
+            ('SH', 'star', 'stock', 1, '2019-07-22', None, 0.20, 0.20, 5, 'active', '科创板风险警示股票涨跌幅'),
+            ('SZ', 'chinext', 'stock', 1, '2020-08-24', None, 0.20, 0.20, 5, 'active', '创业板风险警示股票涨跌幅'),
+            ('BJ', 'bse', 'stock', 1, '2021-11-15', None, 0.30, 0.30, 1, 'active', '北交所风险警示股票涨跌幅'),
+        ]
+        cur.executemany(
+            """INSERT OR IGNORE INTO limit_rule_calendar
+            (exchange, board_type, security_type, risk_warning, effective_from, effective_to,
+             limit_up_rate, limit_down_rate, no_limit_first_days, status, notes)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            default_limit_rules,
+        )
+
+        cur.execute(
+            """CREATE TABLE IF NOT EXISTS stock_daily_bars (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT NOT NULL,
+                trade_date TEXT NOT NULL,
+                trade_time TEXT NOT NULL DEFAULT '',
+                interval TEXT NOT NULL DEFAULT '1d',
+                adjust TEXT NOT NULL DEFAULT 'qfq',
+                open REAL DEFAULT NULL,
+                high REAL DEFAULT NULL,
+                low REAL DEFAULT NULL,
+                close REAL DEFAULT NULL,
+                volume INTEGER DEFAULT NULL,
+                amount REAL DEFAULT NULL,
+                turnover_rate REAL DEFAULT NULL,
+                source TEXT NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(symbol, trade_date, trade_time, interval, source, adjust)
+            )"""
+        )
+        bar_cols = [r['name'] for r in cur.execute("PRAGMA table_info(stock_daily_bars)").fetchall()]
+        if 'adjust' not in bar_cols:
+            cur.execute("ALTER TABLE stock_daily_bars ADD COLUMN adjust TEXT NOT NULL DEFAULT 'qfq'")
+        if 'trade_time' not in bar_cols:
+            cur.execute("ALTER TABLE stock_daily_bars ADD COLUMN trade_time TEXT NOT NULL DEFAULT ''")
+            cur.execute("UPDATE stock_daily_bars SET trade_time = trade_date || 'T00:00:00' WHERE trade_time='' OR trade_time IS NULL")
+        if 'interval' not in bar_cols:
+            cur.execute("ALTER TABLE stock_daily_bars ADD COLUMN interval TEXT NOT NULL DEFAULT '1d'")
+        unique_sets = []
+        for index_row in cur.execute("PRAGMA index_list(stock_daily_bars)").fetchall():
+            if int(index_row['unique'] or 0) != 1:
+                continue
+            cols = [info['name'] for info in cur.execute(f"PRAGMA index_info({index_row['name']})").fetchall()]
+            unique_sets.append(cols)
+        expected_unique = ['symbol', 'trade_date', 'trade_time', 'interval', 'source', 'adjust']
+        if expected_unique not in unique_sets:
+            cur.execute("ALTER TABLE stock_daily_bars RENAME TO stock_daily_bars_legacy")
+            cur.execute(
+                """CREATE TABLE stock_daily_bars (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    symbol TEXT NOT NULL,
+                    trade_date TEXT NOT NULL,
+                    trade_time TEXT NOT NULL DEFAULT '',
+                    interval TEXT NOT NULL DEFAULT '1d',
+                    adjust TEXT NOT NULL DEFAULT 'qfq',
+                    open REAL DEFAULT NULL,
+                    high REAL DEFAULT NULL,
+                    low REAL DEFAULT NULL,
+                    close REAL DEFAULT NULL,
+                    volume INTEGER DEFAULT NULL,
+                    amount REAL DEFAULT NULL,
+                    turnover_rate REAL DEFAULT NULL,
+                    source TEXT NOT NULL,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(symbol, trade_date, trade_time, interval, source, adjust)
+                )"""
             )
+            cur.execute(
+                """INSERT OR REPLACE INTO stock_daily_bars
+                (id, symbol, trade_date, trade_time, interval, adjust, open, high, low, close, volume, amount, turnover_rate, source, created_at, updated_at)
+                SELECT id, symbol, trade_date, COALESCE(NULLIF(trade_time, ''), trade_date || 'T00:00:00'), COALESCE(NULLIF(interval, ''), '1d'), COALESCE(NULLIF(adjust, ''), 'none'), open, high, low, close,
+                       volume, amount, turnover_rate, source, created_at, updated_at
+                FROM stock_daily_bars_legacy"""
+            )
+            cur.execute("DROP TABLE stock_daily_bars_legacy")
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_stock_daily_bars_symbol ON stock_daily_bars(symbol)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_stock_daily_bars_trade_date ON stock_daily_bars(trade_date)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_stock_daily_bars_trade_time ON stock_daily_bars(trade_time)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_stock_daily_bars_interval ON stock_daily_bars(interval)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_stock_daily_bars_adjust ON stock_daily_bars(adjust)')
+
+        cur.execute(
+            """CREATE TABLE IF NOT EXISTS stock_price_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT NOT NULL UNIQUE,
+                trade_time TEXT DEFAULT NULL,
+                last_price REAL DEFAULT NULL,
+                open REAL DEFAULT NULL,
+                high REAL DEFAULT NULL,
+                low REAL DEFAULT NULL,
+                prev_close REAL DEFAULT NULL,
+                volume INTEGER DEFAULT NULL,
+                amount REAL DEFAULT NULL,
+                bid_price REAL DEFAULT NULL,
+                ask_price REAL DEFAULT NULL,
+                source TEXT NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )"""
+        )
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_stock_price_snapshots_trade_time ON stock_price_snapshots(trade_time)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_stock_price_snapshots_source ON stock_price_snapshots(source)')
+
+        cur.execute(
+            """CREATE TABLE IF NOT EXISTS market_sync_states (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tenant_id INTEGER NOT NULL DEFAULT 1,
+                symbol TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT 'auto',
+                adjust TEXT NOT NULL DEFAULT 'qfq',
+                interval TEXT NOT NULL DEFAULT '1d',
+                coverage_start_date TEXT DEFAULT NULL,
+                coverage_end_date TEXT DEFAULT NULL,
+                last_success_trade_date TEXT DEFAULT NULL,
+                last_synced_at TEXT DEFAULT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                error_count INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT DEFAULT '',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(tenant_id, symbol, source, adjust, interval)
+            )"""
+        )
+        state_cols = [r['name'] for r in cur.execute("PRAGMA table_info(market_sync_states)").fetchall()]
+        if 'interval' not in state_cols:
+            cur.execute("ALTER TABLE market_sync_states ADD COLUMN interval TEXT NOT NULL DEFAULT '1d'")
+        state_unique_sets = []
+        for index_row in cur.execute("PRAGMA index_list(market_sync_states)").fetchall():
+            if int(index_row['unique'] or 0) != 1:
+                continue
+            cols = [info['name'] for info in cur.execute(f"PRAGMA index_info({index_row['name']})").fetchall()]
+            state_unique_sets.append(cols)
+        expected_state_unique = ['tenant_id', 'symbol', 'source', 'adjust', 'interval']
+        if expected_state_unique not in state_unique_sets:
+            cur.execute("ALTER TABLE market_sync_states RENAME TO market_sync_states_legacy")
+            cur.execute(
+                """CREATE TABLE market_sync_states (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    tenant_id INTEGER NOT NULL DEFAULT 1,
+                    symbol TEXT NOT NULL,
+                    source TEXT NOT NULL DEFAULT 'auto',
+                    adjust TEXT NOT NULL DEFAULT 'qfq',
+                    interval TEXT NOT NULL DEFAULT '1d',
+                    coverage_start_date TEXT DEFAULT NULL,
+                    coverage_end_date TEXT DEFAULT NULL,
+                    last_success_trade_date TEXT DEFAULT NULL,
+                    last_synced_at TEXT DEFAULT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    error_count INTEGER NOT NULL DEFAULT 0,
+                    last_error TEXT DEFAULT '',
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(tenant_id, symbol, source, adjust, interval)
+                )"""
+            )
+            cur.execute(
+                """INSERT OR REPLACE INTO market_sync_states
+                (id, tenant_id, symbol, source, adjust, interval, coverage_start_date, coverage_end_date,
+                 last_success_trade_date, last_synced_at, status, error_count, last_error, created_at, updated_at)
+                SELECT id, tenant_id, symbol, source, adjust, COALESCE(NULLIF(interval, ''), '1d'), coverage_start_date,
+                       coverage_end_date, last_success_trade_date, last_synced_at, status, error_count, last_error,
+                       created_at, updated_at
+                FROM market_sync_states_legacy"""
+            )
+            cur.execute("DROP TABLE market_sync_states_legacy")
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_market_sync_states_symbol ON market_sync_states(symbol)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_market_sync_states_status ON market_sync_states(status)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_market_sync_states_coverage_end ON market_sync_states(coverage_end_date)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_market_sync_states_interval ON market_sync_states(interval)')
+
+        cur.execute(
+            """CREATE TABLE IF NOT EXISTS market_sync_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tenant_id INTEGER NOT NULL DEFAULT 1,
+                run_no TEXT NOT NULL UNIQUE,
+                mode TEXT NOT NULL DEFAULT 'incremental',
+                source TEXT NOT NULL DEFAULT 'auto',
+                adjust TEXT NOT NULL DEFAULT 'qfq',
+                interval TEXT NOT NULL DEFAULT '1d',
+                status TEXT NOT NULL DEFAULT 'running',
+                requested_symbols INTEGER NOT NULL DEFAULT 0,
+                synced_symbols INTEGER NOT NULL DEFAULT 0,
+                failed_symbols INTEGER NOT NULL DEFAULT 0,
+                persisted_bars INTEGER NOT NULL DEFAULT 0,
+                started_at TEXT DEFAULT NULL,
+                finished_at TEXT DEFAULT NULL,
+                payload_json TEXT DEFAULT '{}',
+                result_json TEXT DEFAULT '{}',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )"""
+        )
+        run_cols = [r['name'] for r in cur.execute("PRAGMA table_info(market_sync_runs)").fetchall()]
+        if 'interval' not in run_cols:
+            cur.execute("ALTER TABLE market_sync_runs ADD COLUMN interval TEXT NOT NULL DEFAULT '1d'")
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_market_sync_runs_tenant_created ON market_sync_runs(tenant_id, created_at)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_market_sync_runs_status ON market_sync_runs(status)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_market_sync_runs_interval ON market_sync_runs(interval)')
+        cur.execute(
+            """CREATE TABLE IF NOT EXISTS market_sync_run_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tenant_id INTEGER NOT NULL DEFAULT 1,
+                run_id INTEGER NOT NULL,
+                symbol TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'running',
+                start_date TEXT DEFAULT NULL,
+                end_date TEXT DEFAULT NULL,
+                bars INTEGER NOT NULL DEFAULT 0,
+                persisted_bars INTEGER NOT NULL DEFAULT 0,
+                source TEXT NOT NULL DEFAULT 'auto',
+                adjust TEXT NOT NULL DEFAULT 'qfq',
+                interval TEXT NOT NULL DEFAULT '1d',
+                error TEXT DEFAULT '',
+                started_at TEXT DEFAULT NULL,
+                finished_at TEXT DEFAULT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )"""
+        )
+        run_item_cols = [r['name'] for r in cur.execute("PRAGMA table_info(market_sync_run_items)").fetchall()]
+        if 'interval' not in run_item_cols:
+            cur.execute("ALTER TABLE market_sync_run_items ADD COLUMN interval TEXT NOT NULL DEFAULT '1d'")
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_market_sync_run_items_run ON market_sync_run_items(run_id)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_market_sync_run_items_symbol ON market_sync_run_items(symbol)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_market_sync_run_items_status ON market_sync_run_items(status)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_market_sync_run_items_interval ON market_sync_run_items(interval)')
+
+        cur.execute(
+            """CREATE TABLE IF NOT EXISTS trade_signals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tenant_id INTEGER NOT NULL DEFAULT 1,
+                account_id INTEGER DEFAULT NULL,
+                strategy_id INTEGER DEFAULT NULL,
+                strategy_code TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                security_type TEXT NOT NULL DEFAULT 'stock',
+                bar_interval TEXT NOT NULL DEFAULT '1d',
+                signal_date TEXT DEFAULT NULL,
+                signal_type TEXT NOT NULL DEFAULT 'BUY',
+                score REAL DEFAULT NULL,
+                price_ref REAL DEFAULT NULL,
+                data_quality TEXT DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'open',
+                source_hash TEXT NOT NULL,
+                payload_json TEXT DEFAULT '{}',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(tenant_id, source_hash)
+            )"""
+        )
+        signal_cols = [r['name'] for r in cur.execute("PRAGMA table_info(trade_signals)").fetchall()]
+        if 'security_type' not in signal_cols:
+            cur.execute("ALTER TABLE trade_signals ADD COLUMN security_type TEXT NOT NULL DEFAULT 'stock'")
+        if 'bar_interval' not in signal_cols:
+            cur.execute("ALTER TABLE trade_signals ADD COLUMN bar_interval TEXT NOT NULL DEFAULT '1d'")
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_trade_signals_account ON trade_signals(account_id)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_trade_signals_strategy ON trade_signals(strategy_code)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_trade_signals_symbol ON trade_signals(symbol)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_trade_signals_security_type ON trade_signals(security_type)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_trade_signals_bar_interval ON trade_signals(bar_interval)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_trade_signals_date ON trade_signals(signal_date)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_trade_signals_status ON trade_signals(status)')
+
+        cur.execute(
+            """CREATE TABLE IF NOT EXISTS paper_accounts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tenant_id INTEGER NOT NULL DEFAULT 1,
+                name TEXT NOT NULL,
+                mode TEXT NOT NULL DEFAULT 'paper',
+                broker_type TEXT NOT NULL DEFAULT 'paper',
+                status TEXT NOT NULL DEFAULT 'active',
+                currency TEXT NOT NULL DEFAULT 'CNY',
+                initial_cash REAL NOT NULL DEFAULT 1000000,
+                cash REAL NOT NULL DEFAULT 1000000,
+                config_json TEXT DEFAULT '{}',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(tenant_id, name)
+            )"""
+        )
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_paper_accounts_tenant ON paper_accounts(tenant_id)')
+        cur.execute(
+            """CREATE TABLE IF NOT EXISTS paper_positions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tenant_id INTEGER NOT NULL DEFAULT 1,
+                account_id INTEGER NOT NULL,
+                symbol TEXT NOT NULL,
+                security_type TEXT NOT NULL DEFAULT 'stock',
+                bar_interval TEXT NOT NULL DEFAULT '1d',
+                quantity INTEGER NOT NULL DEFAULT 0,
+                avg_cost REAL NOT NULL DEFAULT 0,
+                market_price REAL DEFAULT NULL,
+                market_value REAL NOT NULL DEFAULT 0,
+                realized_pnl REAL NOT NULL DEFAULT 0,
+                unrealized_pnl REAL NOT NULL DEFAULT 0,
+                opened_at TEXT DEFAULT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(tenant_id, account_id, symbol)
+            )"""
+        )
+        position_cols = [r['name'] for r in cur.execute("PRAGMA table_info(paper_positions)").fetchall()]
+        if 'security_type' not in position_cols:
+            cur.execute("ALTER TABLE paper_positions ADD COLUMN security_type TEXT NOT NULL DEFAULT 'stock'")
+        if 'bar_interval' not in position_cols:
+            cur.execute("ALTER TABLE paper_positions ADD COLUMN bar_interval TEXT NOT NULL DEFAULT '1d'")
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_paper_positions_account ON paper_positions(account_id)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_paper_positions_symbol ON paper_positions(symbol)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_paper_positions_security_type ON paper_positions(security_type)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_paper_positions_bar_interval ON paper_positions(bar_interval)')
+        cur.execute(
+            """CREATE TABLE IF NOT EXISTS paper_orders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tenant_id INTEGER NOT NULL DEFAULT 1,
+                account_id INTEGER NOT NULL,
+                strategy_id INTEGER DEFAULT NULL,
+                strategy_code TEXT DEFAULT '',
+                symbol TEXT NOT NULL,
+                security_type TEXT NOT NULL DEFAULT 'stock',
+                bar_interval TEXT NOT NULL DEFAULT '1d',
+                side TEXT NOT NULL,
+                quantity INTEGER NOT NULL,
+                order_type TEXT NOT NULL DEFAULT 'market',
+                requested_price REAL DEFAULT NULL,
+                limit_price REAL DEFAULT NULL,
+                status TEXT NOT NULL DEFAULT 'filled',
+                filled_quantity INTEGER NOT NULL DEFAULT 0,
+                avg_fill_price REAL DEFAULT NULL,
+                idempotency_key TEXT NOT NULL,
+                source_signal_hash TEXT DEFAULT '',
+                reason TEXT DEFAULT '',
+                metadata_json TEXT DEFAULT '{}',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(tenant_id, idempotency_key)
+            )"""
+        )
+        order_cols = [r['name'] for r in cur.execute("PRAGMA table_info(paper_orders)").fetchall()]
+        if 'security_type' not in order_cols:
+            cur.execute("ALTER TABLE paper_orders ADD COLUMN security_type TEXT NOT NULL DEFAULT 'stock'")
+        if 'bar_interval' not in order_cols:
+            cur.execute("ALTER TABLE paper_orders ADD COLUMN bar_interval TEXT NOT NULL DEFAULT '1d'")
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_paper_orders_account ON paper_orders(account_id)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_paper_orders_symbol ON paper_orders(symbol)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_paper_orders_security_type ON paper_orders(security_type)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_paper_orders_bar_interval ON paper_orders(bar_interval)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_paper_orders_status ON paper_orders(status)')
+        cur.execute(
+            """CREATE TABLE IF NOT EXISTS paper_fills (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tenant_id INTEGER NOT NULL DEFAULT 1,
+                account_id INTEGER NOT NULL,
+                order_id INTEGER NOT NULL,
+                symbol TEXT NOT NULL,
+                security_type TEXT NOT NULL DEFAULT 'stock',
+                bar_interval TEXT NOT NULL DEFAULT '1d',
+                side TEXT NOT NULL,
+                quantity INTEGER NOT NULL,
+                price REAL NOT NULL,
+                amount REAL NOT NULL,
+                fee REAL NOT NULL DEFAULT 0,
+                filled_at TEXT NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )"""
+        )
+        fill_cols = [r['name'] for r in cur.execute("PRAGMA table_info(paper_fills)").fetchall()]
+        if 'security_type' not in fill_cols:
+            cur.execute("ALTER TABLE paper_fills ADD COLUMN security_type TEXT NOT NULL DEFAULT 'stock'")
+        if 'bar_interval' not in fill_cols:
+            cur.execute("ALTER TABLE paper_fills ADD COLUMN bar_interval TEXT NOT NULL DEFAULT '1d'")
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_paper_fills_account ON paper_fills(account_id)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_paper_fills_order ON paper_fills(order_id)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_paper_fills_symbol ON paper_fills(symbol)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_paper_fills_security_type ON paper_fills(security_type)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_paper_fills_bar_interval ON paper_fills(bar_interval)')
 
         conn.commit()
     finally:

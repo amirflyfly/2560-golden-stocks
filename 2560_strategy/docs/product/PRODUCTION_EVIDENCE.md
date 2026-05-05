@@ -19,7 +19,7 @@ Fill `PRODUCTION_EVIDENCE.prod.json` from production outputs:
 - MySQL backup artifact name, size, sha256, and restore-check target.
 - Schema validation, reconciliation, idempotent rerun, and rollback drill result.
 - Soak window with at least two `/api/v1/readiness` samples.
-- Readiness samples must show MySQL, Redis, all repository backends as MySQL, and zero stale tasks.
+- Readiness samples must show MySQL, Redis cache, Redis task queue, standalone worker execution, all repository backends as MySQL, and zero stale tasks.
 
 Validate:
 

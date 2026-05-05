@@ -25,7 +25,6 @@ from backend.repositories.db import q1 as sqlite_q1
 
 
 DEFAULT_TENANT_ID = int(os.getenv("PICKS_DEFAULT_TENANT_ID", "1"))
-_MYSQL_LAST_INSERTED_PICK_ID: int | None = None
 _MYSQL_RESEARCH_REPORTS_SUPPORTED: bool | None = None
 _MYSQL_COMPAT_SELECT = """
 SELECT
@@ -178,16 +177,16 @@ def _mysql_text(sql: str, args: list[Any] | tuple[Any, ...] | None = None):
     return text("".join(parts)), params
 
 
-def _mysql_select_all(sql: str, args: list[Any] | tuple[Any, ...] | None = None) -> list[dict[str, Any]]:
+def _mysql_select_all(sql: str, args: list[Any] | tuple[Any, ...] | None = None, *, tenant_id: int | None = None) -> list[dict[str, Any]]:
     query, params = _mysql_text(sql, args)
-    params.setdefault("tenant_id", DEFAULT_TENANT_ID)
+    params.setdefault("tenant_id", int(tenant_id or DEFAULT_TENANT_ID))
     with session_scope() as session:
         rows = session.execute(query, params).mappings().all()
     return [_build_mysql_pick_dict(dict(row)) for row in rows]
 
 
-def _mysql_select_one(sql: str, args: list[Any] | tuple[Any, ...] | None = None) -> dict[str, Any] | None:
-    rows = _mysql_select_all(sql, args)
+def _mysql_select_one(sql: str, args: list[Any] | tuple[Any, ...] | None = None, *, tenant_id: int | None = None) -> dict[str, Any] | None:
+    rows = _mysql_select_all(sql, args, tenant_id=tenant_id)
     return rows[0] if rows else None
 
 
@@ -196,13 +195,14 @@ def _compat_select_sql(where_sql: str = "", order_by: str = " ORDER BY pick_date
     return f"SELECT * FROM ({_MYSQL_COMPAT_SELECT}) AS picks_compat{where_sql}{order_by}"
 
 
-def _resolve_strategy_id(session, strategy_name: str | None) -> int | None:
+def _resolve_strategy_id(session, strategy_name: str | None, tenant_id: int | None = None) -> int | None:
     strategy_code = (strategy_name or "").strip()
     if not strategy_code:
         return None
+    effective_tenant_id = int(tenant_id or DEFAULT_TENANT_ID)
     strategy = session.execute(
         select(Strategy).where(
-            Strategy.tenant_id == DEFAULT_TENANT_ID,
+            Strategy.tenant_id == effective_tenant_id,
             Strategy.code == strategy_code,
             Strategy.deleted_at.is_(None),
         )
@@ -210,17 +210,19 @@ def _resolve_strategy_id(session, strategy_name: str | None) -> int | None:
     return strategy.id if strategy else None
 
 
-def _get_pick_model(session, rid: int) -> Pick | None:
+def _get_pick_model(session, rid: int, tenant_id: int | None = None) -> Pick | None:
+    effective_tenant_id = int(tenant_id or DEFAULT_TENANT_ID)
     return session.execute(
-        select(Pick).where(Pick.id == int(rid), Pick.tenant_id == DEFAULT_TENANT_ID)
+        select(Pick).where(Pick.id == int(rid), Pick.tenant_id == effective_tenant_id)
     ).scalar_one_or_none()
 
 
-def _get_pick_model_by_unique(session, pick_date: Any, code: str, source: str) -> Pick | None:
+def _get_pick_model_by_unique(session, pick_date: Any, code: str, source: str, tenant_id: int | None = None) -> Pick | None:
     trade_date = _coerce_date(pick_date)
+    effective_tenant_id = int(tenant_id or DEFAULT_TENANT_ID)
     return session.execute(
         select(Pick).where(
-            Pick.tenant_id == DEFAULT_TENANT_ID,
+            Pick.tenant_id == effective_tenant_id,
             Pick.trade_date == trade_date,
             Pick.symbol == code,
             Pick.source == source,
@@ -337,13 +339,13 @@ def _mysql_research_reports_supported() -> bool:
     return True
 
 
-def get_pick_by_id(rid):
+def get_pick_by_id(rid, tenant_id: int | None = None):
     if _repo_backend() == "sqlite":
         return sqlite_q1("SELECT * FROM picks WHERE id=?", (rid,))
-    return _mysql_select_one(_compat_select_sql("WHERE id=?") + " LIMIT 1", [int(rid)])
+    return _mysql_select_one(_compat_select_sql("WHERE id=?") + " LIMIT 1", [int(rid)], tenant_id=tenant_id)
 
 
-def get_pick_by_unique(pick_date, code, source):
+def get_pick_by_unique(pick_date, code, source, tenant_id: int | None = None):
     if _repo_backend() == "sqlite":
         return sqlite_q1(
             "SELECT * FROM picks WHERE pick_date=? AND code=? AND source=?",
@@ -352,10 +354,11 @@ def get_pick_by_unique(pick_date, code, source):
     return _mysql_select_one(
         _compat_select_sql("WHERE pick_date=? AND code=? AND source=?", order_by="") + " LIMIT 1",
         [pick_date, code, source],
+        tenant_id=tenant_id,
     )
 
 
-def list_picks(where_sql="", args=None, limit=None, offset=None):
+def list_picks(where_sql="", args=None, limit=None, offset=None, tenant_id: int | None = None):
     args = args or []
     if _repo_backend() == "sqlite":
         sql = f"SELECT * FROM picks {where_sql} ORDER BY pick_date DESC, id DESC"
@@ -375,7 +378,7 @@ def list_picks(where_sql="", args=None, limit=None, offset=None):
     if offset is not None:
         sql += " OFFSET ?"
         bound_args.append(int(offset))
-    return _mysql_select_all(sql, bound_args)
+    return _mysql_select_all(sql, bound_args, tenant_id=tenant_id)
 
 
 def create_or_replace_pick(
@@ -400,10 +403,10 @@ def create_or_replace_pick(
     data_quality="",
     market_data_source="",
     fallback_used=False,
+    tenant_id: int | None = None,
 ):
-    global _MYSQL_LAST_INSERTED_PICK_ID
     if _repo_backend() == "sqlite":
-        return sqlite_execute(
+        sqlite_execute(
             """INSERT OR REPLACE INTO picks
             (pick_date, code, name, pick_price, signal, source, source_channel, reason_tag, note,
              review_status, review_comment, content_title, content_ref, archived,
@@ -434,22 +437,28 @@ def create_or_replace_pick(
                 1 if fallback_used else 0,
             ),
         )
+        row = sqlite_q1(
+            "SELECT id FROM picks WHERE pick_date=? AND code=? AND source=?",
+            (pick_date, code, source),
+        )
+        return row["id"] if row else None
 
     with session_scope() as session:
-        pick = _get_pick_model_by_unique(session, pick_date, code, source)
+        effective_tenant_id = int(tenant_id or DEFAULT_TENANT_ID)
+        pick = _get_pick_model_by_unique(session, pick_date, code, source, tenant_id=effective_tenant_id)
         if pick is None:
             pick = Pick(
-                tenant_id=DEFAULT_TENANT_ID,
+                tenant_id=effective_tenant_id,
                 symbol=code,
                 trade_date=_coerce_date(pick_date),
                 source=source,
                 status=review_status or "accepted",
                 created_by=None,
-                strategy_id=_resolve_strategy_id(session, strategy_name),
+                strategy_id=_resolve_strategy_id(session, strategy_name, tenant_id=effective_tenant_id),
             )
             session.add(pick)
         else:
-            pick.strategy_id = _resolve_strategy_id(session, strategy_name)
+            pick.strategy_id = _resolve_strategy_id(session, strategy_name, tenant_id=effective_tenant_id)
         _hydrate_pick_model(
             pick,
             pick_date=pick_date,
@@ -476,8 +485,7 @@ def create_or_replace_pick(
             archived=False,
         )
         session.flush()
-        _MYSQL_LAST_INSERTED_PICK_ID = pick.id
-    return 1
+        return pick.id
 
 
 def update_pick(
@@ -577,6 +585,7 @@ def update_pick_api_fields(
     data_quality="",
     market_data_source="",
     fallback_used=False,
+    tenant_id: int | None = None,
 ):
     if _repo_backend() == "sqlite":
         return sqlite_execute(
@@ -608,10 +617,11 @@ def update_pick_api_fields(
         )
 
     with session_scope() as session:
-        pick = _get_pick_model(session, rid)
+        effective_tenant_id = int(tenant_id or DEFAULT_TENANT_ID)
+        pick = _get_pick_model(session, rid, tenant_id=effective_tenant_id)
         if pick is None:
             return 0
-        pick.strategy_id = _resolve_strategy_id(session, strategy_name)
+        pick.strategy_id = _resolve_strategy_id(session, strategy_name, tenant_id=effective_tenant_id)
         _hydrate_pick_model(
             pick,
             name=name,
@@ -649,6 +659,7 @@ def update_review_fields(
     validation_result,
     validation_note,
     watch_flag,
+    tenant_id: int | None = None,
 ):
     if _repo_backend() == "sqlite":
         return sqlite_execute(
@@ -674,7 +685,7 @@ def update_review_fields(
         )
 
     with session_scope() as session:
-        pick = _get_pick_model(session, rid)
+        pick = _get_pick_model(session, rid, tenant_id=tenant_id)
         if pick is None:
             return 0
         _hydrate_pick_model(
@@ -859,15 +870,15 @@ def last_inserted_id():
     if _repo_backend() == "sqlite":
         row = sqlite_q1("SELECT id FROM picks ORDER BY id DESC LIMIT 1")
         return row["id"] if row else None
-    return _MYSQL_LAST_INSERTED_PICK_ID
+    return None
 
 
-def count_picks(where_sql="", args=None):
+def count_picks(where_sql="", args=None, tenant_id: int | None = None):
     args = args or []
     if _repo_backend() == "sqlite":
         row = sqlite_q1(f"SELECT COUNT(*) AS cnt FROM picks {where_sql}", args)
         return int(row["cnt"]) if row and row.get("cnt") is not None else 0
-    row = _mysql_select_one(f"SELECT COUNT(*) AS cnt FROM ({_MYSQL_COMPAT_SELECT}) AS picks_compat {where_sql}", args)
+    row = _mysql_select_one(f"SELECT COUNT(*) AS cnt FROM ({_MYSQL_COMPAT_SELECT}) AS picks_compat {where_sql}", args, tenant_id=tenant_id)
     return int(row["cnt"]) if row and row.get("cnt") is not None else 0
 
 

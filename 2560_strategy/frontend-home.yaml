@@ -1,0 +1,26 @@
+- generic [ref=e3]:
+  - complementary "主导航" [ref=e4]:
+    - heading "2560 strategy" [level=1] [ref=e5]
+    - generic [ref=e6]:
+      - generic [ref=e7]: 当前租户
+      - textbox "当前租户 ID" [ref=e8]: "1"
+    - navigation [ref=e9]:
+      - button "首页看板" [ref=e10] [cursor=pointer]
+      - button "策略管理" [ref=e11] [cursor=pointer]
+      - button "策略扫描" [ref=e12] [cursor=pointer]
+      - button "股票 K 线" [ref=e13] [cursor=pointer]
+      - button "选股池" [ref=e14] [cursor=pointer]
+      - button "研究报告" [ref=e15] [cursor=pointer]
+      - button "后台管理" [ref=e16] [cursor=pointer]
+  - main [ref=e17]:
+    - generic [ref=e19]: Bad Gateway
+    - generic [ref=e20]:
+      - article [ref=e21]:
+        - heading "API 状态" [level=2] [ref=e22]
+        - paragraph [ref=e23]: unknown
+      - article [ref=e24]:
+        - heading "行情数据源" [level=2] [ref=e25]
+        - paragraph [ref=e26]: unknown / undefined
+      - article [ref=e27]:
+        - heading "策略数量" [level=2] [ref=e28]
+        - paragraph [ref=e29]: "0"

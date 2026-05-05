@@ -20,10 +20,14 @@ def create_scan():
     context = get_authenticated_tenant_context()
     require_role(context, "admin", "editor")
     payload = request.get_json(silent=True) or {}
+    params = dict(payload.get("params") or {})
+    for key in ("security_type", "target_security_type", "bar_interval", "interval", "adjust", "allow_t0"):
+        if key in payload and key not in params:
+            params[key] = payload.get(key)
     item = service.create_scan(
         tenant_id=context.tenant_id,
         strategy_code=payload.get("strategy_code"),
-        params=payload.get("params") or {},
+        params=params,
     )
     audit_log_service.record(
         context=context,

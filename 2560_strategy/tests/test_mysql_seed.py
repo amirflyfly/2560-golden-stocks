@@ -27,7 +27,7 @@ def test_seed_default_strategies_is_idempotent():
 
     assert first == {"created": len(DEFAULT_STRATEGIES), "existing": 0}
     assert second == {"created": 0, "existing": len(DEFAULT_STRATEGIES)}
-    assert {"2560", "first_limit_up"} <= codes
+    assert {"2560", "first_limit_up", "LIMIT_UP_RETURN"} <= codes
 
 
 def test_seed_repairs_existing_admin_tenant_binding_role():

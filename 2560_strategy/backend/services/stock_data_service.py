@@ -4,6 +4,7 @@ import os
 import pickle
 from contextlib import contextmanager
 from datetime import datetime, timedelta
+from decimal import Decimal, InvalidOperation
 from typing import List
 
 try:
@@ -103,11 +104,67 @@ class StockDataSource:
     def get_stock_list(self):
         raise NotImplementedError
 
-    def get_stock_hist(self, symbol: str, start_date: str, end_date: str, adjust: str = "qfq"):
+    def get_stock_hist(self, symbol: str, start_date: str, end_date: str, adjust: str = "qfq", interval: str = "1d"):
         raise NotImplementedError
 
     def get_trading_dates(self, start_date: str, end_date: str) -> List[str]:
         raise NotImplementedError
+
+
+class LocalMarketDataSource(StockDataSource):
+    def __init__(self):
+        super().__init__()
+        self.name = "LocalMarketData"
+
+    def get_stock_list(self):
+        from backend.repositories import market_data_repo
+
+        try:
+            payload = market_data_repo.list_stocks(limit=500)
+        except Exception:
+            payload = {"items": []}
+        rows = [
+            {"代码": item.get("symbol"), "名称": item.get("name") or item.get("symbol")}
+            for item in payload.get("items", [])
+        ]
+        if pd is not None:
+            return pd.DataFrame(rows)
+        return SimpleTable(rows)
+
+    def get_stock_hist(self, symbol: str, start_date: str, end_date: str, adjust: str = "qfq", interval: str = "1d"):
+        from backend.repositories import market_data_repo
+
+        try:
+            bars = market_data_repo.get_daily_bars(symbol, start_date, end_date, adjust=adjust, interval=interval)
+        except Exception:
+            bars = []
+        rows = [
+            {
+                "date": bar.get("trade_date"),
+                "open": bar.get("open"),
+                "close": bar.get("close"),
+                "high": bar.get("high"),
+                "low": bar.get("low"),
+                "volume": bar.get("volume"),
+                "amount": bar.get("amount"),
+                "turnover": bar.get("turnover_rate"),
+                "source": bar.get("source"),
+                "adjust": bar.get("adjust"),
+                "interval": bar.get("interval"),
+            }
+            for bar in bars
+        ]
+        if pd is not None:
+            return pd.DataFrame(rows)
+        return SimpleTable(rows)
+
+    def get_trading_dates(self, start_date: str, end_date: str) -> List[str]:
+        from backend.repositories import market_data_repo
+
+        try:
+            return market_data_repo.list_trading_dates(start_date, end_date)
+        except Exception:
+            return []
 
 
 class AkShareDataSource(StockDataSource):
@@ -175,11 +232,12 @@ class AkShareDataSource(StockDataSource):
     def _get_hist_from_eastmoney(self, symbol: str, start_date: str, end_date: str, adjust: str):
         start_str = start_date.replace('-', '')
         end_str = end_date.replace('-', '')
+        provider_adjust = '' if str(adjust or '').lower() in {'none', 'raw', 'bfq'} else adjust
         with proxy_disabled():
             return self._ak.stock_zh_a_hist(
                 symbol=symbol,
                 period="daily",
-                adjust=adjust,
+                adjust=provider_adjust,
                 start_date=start_str,
                 end_date=end_str
             )
@@ -194,7 +252,9 @@ class AkShareDataSource(StockDataSource):
                 adjust=sina_adjust,
             )
 
-    def get_stock_hist(self, symbol: str, start_date: str, end_date: str, adjust: str = "qfq"):
+    def get_stock_hist(self, symbol: str, start_date: str, end_date: str, adjust: str = "qfq", interval: str = "1d"):
+        if str(interval or "1d").strip().lower() not in {"1d", "day", "daily"}:
+            return pd.DataFrame()
         self._ensure_akshare()
 
         errors = []
@@ -240,7 +300,7 @@ class MockDataSource(StockDataSource):
     def get_stock_list(self):
         return fallback_stock_table()
 
-    def get_stock_hist(self, symbol: str, start_date: str, end_date: str, adjust: str = "qfq"):
+    def get_stock_hist(self, symbol: str, start_date: str, end_date: str, adjust: str = "qfq", interval: str = "1d"):
         end = datetime.strptime(end_date, '%Y-%m-%d')
         start = datetime.strptime(start_date, '%Y-%m-%d')
         dates = pd.date_range(start=start, end=end)
@@ -287,12 +347,21 @@ class StockDataService:
         self.cache_dir = cache_dir
         ensure_directory(self.cache_dir)
         self.data_sources = {
+            "local": LocalMarketDataSource(),
             "akshare": AkShareDataSource(),
             "mock": MockDataSource()
         }
-        self.default_source = "akshare"
+        self.default_source = "local"
+        self.external_fallback_sources = ["akshare", "mock"]
 
     def get_stock_list(self, source: str = None):
+        if source is None:
+            local_list = self.data_sources["local"].get_stock_list()
+            if local_list is not None and not local_list.empty:
+                return local_list
+            if os.getenv("MARKET_DATA_LOCAL_ONLY", "").strip() == "1":
+                return local_list
+            source = "mock" if os.getenv("PYTEST_CURRENT_TEST") else "akshare"
         source = source or self.default_source
         cache_key = f"stock_list_{source}"
         cache_file = os.path.join(self.cache_dir, f"{cache_key}.pkl")
@@ -345,9 +414,25 @@ class StockDataService:
             return False
         return True
 
-    def get_stock_hist(self, symbol: str, start_date: str, end_date: str, adjust: str = "qfq", source: str = None):
+    def get_stock_hist(self, symbol: str, start_date: str, end_date: str, adjust: str = "qfq", source: str = None, interval: str = "1d"):
+        interval = str(interval or "1d").strip().lower() or "1d"
+        if source is None:
+            local_df = self.data_sources["local"].get_stock_hist(symbol, start_date, end_date, adjust, interval=interval)
+            local_df = self._normalize_data(local_df)
+            if self._is_cache_usable(local_df, "local"):
+                return local_df
+            if os.getenv("MARKET_DATA_LOCAL_ONLY", "").strip() == "1":
+                return local_df
+            fallback_sources = ["mock"] if os.getenv("PYTEST_CURRENT_TEST") else self.external_fallback_sources
+            for fallback_source in fallback_sources:
+                df = self.get_stock_hist(symbol, start_date, end_date, adjust=adjust, source=fallback_source, interval=interval)
+                if self._is_cache_usable(df, fallback_source):
+                    self._persist_hist_to_local(symbol, df, adjust=adjust, source=fallback_source, interval=interval)
+                    return df
+            return local_df
+
         source = source or self.default_source
-        cache_key = f"stock_hist_{symbol}_{start_date}_{end_date}_{adjust}_{source}"
+        cache_key = f"stock_hist_{symbol}_{start_date}_{end_date}_{adjust}_{interval}_{source}"
         cache_file = os.path.join(self.cache_dir, f"{cache_key}.pkl")
 
         if os.path.exists(cache_file):
@@ -362,7 +447,7 @@ class StockDataService:
                     pass
 
         data_source = self.data_sources.get(source, self.data_sources[self.default_source])
-        df = data_source.get_stock_hist(symbol, start_date, end_date, adjust)
+        df = data_source.get_stock_hist(symbol, start_date, end_date, adjust, interval=interval)
         df = self._normalize_data(df)
 
         if self._is_cache_usable(df, source):
@@ -375,6 +460,13 @@ class StockDataService:
         return df
 
     def get_trading_dates(self, start_date: str, end_date: str, source: str = None) -> List[str]:
+        if source is None:
+            local_dates = self.data_sources["local"].get_trading_dates(start_date, end_date)
+            if local_dates:
+                return local_dates
+            if os.getenv("MARKET_DATA_LOCAL_ONLY", "").strip() == "1":
+                return local_dates
+            source = "mock" if os.getenv("PYTEST_CURRENT_TEST") else "akshare"
         source = source or self.default_source
         cache_key = f"trading_dates_{start_date}_{end_date}_{source}"
         cache_file = os.path.join(self.cache_dir, f"{cache_key}.pkl")
@@ -439,6 +531,59 @@ class StockDataService:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
 
         return df.reset_index(drop=True)
+
+    def _persist_hist_to_local(self, symbol: str, df, *, adjust: str, source: str, interval: str = "1d"):
+        if os.getenv("PYTEST_CURRENT_TEST"):
+            return
+        if df is None or getattr(df, "empty", True):
+            return
+        try:
+            from backend.infrastructure.market_data.provider import DailyBar
+            from backend.repositories import market_data_repo
+
+            bars = []
+            for _, row in df.iterrows():
+                trade_date = row.get("date")
+                if not trade_date:
+                    continue
+                if hasattr(trade_date, "strftime"):
+                    parsed_date = trade_date.date() if hasattr(trade_date, "date") else trade_date
+                else:
+                    parsed_date = datetime.strptime(str(trade_date)[:10], "%Y-%m-%d").date()
+                bars.append(
+                    DailyBar(
+                        symbol=symbol,
+                        trade_date=parsed_date,
+                        open=self._decimal_or_none(row.get("open")),
+                        high=self._decimal_or_none(row.get("high")),
+                        low=self._decimal_or_none(row.get("low")),
+                        close=self._decimal_or_none(row.get("close")),
+                        volume=self._int_or_none(row.get("volume")),
+                        amount=self._decimal_or_none(row.get("amount")),
+                        turnover_rate=self._decimal_or_none(row.get("turnover")),
+                        source=source,
+                        interval=interval or "1d",
+                    )
+                )
+            market_data_repo.upsert_daily_bars(bars, adjust=adjust)
+        except Exception as exc:
+            print(f"Failed to persist local market data cache for {symbol}: {exc}")
+
+    def _decimal_or_none(self, value):
+        if value in (None, ""):
+            return None
+        try:
+            return Decimal(str(value))
+        except (InvalidOperation, ValueError):
+            return None
+
+    def _int_or_none(self, value):
+        if value in (None, ""):
+            return None
+        try:
+            return int(float(value))
+        except (TypeError, ValueError):
+            return None
 
     def add_data_source(self, name: str, data_source: StockDataSource):
         self.data_sources[name] = data_source

@@ -78,6 +78,8 @@ def evidence_template() -> dict[str, Any]:
                     "ready": True,
                     "database_dialect": "mysql",
                     "cache_backend": "redis",
+                    "task_queue_backend": "redis",
+                    "task_execution_mode": "worker",
                     "repository_backends": {key: "mysql" for key in REPOSITORY_BACKEND_KEYS},
                     "tasks_stale": 0,
                 }
@@ -124,6 +126,8 @@ def _sample_ok(sample: dict[str, Any]) -> bool:
         bool(sample.get("ready"))
         and sample.get("database_dialect") in {"mysql", "mysql+pymysql"}
         and sample.get("cache_backend") == "redis"
+        and sample.get("task_queue_backend") == "redis"
+        and sample.get("task_execution_mode") == "worker"
         and all(backends.get(key) == "mysql" for key in REPOSITORY_BACKEND_KEYS)
         and int(sample.get("tasks_stale") or 0) == 0
     )

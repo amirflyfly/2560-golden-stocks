@@ -463,3 +463,43 @@ Remaining P6 hardening backlog:
 
 - Audit root-level report/research scripts that still read local SQLite/CSV artifacts and either move them under guarded maintenance or document them as offline-only tools.
 - After a full production soak, remove SQLite compatibility branches from dual-backend repositories instead of only guarding them.
+
+## Staging Migration Closure Drill
+
+Date: 2026-05-04
+
+Scope:
+
+- Freeze the current staging SQLite-to-MySQL migration evidence before moving to the production cutover gate.
+- Validate direct migration commands, full staging pipeline, SQL reconciliation, idempotency, backup/restore, and isolated rollback.
+
+Executed:
+
+```powershell
+docker compose run --rm -e MARKET_DATA_PROVIDER=mootdx -e MARKET_DATA_FALLBACKS=akshare -e ALLOW_MOCK_MARKET_DATA=0 backend python scripts/migrate_sqlite_to_mysql.py --resolve-strategies --json
+docker compose run --rm -e MARKET_DATA_PROVIDER=mootdx -e MARKET_DATA_FALLBACKS=akshare -e ALLOW_MOCK_MARKET_DATA=0 backend python scripts/migrate_sqlite_to_mysql.py --apply --confirm-apply sqlite-to-mysql-picks --json
+docker compose run --rm -e MARKET_DATA_PROVIDER=mootdx -e MARKET_DATA_FALLBACKS=akshare -e ALLOW_MOCK_MARKET_DATA=0 backend python scripts/migrate_sqlite_to_mysql.py --verify --json
+docker compose run --rm -e MARKET_DATA_PROVIDER=mootdx -e MARKET_DATA_FALLBACKS=akshare -e ALLOW_MOCK_MARKET_DATA=0 backend python scripts/staging_mysql_migration.py --apply --confirm-apply sqlite-to-mysql-picks
+.\venv\Scripts\python.exe scripts\backup_restore_drill.py --json
+docker compose exec -T mysql sh -lc 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysqldump -uroot --single-transaction --no-tablespaces "$MYSQL_DATABASE" > /tmp/picks_dump.sql'
+docker compose cp scripts\maintenance\mysql_restore_check.sh mysql:/tmp/mysql_restore_check.sh
+docker compose exec -T mysql sh -lc "sed -i 's/\r$//' /tmp/mysql_restore_check.sh && sh /tmp/mysql_restore_check.sh /tmp/picks_dump.sql restore_check"
+```
+
+Result:
+
+- Source SQLite fingerprint: `e39104f396860e64302827bcbba319ecd38bb63aebda38aea42bd40bacadb08e`.
+- Schema validation passed at `0011_user_engagement_fields`.
+- Resolve dry-run: `planned_rows=6`, `unresolved_strategy_rows=0`, `issues=0`, `strategy_map_size=14`.
+- Apply: `apply_gate.ok=true`, `inserted=0`, `existing=6`, `duplicates=0`.
+- Verify: `expected_rows=6`, `matched_rows=6`, `missing_rows=0`, `mismatch_rows=0`, `field_mismatches=0`.
+- SQL reconciliation: migrated slice `tenant_id=1/source=auto_scan` has 6 rows; the staging database also has one pre-existing `csv-import` smoke row.
+- Default tenant and strategy mapping: non-default tenant rows 0, null `strategy_id` rows 0, orphan `strategy_id` rows 0, mapped strategy `2560 / 2560战法`.
+- Duplicate key groups for `tenant_id + trade_date + symbol + source`: 0.
+- SQLite restore drill: passed with `restored_drill_rows=1`.
+- MySQL rollback drill: dump restored into isolated `restore_check`; restored `auto_scan=6`, duplicate key groups 0, orphan strategy rows 0, non-default tenant rows 0.
+
+Cutover gate:
+
+- Staging evidence is green for migration, reconciliation, idempotency, and restore.
+- Production cutover still requires a frozen production SQLite fingerprint, the same migration run against production staging data, a retained validated MySQL dump, and a MySQL read/write soak window before deleting SQLite compatibility branches.

@@ -97,7 +97,7 @@ class TaskApiService:
             {
                 "status": "cancelled",
                 "finished_at": task.get("finished_at") or _now(),
-                "error": "task marked as cancelled; running worker threads cannot be force-stopped",
+                "error": "task marked as cancelled; workers check cancellation at task boundaries",
                 "failure_category": "cancelled",
             },
         )
@@ -138,10 +138,17 @@ class TaskApiService:
         if not isinstance(result, dict):
             return {}
         market_data = result.get("market_data") or {}
+        snapshot_summary = result.get("local_snapshot_summary") or {}
         return {
             "matched_count": result.get("matched_count"),
             "provider": market_data.get("provider"),
             "healthy": market_data.get("healthy"),
+            "snapshot_count": result.get("snapshot_count") or snapshot_summary.get("snapshot_count"),
+            "persisted_bars": result.get("persisted_bars"),
+            "persisted_snapshots": result.get("persisted_snapshots"),
+            "production_status": result.get("production_status"),
+            "batch_count": result.get("batch_count"),
+            "child_task_count": len(result.get("child_tasks") or []),
         }
 
     def _normalize_sort(self, sort: str | None) -> str:

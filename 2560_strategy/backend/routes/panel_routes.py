@@ -327,7 +327,7 @@ def handle_post(h):
         return
 
     if h.path == '/add':
-        picks_repo.create_or_replace_pick(
+        created_id = picks_repo.create_or_replace_pick(
             pick_date=data.get('pick_date', ''),
             code=data.get('code', ''),
             name=data.get('name', ''),
@@ -346,7 +346,7 @@ def handle_post(h):
             deal_status=data.get('deal_status', '未成交'),
             secondary_spread=data.get('secondary_spread', '否'),
         )
-        new_id = picks_repo.last_inserted_id()
+        new_id = int(created_id) if created_id else picks_repo.last_inserted_id()
         h.log_action('add', [new_id] if new_id else [], f"新增 {data.get('code','')} {data.get('name','')}")
         h._redirect('/?saved=1')
         return

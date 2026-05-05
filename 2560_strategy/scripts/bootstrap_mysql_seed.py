@@ -42,6 +42,7 @@ DEFAULT_PERMISSIONS = [
 DEFAULT_STRATEGIES = [
     ("2560", "2560 Strategy", "trend", "25-day moving average and 60-day volume strategy"),
     ("first_limit_up", "First Limit Up", "limit-up", "First limit-up discovery and follow-up strategy"),
+    ("LIMIT_UP_RETURN", "Limit-up Pullback Return", "limit-up", "Limit-up anchor, shrinking pullback, support hold and re-attack strategy"),
 ]
 
 

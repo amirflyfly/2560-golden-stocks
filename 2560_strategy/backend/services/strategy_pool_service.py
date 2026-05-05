@@ -178,6 +178,125 @@ def _pick_exit_price(hist_df) -> float:
     return _safe_float(row.get('close')) or _safe_float(row.get('open'))
 
 
+def _first_row(hist_df):
+    if hist_df is None or hist_df.empty:
+        return None
+    return hist_df.iloc[0]
+
+
+def _last_row(hist_df):
+    if hist_df is None or hist_df.empty:
+        return None
+    return hist_df.iloc[-1]
+
+
+def _limit_threshold(code: str) -> float:
+    return 0.198 if str(code).startswith(("300", "301", "688", "689")) else 0.098
+
+
+def _normalized_pct(value: Any) -> float:
+    pct = _safe_float(value)
+    if abs(pct) > 1:
+        pct = pct / 100
+    return pct
+
+
+def _is_suspended_bar(hist_df) -> bool:
+    row = _first_row(hist_df)
+    if row is None:
+        return True
+    if _safe_float(row.get('volume')) <= 0:
+        return True
+    return False
+
+
+def _is_limit_up_bar(row, code: str) -> bool:
+    if row is None:
+        return False
+    if bool(row.get('is_limit_up', False)) or bool(row.get('limit_up', False)):
+        return True
+    threshold = _limit_threshold(code)
+    pct_chg = _normalized_pct(row.get('pct_chg'))
+    open_price = _safe_float(row.get('open'))
+    high = _safe_float(row.get('high'))
+    close = _safe_float(row.get('close'))
+    if pct_chg >= threshold:
+        return True
+    return open_price > 0 and high > 0 and close > 0 and open_price >= high * 0.999 and close >= high * 0.999 and pct_chg >= threshold * 0.8
+
+
+def _is_limit_down_bar(row, code: str) -> bool:
+    if row is None:
+        return False
+    if bool(row.get('is_limit_down', False)) or bool(row.get('limit_down', False)):
+        return True
+    threshold = _limit_threshold(code)
+    pct_chg = _normalized_pct(row.get('pct_chg'))
+    open_price = _safe_float(row.get('open'))
+    low = _safe_float(row.get('low'))
+    close = _safe_float(row.get('close'))
+    if pct_chg <= -threshold:
+        return True
+    return open_price > 0 and low > 0 and close > 0 and open_price <= low * 1.001 and close <= low * 1.001 and pct_chg <= -threshold * 0.8
+
+
+def _pick_metadata(pick: Dict[str, Any]) -> Dict[str, Any]:
+    metadata = {}
+    for key in (
+        'signal_subtype',
+        'volume_phase',
+        'pullback_days',
+        'retracement_days',
+        'volume_shrink_ratio',
+        'shrink_ratio',
+        'vol_ratio',
+        'vr1_60',
+        'vr5_60',
+        'drawdown_depth',
+        'pullback_depth',
+        'dist25',
+        'market_sentiment',
+        'sentiment',
+        'risk_level',
+    ):
+        value = pick.get(key)
+        if value not in (None, ''):
+            metadata[key] = value
+    for key in ('phase', 'indicators', 'risk', 'data', 'metadata', 'metadata_json'):
+        value = pick.get(key)
+        if isinstance(value, dict):
+            metadata.update(value)
+    return metadata
+
+
+def _skipped_trade(
+    *,
+    strategy_code: str,
+    strategy_name: str,
+    pick: Dict[str, Any],
+    signal_date: str,
+    entry_date: str,
+    exit_date: str,
+    reason: str,
+    action: str,
+) -> Dict[str, Any]:
+    return {
+        'strategy_code': strategy_code,
+        'strategy_name': strategy_name,
+        'signal_date': signal_date,
+        'entry_date': entry_date,
+        'exit_date': exit_date,
+        'intended_entry_date': entry_date,
+        'intended_exit_date': exit_date,
+        'code': (pick.get('code') or '').strip(),
+        'name': pick.get('name', ''),
+        'signal': pick.get('signal', ''),
+        'reason': reason,
+        'action': action,
+        'metadata': _pick_metadata(pick),
+    }
+
+
 def run_backtest(
     strategy_code: str,
     start_date: str,
@@ -205,6 +324,7 @@ def run_backtest(
     holding_days = max(1, int(holding_days))
     max_positions_per_day = max(1, int(max_positions_per_day))
     trades = []
+    skipped_trades = []
 
     for index, trade_date in enumerate(trading_dates[:-1]):
         try:
@@ -239,13 +359,85 @@ def run_backtest(
 
             entry_hist = stock_data.get_stock_hist(code, entry_date, entry_date, adjust='qfq')
             exit_hist = stock_data.get_stock_hist(code, exit_date, exit_date, adjust='qfq')
+            entry_row = _first_row(entry_hist)
+            exit_row = _last_row(exit_hist)
+
+            if _is_suspended_bar(entry_hist):
+                skipped_trades.append(
+                    _skipped_trade(
+                        strategy_code=strategy_code,
+                        strategy_name=strategy.name,
+                        pick=pick,
+                        signal_date=trade_date,
+                        entry_date=entry_date,
+                        exit_date=exit_date,
+                        reason='suspended',
+                        action='suspended_trade',
+                    )
+                )
+                continue
+            if _is_limit_up_bar(entry_row, code):
+                skipped_trades.append(
+                    _skipped_trade(
+                        strategy_code=strategy_code,
+                        strategy_name=strategy.name,
+                        pick=pick,
+                        signal_date=trade_date,
+                        entry_date=entry_date,
+                        exit_date=exit_date,
+                        reason='limit_up',
+                        action='limit_up_buy',
+                    )
+                )
+                continue
+            if _is_suspended_bar(exit_hist):
+                skipped_trades.append(
+                    _skipped_trade(
+                        strategy_code=strategy_code,
+                        strategy_name=strategy.name,
+                        pick=pick,
+                        signal_date=trade_date,
+                        entry_date=entry_date,
+                        exit_date=exit_date,
+                        reason='suspended',
+                        action='suspended_trade',
+                    )
+                )
+                continue
+            if _is_limit_down_bar(exit_row, code):
+                skipped_trades.append(
+                    _skipped_trade(
+                        strategy_code=strategy_code,
+                        strategy_name=strategy.name,
+                        pick=pick,
+                        signal_date=trade_date,
+                        entry_date=entry_date,
+                        exit_date=exit_date,
+                        reason='limit_down',
+                        action='limit_down_sell',
+                    )
+                )
+                continue
 
             entry_price = _pick_entry_price(entry_hist, fallback_price)
             exit_price = _pick_exit_price(exit_hist)
             if entry_price <= 0 or exit_price <= 0:
+                skipped_trades.append(
+                    _skipped_trade(
+                        strategy_code=strategy_code,
+                        strategy_name=strategy.name,
+                        pick=pick,
+                        signal_date=trade_date,
+                        entry_date=entry_date,
+                        exit_date=exit_date,
+                        reason='invalid_price',
+                        action='invalid_price',
+                    )
+                )
                 continue
 
             return_pct = (exit_price - entry_price) / entry_price
+            metadata = _pick_metadata(pick)
             trades.append({
                 'strategy_code': strategy_code,
                 'strategy_name': strategy.name,
@@ -263,9 +455,26 @@ def run_backtest(
                 'return_pct': round(return_pct, 4),
                 'risk_score': round(_safe_float(pick.get('risk_score', 0)), 2),
                 'score': round(_safe_float(pick.get('total_score', pick.get('limit_up_score', 0))), 2),
+                'signal_subtype': pick.get('signal_subtype') or metadata.get('signal_subtype'),
+                'volume_phase': pick.get('volume_phase') or metadata.get('volume_phase'),
+                'metadata': metadata,
+                't_plus_one': True,
+                'execution_flags': {
+                    't_plus_one': True,
+                    'suspended': False,
+                    'limit_up': False,
+                    'limit_down': False,
+                },
             })
 
     results = _build_summary(trades)
+    results['skipped_trades'] = skipped_trades
+    results['execution_summary'] = {
+        't_plus_one': True,
+        'candidate_count': len(trades) + len(skipped_trades),
+        'included_count': len(trades),
+        'skipped_count': len(skipped_trades),
+    }
 
     save_backtest_result(strategy_code, start_date, end_date, results)
 
