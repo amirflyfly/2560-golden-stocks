@@ -60,6 +60,18 @@ def test_market_data_repo_classifies_security_types(temp_market_db):
     assert summary["security_type_counts"]["index"] == 2
 
 
+def test_sqlite_connections_wait_for_busy_database(temp_market_db):
+    import backend.repositories.db as db_module
+
+    conn = db_module.db_conn()
+    try:
+        busy_timeout_ms = conn.execute("PRAGMA busy_timeout").fetchone()[0]
+    finally:
+        conn.close()
+
+    assert busy_timeout_ms >= 30000
+
+
 def test_market_data_repo_persists_non_stock_market_payloads_with_intervals(temp_market_db):
     persisted_bars = market_data_repo.upsert_daily_bars(
         [

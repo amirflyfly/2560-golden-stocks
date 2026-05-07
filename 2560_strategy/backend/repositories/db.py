@@ -7,12 +7,23 @@ Keep this module dependency-light so web_panel.py can import it safely.
 
 import sqlite3
 import os
+import threading
 from pathlib import Path
 
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 DATA_DIR = BASE_DIR / 'data'
 DB_PATH = DATA_DIR / 'picks.db'
+_SQLITE_WRITE_LOCK = threading.RLock()
+
+
+def _sqlite_busy_timeout_seconds() -> float:
+    raw_value = os.getenv("SQLITE_BUSY_TIMEOUT_SECONDS", "30")
+    try:
+        value = float(raw_value)
+    except (TypeError, ValueError):
+        value = 30.0
+    return max(1.0, min(value, 120.0))
 
 
 def _refuse_production_sqlite():
@@ -22,8 +33,10 @@ def _refuse_production_sqlite():
 
 def db_conn():
     _refuse_production_sqlite()
-    conn = sqlite3.connect(DB_PATH)
+    timeout_seconds = _sqlite_busy_timeout_seconds()
+    conn = sqlite3.connect(DB_PATH, timeout=timeout_seconds)
     conn.row_factory = sqlite3.Row
+    conn.execute(f"PRAGMA busy_timeout={int(timeout_seconds * 1000)}")
     return conn
 
 
@@ -879,20 +892,22 @@ def q1(sql, params=()):
 
 
 def execute(sql, params=()):
-    conn = db_conn()
-    try:
-        cur = conn.execute(sql, params)
-        conn.commit()
-        return cur.rowcount
-    finally:
-        conn.close()
+    with _SQLITE_WRITE_LOCK:
+        conn = db_conn()
+        try:
+            cur = conn.execute(sql, params)
+            conn.commit()
+            return cur.rowcount
+        finally:
+            conn.close()
 
 
 def execute_many(sql, seq_of_params):
-    conn = db_conn()
-    try:
-        cur = conn.executemany(sql, seq_of_params)
-        conn.commit()
-        return cur.rowcount
-    finally:
-        conn.close()
+    with _SQLITE_WRITE_LOCK:
+        conn = db_conn()
+        try:
+            cur = conn.executemany(sql, seq_of_params)
+            conn.commit()
+            return cur.rowcount
+        finally:
+            conn.close()

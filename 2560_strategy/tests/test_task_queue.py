@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import threading
 import time
 import types
 
@@ -68,6 +69,38 @@ def test_threadpool_mode_runs_without_worker_queue(monkeypatch):
             break
         time.sleep(0.05)
     assert queue.get_task(task["id"])["status"] == "completed"
+
+
+def test_threadpool_market_tasks_run_in_serial_lane(monkeypatch):
+    _reset_memory_backend(monkeypatch, execution_mode="threadpool")
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    active = 0
+    max_active = 0
+    active_lock = threading.Lock()
+
+    def slow_task(label):
+        nonlocal active, max_active
+        with active_lock:
+            active += 1
+            max_active = max(max_active, active)
+        time.sleep(0.12)
+        with active_lock:
+            active -= 1
+        return {"label": label}
+
+    tasks = [
+        queue.enqueue_task("market.sync", slow_task, label, tenant_id=1, payload={"label": label})
+        for label in ("a", "b", "c")
+    ]
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        saved = [queue.get_task(task["id"]) for task in tasks]
+        if all(item and item.get("status") == "completed" for item in saved):
+            break
+        time.sleep(0.03)
+
+    assert [queue.get_task(task["id"])["status"] for task in tasks] == ["completed", "completed", "completed"]
+    assert max_active == 1
 
 
 def test_production_redis_cache_does_not_fallback_to_memory(monkeypatch):

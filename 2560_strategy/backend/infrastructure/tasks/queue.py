@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import threading
 import traceback
 from contextvars import ContextVar
 from concurrent.futures import ThreadPoolExecutor
@@ -24,6 +25,7 @@ _TASK_TTL_SECONDS = 86400
 _STALE_AFTER_SECONDS = 900
 _TERMINAL_STATUSES = {"completed", "failed", "cancelled", "stale"}
 _CURRENT_TASK_ID: ContextVar[str | None] = ContextVar("current_task_id", default=None)
+_MARKET_TASK_LOCK = threading.RLock()
 
 
 def _now() -> str:
@@ -97,6 +99,96 @@ def _failure_category(exc: Exception) -> str:
     if "value" in name or "validation" in name:
         return "validation"
     return "unexpected"
+
+
+def _requires_serial_lane(task: dict) -> bool:
+    name = str(task.get("name") or "")
+    return name.startswith("market.")
+
+
+def _execute_task_unlocked(task_id: str, func: TaskCallable, *args: Any, **kwargs: Any) -> dict | None:
+    current = get_task(task_id)
+    if not current:
+        return None
+    if current.get("status") == "cancelled":
+        current["finished_at"] = current.get("finished_at") or _now()
+        current["duration_seconds"] = _duration_seconds(current)
+        current.setdefault("events", []).append(_event("cancelled", "cancelled before start"))
+        save_task(current)
+        return current
+    current.update({"status": "running", "started_at": current.get("started_at") or _now(), "heartbeat_at": _now()})
+    current.setdefault("events", []).append(_event("running", "worker started"))
+    save_task(current)
+    while True:
+        try:
+            current["heartbeat_at"] = _now()
+            save_task(current)
+            token = _CURRENT_TASK_ID.set(task_id)
+            try:
+                result = func(*args, **kwargs)
+            finally:
+                _CURRENT_TASK_ID.reset(token)
+            latest = get_task(task_id) or current
+            if latest.get("status") == "cancelled":
+                latest.update({"finished_at": latest.get("finished_at") or _now(), "duration_seconds": _duration_seconds(latest)})
+                latest.setdefault("events", []).append(_event("cancelled", "cancelled while running"))
+                current = latest
+            else:
+                current.update(
+                    {
+                        "status": "completed",
+                        "result": result,
+                        "finished_at": _now(),
+                        "heartbeat_at": _now(),
+                        "error": None,
+                        "failure_category": None,
+                    }
+                )
+                current["duration_seconds"] = _duration_seconds(current)
+                current.setdefault("events", []).append(_event("completed", "task completed"))
+            break
+        except Exception as exc:  # pragma: no cover - defensive background path
+            latest = get_task(task_id) or current
+            if latest.get("status") == "cancelled":
+                current = latest
+                current.update({"finished_at": current.get("finished_at") or _now(), "duration_seconds": _duration_seconds(current)})
+                current.setdefault("events", []).append(_event("cancelled", "cancelled while failing"))
+                break
+            category = _failure_category(exc)
+            retry_count = int(current.get("retry_count") or 0)
+            max_retry_count = int(current.get("max_retries") or 0)
+            if retry_count < max_retry_count:
+                current.update(
+                    {
+                        "status": "retrying",
+                        "retry_count": retry_count + 1,
+                        "error": str(exc),
+                        "traceback": traceback.format_exc(),
+                        "failure_category": category,
+                        "heartbeat_at": _now(),
+                    }
+                )
+                current.setdefault("events", []).append(_event("retrying", f"retry {retry_count + 1}/{max_retry_count}"))
+                save_task(current)
+                current.update({"status": "running", "heartbeat_at": _now()})
+                current.setdefault("events", []).append(_event("running", "retry worker started"))
+                save_task(current)
+                continue
+            current.update(
+                {
+                    "status": "failed",
+                    "error": str(exc),
+                    "traceback": traceback.format_exc(),
+                    "failure_category": category,
+                    "finished_at": _now(),
+                    "heartbeat_at": _now(),
+                }
+            )
+            current["duration_seconds"] = _duration_seconds(current)
+            current.setdefault("events", []).append(_event("failed", category))
+            break
+    save_task(current)
+    return current
 
 
 def _load_index() -> list[str]:
@@ -194,85 +286,18 @@ def _execute_task(task_id: str, func: TaskCallable, *args: Any, **kwargs: Any) -
     current = get_task(task_id)
     if not current:
         return None
-    if current.get("status") == "cancelled":
-        current["finished_at"] = current.get("finished_at") or _now()
-        current["duration_seconds"] = _duration_seconds(current)
-        current.setdefault("events", []).append(_event("cancelled", "cancelled before start"))
+    if not _requires_serial_lane(current):
+        return _execute_task_unlocked(task_id, func, *args, **kwargs)
+
+    acquired = _MARKET_TASK_LOCK.acquire(blocking=False)
+    if not acquired:
+        current.setdefault("events", []).append(_event("pending", "waiting for market task lane"))
         save_task(current)
-        return current
-    current.update({"status": "running", "started_at": current.get("started_at") or _now(), "heartbeat_at": _now()})
-    current.setdefault("events", []).append(_event("running", "worker started"))
-    save_task(current)
-    while True:
-        try:
-            current["heartbeat_at"] = _now()
-            save_task(current)
-            token = _CURRENT_TASK_ID.set(task_id)
-            try:
-                result = func(*args, **kwargs)
-            finally:
-                _CURRENT_TASK_ID.reset(token)
-            latest = get_task(task_id) or current
-            if latest.get("status") == "cancelled":
-                latest.update({"finished_at": latest.get("finished_at") or _now(), "duration_seconds": _duration_seconds(latest)})
-                latest.setdefault("events", []).append(_event("cancelled", "cancelled while running"))
-                current = latest
-            else:
-                current.update(
-                    {
-                        "status": "completed",
-                        "result": result,
-                        "finished_at": _now(),
-                        "heartbeat_at": _now(),
-                        "error": None,
-                        "failure_category": None,
-                    }
-                )
-                current["duration_seconds"] = _duration_seconds(current)
-                current.setdefault("events", []).append(_event("completed", "task completed"))
-            break
-        except Exception as exc:  # pragma: no cover - defensive background path
-            latest = get_task(task_id) or current
-            if latest.get("status") == "cancelled":
-                current = latest
-                current.update({"finished_at": current.get("finished_at") or _now(), "duration_seconds": _duration_seconds(current)})
-                current.setdefault("events", []).append(_event("cancelled", "cancelled while failing"))
-                break
-            category = _failure_category(exc)
-            retry_count = int(current.get("retry_count") or 0)
-            max_retry_count = int(current.get("max_retries") or 0)
-            if retry_count < max_retry_count:
-                current.update(
-                    {
-                        "status": "retrying",
-                        "retry_count": retry_count + 1,
-                        "error": str(exc),
-                        "traceback": traceback.format_exc(),
-                        "failure_category": category,
-                        "heartbeat_at": _now(),
-                    }
-                )
-                current.setdefault("events", []).append(_event("retrying", f"retry {retry_count + 1}/{max_retry_count}"))
-                save_task(current)
-                current.update({"status": "running", "heartbeat_at": _now()})
-                current.setdefault("events", []).append(_event("running", "retry worker started"))
-                save_task(current)
-                continue
-            current.update(
-                {
-                    "status": "failed",
-                    "error": str(exc),
-                    "traceback": traceback.format_exc(),
-                    "failure_category": category,
-                    "finished_at": _now(),
-                    "heartbeat_at": _now(),
-                }
-            )
-            current["duration_seconds"] = _duration_seconds(current)
-            current.setdefault("events", []).append(_event("failed", category))
-            break
-    save_task(current)
-    return current
+        _MARKET_TASK_LOCK.acquire()
+    try:
+        return _execute_task_unlocked(task_id, func, *args, **kwargs)
+    finally:
+        _MARKET_TASK_LOCK.release()
 
 
 def run_queued_task(task_id: str, func: TaskCallable, *args: Any, **kwargs: Any) -> dict | None:
