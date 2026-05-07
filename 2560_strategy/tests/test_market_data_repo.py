@@ -117,6 +117,32 @@ def test_market_data_repo_persists_non_stock_market_payloads_with_intervals(temp
     assert market_data_repo.snapshot_summary()["snapshot_count"] == 2
 
 
+def test_market_data_repo_normalizes_non_finite_decimal_values(temp_market_db):
+    persisted = market_data_repo.upsert_quote_snapshots(
+        [
+            QuoteSnapshot(
+                "000001",
+                datetime(2026, 5, 4, 15, 0, 0),
+                Decimal("1.00"),
+                Decimal("NaN"),
+                Decimal("Infinity"),
+                Decimal("-Infinity"),
+                amount=Decimal("NaN"),
+                source="unit",
+            ),
+        ]
+    )
+
+    latest = market_data_repo.get_latest_snapshot("000001")
+
+    assert persisted == 1
+    assert latest["last_price"] == 1.0
+    assert latest["open"] is None
+    assert latest["high"] is None
+    assert latest["low"] is None
+    assert latest["amount"] is None
+
+
 def test_market_data_repo_persists_auction_snapshots(temp_market_db):
     persisted = market_data_repo.upsert_auction_snapshots(
         [

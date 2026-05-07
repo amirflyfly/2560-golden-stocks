@@ -24,7 +24,7 @@ def upgrade() -> None:
     op.add_column("stock_daily_bars", sa.Column("trade_time", sa.DateTime(), nullable=True))
     op.add_column("stock_daily_bars", sa.Column("interval", sa.String(length=16), nullable=False, server_default="1d"))
     op.execute("UPDATE stock_daily_bars SET trade_time = CAST(trade_date AS DATETIME) WHERE trade_time IS NULL")
-    op.alter_column("stock_daily_bars", "trade_time", nullable=False)
+    op.alter_column("stock_daily_bars", "trade_time", nullable=False, existing_type=sa.DateTime())
     op.create_index("ix_stock_daily_bars_trade_time", "stock_daily_bars", ["trade_time"])
     op.create_index("ix_stock_daily_bars_interval", "stock_daily_bars", ["interval"])
 

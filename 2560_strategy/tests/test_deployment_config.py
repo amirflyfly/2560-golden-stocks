@@ -44,7 +44,7 @@ def test_backend_dockerfile_uses_gunicorn_instead_of_flask_dev_server():
 def test_readiness_checks_alembic_schema_revision():
     monitoring_source = (PROJECT_ROOT / "backend" / "application" / "monitoring_service.py").read_text(encoding="utf-8")
 
-    assert 'EXPECTED_ALEMBIC_REVISION = "0011_user_engagement_fields"' in monitoring_source
+    assert 'EXPECTED_ALEMBIC_REVISION = "0022_stock_daily_bar_timestamps"' in monitoring_source
     assert "SELECT version_num FROM alembic_version LIMIT 1" in monitoring_source
     assert '"schema_revision": schema_ok' in monitoring_source
 

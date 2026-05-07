@@ -126,7 +126,12 @@ def create_app(config=None):
     app.config['SESSION_COOKIE_NAME'] = 'promo_panel_auth'
     app.config['SESSION_COOKIE_HTTPONLY'] = True
     app.config['SESSION_COOKIE_SAMESITE'] = os.getenv('SESSION_COOKIE_SAMESITE', 'Lax')
-    app.config['SESSION_COOKIE_SECURE'] = settings.environment.lower() in {'prod', 'production'}
+    session_cookie_secure = os.getenv('SESSION_COOKIE_SECURE', '').strip().lower()
+    app.config['SESSION_COOKIE_SECURE'] = (
+        session_cookie_secure in {'1', 'true', 'yes', 'on'}
+        if session_cookie_secure
+        else settings.environment.lower() in {'prod', 'production'}
+    )
     app.config['PERMANENT_SESSION_LIFETIME'] = 86400
     app.config['CSRF_COOKIE_NAME'] = 'promo_panel_csrf'
 

@@ -357,7 +357,7 @@ def test_mysql_schema_validator_requires_picks_v1_contract():
         EXPECTED_UNIQUE_CONSTRAINTS,
     )
 
-    assert EXPECTED_ALEMBIC_REVISION == "0021_external_push_deliveries"
+    assert EXPECTED_ALEMBIC_REVISION == "0022_stock_daily_bar_timestamps"
     assert {"points", "last_checkin"} <= EXPECTED_COLUMNS["users"]
     assert V1_PICK_TARGET_COLUMNS <= EXPECTED_COLUMNS["picks"]
     assert "tenant_id" in EXPECTED_COLUMNS["picks"]
@@ -369,6 +369,7 @@ def test_mysql_schema_validator_requires_picks_v1_contract():
     assert {"pick_id", "analysis_date", "technical_score", "total_score", "research_summary"} <= EXPECTED_COLUMNS["research_reports"]
     assert {"code", "name", "category", "description", "enabled", "is_active", "sort_order"} <= EXPECTED_COLUMNS["strategies"]
     assert {"is_st", "board_type", "limit_rule_profile", "is_suspended", "is_delisting"} <= EXPECTED_COLUMNS["stocks"]
+    assert {"trade_time", "interval", "adjust", "created_at", "updated_at"} <= EXPECTED_COLUMNS["stock_daily_bars"]
     assert {"exchange", "board_type", "security_type", "risk_warning", "effective_from", "limit_up_rate", "limit_down_rate"} <= EXPECTED_COLUMNS["limit_rule_calendar"]
     assert {"indicative_price", "matched_volume", "order_book", "withdrawal_sell_volume", "seal_volume"} <= EXPECTED_COLUMNS["stock_auction_snapshots"]
     assert {"idempotency_key", "request_hash", "broker_order_id", "response_json"} <= EXPECTED_COLUMNS["live_broker_requests"]

@@ -36,16 +36,21 @@ def _date_text(value: Any) -> str:
 
 
 def _decimal_float(value: Decimal | None) -> float | None:
-    return float(value) if value is not None else None
+    if value is None:
+        return None
+    if hasattr(value, "is_finite") and not value.is_finite():
+        return None
+    return float(value)
 
 
 def _decimal_value(value: Any) -> Decimal | None:
     if value in (None, ""):
         return None
     try:
-        return Decimal(str(value))
+        parsed = Decimal(str(value))
     except (InvalidOperation, TypeError, ValueError):
         return None
+    return parsed if parsed.is_finite() else None
 
 
 def _int_value(value: Any) -> int | None:
@@ -322,13 +327,13 @@ def upsert_daily_bars(bars: list[DailyBar], *, adjust: str = "qfq") -> int:
                         trade_time=_parse_datetime(_bar_trade_time(bar)) or datetime.combine(bar.trade_date, datetime.min.time()),
                         interval=_bar_interval(bar),
                         adjust=normalized_adjust,
-                        open=bar.open,
-                        high=bar.high,
-                        low=bar.low,
-                        close=bar.close,
+                        open=_decimal_value(bar.open),
+                        high=_decimal_value(bar.high),
+                        low=_decimal_value(bar.low),
+                        close=_decimal_value(bar.close),
                         volume=bar.volume,
-                        amount=bar.amount,
-                        turnover_rate=bar.turnover_rate,
+                        amount=_decimal_value(bar.amount),
+                        turnover_rate=_decimal_value(bar.turnover_rate),
                         source=bar.source,
                     )
                 )
@@ -336,13 +341,13 @@ def upsert_daily_bars(bars: list[DailyBar], *, adjust: str = "qfq") -> int:
                 model.adjust = normalized_adjust
                 model.trade_time = _parse_datetime(_bar_trade_time(bar)) or model.trade_time
                 model.interval = _bar_interval(bar)
-                model.open = bar.open
-                model.high = bar.high
-                model.low = bar.low
-                model.close = bar.close
+                model.open = _decimal_value(bar.open)
+                model.high = _decimal_value(bar.high)
+                model.low = _decimal_value(bar.low)
+                model.close = _decimal_value(bar.close)
                 model.volume = bar.volume
-                model.amount = bar.amount
-                model.turnover_rate = bar.turnover_rate
+                model.amount = _decimal_value(bar.amount)
+                model.turnover_rate = _decimal_value(bar.turnover_rate)
             count += 1
     return count
 
@@ -405,15 +410,15 @@ def upsert_quote_snapshots(items: list[QuoteSnapshot | dict]) -> int:
                 (
                     item["symbol"],
                     item["trade_time"],
-                    item["last_price"],
-                    item["open"],
-                    item["high"],
-                    item["low"],
-                    item["prev_close"],
+                    _decimal_float(_decimal_value(item["last_price"])),
+                    _decimal_float(_decimal_value(item["open"])),
+                    _decimal_float(_decimal_value(item["high"])),
+                    _decimal_float(_decimal_value(item["low"])),
+                    _decimal_float(_decimal_value(item["prev_close"])),
                     item["volume"],
-                    item["amount"],
-                    item["bid_price"],
-                    item["ask_price"],
+                    _decimal_float(_decimal_value(item["amount"])),
+                    _decimal_float(_decimal_value(item["bid_price"])),
+                    _decimal_float(_decimal_value(item["ask_price"])),
                     item["source"],
                 )
                 for item in snapshots

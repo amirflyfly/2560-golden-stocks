@@ -216,6 +216,24 @@ EXPECTED_COLUMNS = {
         "created_at",
         "updated_at",
     },
+    "stock_daily_bars": {
+        "id",
+        "symbol",
+        "trade_date",
+        "trade_time",
+        "interval",
+        "adjust",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "amount",
+        "turnover_rate",
+        "source",
+        "created_at",
+        "updated_at",
+    },
     "limit_rule_calendar": {
         "id",
         "exchange",
@@ -371,7 +389,7 @@ EXPECTED_UNIQUE_CONSTRAINTS = {
     "external_push_deliveries": {"uk_external_push_deliveries_key"},
 }
 
-EXPECTED_ALEMBIC_REVISION = "0021_external_push_deliveries"
+EXPECTED_ALEMBIC_REVISION = "0022_stock_daily_bar_timestamps"
 EXPECTED_TENANT_CODE = "default"
 EXPECTED_STRATEGY_CODES = {"2560", "first_limit_up", "LIMIT_UP_RETURN", "CONVERTIBLE_BOND_LOW_PREMIUM"}
 

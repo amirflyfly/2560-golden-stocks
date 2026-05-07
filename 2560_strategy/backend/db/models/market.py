@@ -51,7 +51,7 @@ class LimitRuleCalendar(TimestampMixin, Base):
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
-class StockDailyBar(Base):
+class StockDailyBar(TimestampMixin, Base):
     __tablename__ = "stock_daily_bars"
     __table_args__ = (UniqueConstraint("symbol", "trade_date", "trade_time", "interval", "source", "adjust", name="uk_bar_symbol_time_interval_source_adjust"),)
 
