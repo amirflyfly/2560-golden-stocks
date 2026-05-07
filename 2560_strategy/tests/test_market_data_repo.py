@@ -5,7 +5,7 @@ from decimal import Decimal
 
 import pytest
 
-from backend.infrastructure.market_data.provider import DailyBar, QuoteSnapshot, StockInfo
+from backend.infrastructure.market_data.provider import AuctionSnapshot, DailyBar, QuoteSnapshot, StockInfo
 from backend.repositories import market_data_repo
 
 
@@ -103,6 +103,44 @@ def test_market_data_repo_persists_non_stock_market_payloads_with_intervals(temp
     assert market_data_repo.coverage_summary()["synced_symbols"] == 2
     assert market_data_repo.coverage_summary(interval="15m")["synced_symbols"] == 1
     assert market_data_repo.snapshot_summary()["snapshot_count"] == 2
+
+
+def test_market_data_repo_persists_auction_snapshots(temp_market_db):
+    persisted = market_data_repo.upsert_auction_snapshots(
+        [
+            AuctionSnapshot(
+                symbol="000001",
+                trade_date=date(2026, 5, 6),
+                auction_time=datetime(2026, 5, 6, 9, 25, 0),
+                prev_close=Decimal("11.00"),
+                indicative_price=Decimal("11.42"),
+                matched_volume=280,
+                matched_amount=Decimal("3900000"),
+                unmatched_buy_volume=900,
+                unmatched_sell_volume=120,
+                order_book={"bid1": {"price": "11.42", "volume": 900}},
+                withdrawal_buy_volume=40,
+                withdrawal_sell_volume=20,
+                seal_price=Decimal("11.42"),
+                seal_volume=600,
+                seal_amount=Decimal("6852000"),
+                seal_side="buy",
+                source="unit",
+            )
+        ]
+    )
+
+    latest = market_data_repo.get_latest_auction_snapshot("000001")
+    summary = market_data_repo.auction_snapshot_summary(security_type="stock")
+
+    assert persisted == 1
+    assert latest["phase"] == "call_auction_0920_0925"
+    assert latest["indicative_price"] == 11.42
+    assert latest["matched_amount"] == 3900000
+    assert latest["order_book"]["bid1"]["volume"] == 900
+    assert latest["withdrawal_sell_volume"] == 20
+    assert latest["seal_side"] == "buy"
+    assert summary["snapshot_count"] == 1
 
 
 def test_market_data_repo_tracks_sync_state_per_interval(temp_market_db):

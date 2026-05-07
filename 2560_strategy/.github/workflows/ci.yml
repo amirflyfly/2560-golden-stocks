@@ -29,8 +29,8 @@ jobs:
         env:
           APP_ENV: development
           APP_DEBUG: '0'
-          MARKET_DATA_PROVIDER: mock
-          ALLOW_MOCK_MARKET_DATA: '1'
+          MARKET_DATA_PROVIDER: mootdx
+          MARKET_DATA_FALLBACKS: akshare
         run: python -m pytest
 
   frontend-build:
@@ -66,10 +66,10 @@ jobs:
         env:
           APP_ENV: development
           APP_DEBUG: '0'
-          MARKET_DATA_PROVIDER: mock
-          ALLOW_MOCK_MARKET_DATA: '1'
+          MARKET_DATA_PROVIDER: mootdx
+          MARKET_DATA_FALLBACKS: akshare
           SECRET_KEY: e2e-dev-secret-key-please-do-not-use-in-prod
-        run: npm run test:e2e
+        run: npm run test:e2e:ci
 
   deployment-config:
     name: Compose config and image build
@@ -93,7 +93,6 @@ jobs:
           REDIS_PASSWORD=ci-redis-password-123456
           MARKET_DATA_PROVIDER=mootdx
           MARKET_DATA_FALLBACKS=akshare
-          ALLOW_MOCK_MARKET_DATA=0
           PICKS_REPOSITORY_BACKEND=mysql
           AUTH_REPOSITORY_BACKEND=mysql
           AUDIT_REPOSITORY_BACKEND=mysql
@@ -140,7 +139,6 @@ jobs:
           REDIS_PASSWORD=ci-redis-password-123456
           MARKET_DATA_PROVIDER=mootdx
           MARKET_DATA_FALLBACKS=akshare
-          ALLOW_MOCK_MARKET_DATA=0
           PICKS_REPOSITORY_BACKEND=mysql
           AUTH_REPOSITORY_BACKEND=mysql
           AUDIT_REPOSITORY_BACKEND=mysql

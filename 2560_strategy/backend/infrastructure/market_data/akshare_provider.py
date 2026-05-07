@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from .provider import DailyBar, HealthCheckResult, QuoteSnapshot, StockInfo
+from .provider import AuctionSnapshot, DailyBar, HealthCheckResult, MarketDataCapabilities, QuoteSnapshot, StockInfo, derived_l1_capabilities
 from .utils import infer_exchange, normalize_bar_interval, parse_date, to_decimal, to_int
 
 
 class AkShareMarketDataProvider:
     name = "akshare"
+    _auction_note = "AkShare spot API does not expose full 9:20-9:25 withdrawal and seal details"
 
     def __init__(self):
         self._ak = None
@@ -137,6 +138,42 @@ class AkShareMarketDataProvider:
                 )
             )
         return snapshots
+
+    def get_auction_snapshots(self, symbols: list[str], trade_date: str | None = None) -> list[AuctionSnapshot]:
+        requested_date = parse_date(trade_date or datetime.now())
+        capabilities = self.get_capabilities().to_dict()
+        snapshots = []
+        for item in self.get_quote_snapshots(symbols):
+            trade_time = item.trade_time if isinstance(item.trade_time, datetime) else datetime.now()
+            if trade_time.date() != requested_date:
+                trade_time = datetime.combine(requested_date, trade_time.time())
+            snapshots.append(
+                AuctionSnapshot(
+                    symbol=item.symbol,
+                    trade_date=requested_date,
+                    auction_time=trade_time,
+                    indicative_price=item.open or item.last_price,
+                    matched_volume=item.volume,
+                    matched_amount=item.amount,
+                    prev_close=item.prev_close,
+                    bid_price=item.bid_price,
+                    ask_price=item.ask_price,
+                    order_book={
+                        "source_quality": "derived_l1",
+                        "data_quality": "derived_l1",
+                        "provider": self.name,
+                        "order_book_depth": 1,
+                        "note": self._auction_note,
+                    },
+                    source_quality="derived_l1",
+                    capabilities=capabilities,
+                    source=self.name,
+                )
+            )
+        return snapshots
+
+    def get_capabilities(self) -> MarketDataCapabilities:
+        return derived_l1_capabilities(self.name, note=self._auction_note)
 
     def get_trading_dates(self, start_date: str, end_date: str) -> list[str]:
         self._ensure_client()

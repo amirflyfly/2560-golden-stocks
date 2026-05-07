@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api/client';
+import { canAdmin, canWrite } from '../auth/permissions';
 import { DataTable, MetricCard, PageHeader, SectionCard } from '../components/common';
 
 function percent(value) {
@@ -45,25 +46,45 @@ function saveBlob(blob, filename) {
   URL.revokeObjectURL(url);
 }
 
-export function ReportsPage({ onNavigate }) {
+function todayIso() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+export function ReportsPage({ onNavigate, authz }) {
   const [period, setPeriod] = useState('week');
   const [summary, setSummary] = useState(null);
   const [reports, setReports] = useState([]);
+  const [externalDeliveries, setExternalDeliveries] = useState([]);
+  const [externalDeliveryStats, setExternalDeliveryStats] = useState(null);
+  const [dailyReview, setDailyReview] = useState(null);
+  const [reviewDate, setReviewDate] = useState(todayIso());
+  const [reviewPush, setReviewPush] = useState(false);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(true);
   const [exporting, setExporting] = useState('');
+  const [reviewing, setReviewing] = useState(false);
+  const mayWrite = canWrite(authz);
+  const mayAdmin = canAdmin(authz);
+  const writeDisabledTitle = mayWrite ? '' : 'Current role is read-only.';
+  const adminDisabledTitle = mayAdmin ? '' : 'Admin role required.';
 
   async function loadReports(nextPeriod = period) {
     setLoading(true);
     setError('');
     try {
-      const [summaryData, reportData] = await Promise.all([
+      const deliveryRequest = mayWrite
+        ? api.externalPushDeliveries({ limit: 8 })
+        : Promise.resolve({ items: [], stats: null });
+      const [summaryData, reportData, deliveryData] = await Promise.all([
         api.reportSummary({ period: nextPeriod }),
         api.reports({ page: 1, page_size: 20 }),
+        deliveryRequest,
       ]);
       setSummary(summaryData);
       setReports(reportData.items || []);
+      setExternalDeliveries(deliveryData.items || []);
+      setExternalDeliveryStats(deliveryData.stats || null);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -86,6 +107,45 @@ export function ReportsPage({ onNavigate }) {
     }
   }
 
+  async function createDailyReview() {
+    if (!mayWrite) {
+      setError(writeDisabledTitle);
+      return;
+    }
+    setReviewing(true);
+    setError('');
+    setMessage('');
+    try {
+      const result = await api.dailyReview({
+        trade_date: reviewDate,
+        push: reviewPush,
+        channels: reviewPush ? ['external'] : [],
+      });
+      setDailyReview(result);
+      setMessage(`每日复盘已生成：${result.trade_date}`);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setReviewing(false);
+    }
+  }
+
+  async function retryExternalDelivery(item) {
+    if (!mayAdmin) {
+      setError(adminDisabledTitle);
+      return;
+    }
+    setError('');
+    setMessage('');
+    try {
+      await api.retryExternalPushDelivery(item.id);
+      setMessage('External push delivery retry queued.');
+      loadReports(period);
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
   useEffect(() => {
     loadReports(period);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -96,7 +156,7 @@ export function ReportsPage({ onNavigate }) {
   const groups = summary?.groups || [];
 
   return (
-    <main className="page">
+    <main className="page" data-testid="reports-page">
       <PageHeader
         eyebrow="Reports"
         title="研究报表"
@@ -113,13 +173,50 @@ export function ReportsPage({ onNavigate }) {
             <button type="button" className="btn-secondary" onClick={() => exportSummary('json')} disabled={Boolean(exporting)}>
               {exporting === 'json' ? '导出中...' : 'JSON'}
             </button>
+            <input
+              className="scan-input"
+              type="date"
+              value={reviewDate}
+              onChange={(event) => setReviewDate(event.target.value)}
+              data-testid="daily-review-date-input"
+            />
+            <label className="checkbox-field">
+              <input type="checkbox" checked={reviewPush} onChange={(event) => setReviewPush(event.target.checked)} disabled={!mayWrite} />
+              推送
+            </label>
+            <button
+              type="button"
+              className="btn-primary"
+              onClick={createDailyReview}
+              disabled={reviewing || !reviewDate || !mayWrite}
+              title={writeDisabledTitle}
+              data-testid="daily-review-submit-button"
+            >
+              {reviewing ? '生成中...' : '生成每日复盘'}
+            </button>
           </div>
         )}
       />
 
       {error ? <div className="alert">{error}</div> : null}
+      {!mayWrite ? <div className="alert warning" data-testid="reports-readonly-warning">Read-only role: daily review and push actions are disabled.</div> : null}
       {message ? <div className="alert success">{message}</div> : null}
       {loading ? <div className="card loading-card">正在加载研究报表...</div> : null}
+
+      {dailyReview ? (
+        <SectionCard
+          title="每日交易复盘"
+          subtitle={`${dailyReview.trade_date} · ${dailyReview.paper_trading?.orders_count ?? 0} 笔委托 · ${dailyReview.paper_trading?.fills_count ?? 0} 笔成交`}
+        >
+          <div className="grid" data-testid="daily-review-summary">
+            <MetricCard label="账户权益" value={Number(dailyReview.paper_trading?.summary?.equity || 0).toFixed(2)} />
+            <MetricCard label="当前持仓" value={dailyReview.paper_trading?.active_positions ?? 0} />
+            <MetricCard label="当日标的" value={(dailyReview.paper_trading?.traded_symbols || []).length} />
+            <MetricCard label="推送状态" value={dailyReview.push?.status || 'skipped'} />
+          </div>
+          <pre className="code-block daily-review-message" data-testid="daily-review-message">{dailyReview.message}</pre>
+        </SectionCard>
+      ) : null}
 
       <section className="grid">
         <MetricCard label="入池数" value={totals.total_picks ?? 0} />
@@ -175,6 +272,37 @@ export function ReportsPage({ onNavigate }) {
           rows={reports}
           getKey={(item, index) => item.id || index}
           emptyText="暂无研究报告。"
+        />
+      </SectionCard>
+
+      <SectionCard title="External Push Deliveries" subtitle={`Queued external notification delivery state and retry audit trail. Failed: ${externalDeliveryStats?.failed ?? 0}, queued: ${externalDeliveryStats?.queued ?? 0}, sent: ${externalDeliveryStats?.sent ?? 0}.`}>
+        <DataTable
+          className="compact-table"
+          columns={[
+            { label: 'Status', render: (item) => <strong>{item.status || '-'}</strong> },
+            { label: 'Channel', render: (item) => `${item.channel_type || '-'}:${item.channel_id || '-'}` },
+            { label: 'Task', render: (item) => item.task_id || '-' },
+            { label: 'Retries', render: (item) => item.retry_count ?? 0 },
+            { label: 'Error', render: (item) => item.last_error || '-' },
+            { label: 'Updated', render: (item) => item.updated_at || item.created_at || '-' },
+            {
+              label: 'Action',
+              render: (item) => (
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  disabled={!mayAdmin || !['failed', 'skipped'].includes(String(item.status || '').toLowerCase())}
+                  title={adminDisabledTitle}
+                  onClick={() => retryExternalDelivery(item)}
+                >
+                  Retry
+                </button>
+              ),
+            },
+          ]}
+          rows={externalDeliveries}
+          getKey={(item, index) => item.id || item.delivery_key || index}
+          emptyText="No external push delivery records."
         />
       </SectionCard>
     </main>

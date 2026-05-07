@@ -114,7 +114,33 @@ def test_admin_user_management_requires_admin_and_csrf(client):
     assert changed.get_json()["data"]["role"] == "viewer"
 
 
-def test_task_filters_and_cancel_endpoint(client):
+def test_task_filters_and_cancel_endpoint(client, monkeypatch):
+    from datetime import date
+    from decimal import Decimal
+
+    from backend.api_v1.routers import sync as sync_router
+    from backend.infrastructure.market_data.provider import DailyBar
+
+    class Provider:
+        name = "akshare"
+
+        def get_daily_bars(self, symbol, start_date, end_date, adjust="qfq", interval="1d"):
+            return [
+                DailyBar(
+                    symbol=symbol,
+                    trade_date=date(2026, 1, 2),
+                    open=Decimal("10"),
+                    high=Decimal("11"),
+                    low=Decimal("9"),
+                    close=Decimal("10.5"),
+                    volume=100,
+                    amount=Decimal("1050"),
+                    source=self.name,
+                )
+            ]
+
+    monkeypatch.setattr(sync_router.service, "market_data_provider", Provider())
+
     admin = login_as(client, "stage9_tasks", role="admin")
 
     created = admin.post(

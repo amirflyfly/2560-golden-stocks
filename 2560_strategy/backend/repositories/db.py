@@ -544,6 +544,44 @@ def ensure_schema():
         cur.execute('CREATE INDEX IF NOT EXISTS idx_stock_price_snapshots_source ON stock_price_snapshots(source)')
 
         cur.execute(
+            """CREATE TABLE IF NOT EXISTS stock_auction_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT NOT NULL,
+                trade_date TEXT NOT NULL,
+                auction_time TEXT NOT NULL,
+                phase TEXT NOT NULL DEFAULT 'call_auction_0920_0925',
+                prev_close REAL DEFAULT NULL,
+                indicative_price REAL DEFAULT NULL,
+                matched_volume INTEGER DEFAULT NULL,
+                matched_amount REAL DEFAULT NULL,
+                unmatched_buy_volume INTEGER DEFAULT NULL,
+                unmatched_sell_volume INTEGER DEFAULT NULL,
+                bid_price REAL DEFAULT NULL,
+                bid_volume INTEGER DEFAULT NULL,
+                ask_price REAL DEFAULT NULL,
+                ask_volume INTEGER DEFAULT NULL,
+                order_book_json TEXT DEFAULT '{}',
+                withdrawal_buy_volume INTEGER DEFAULT NULL,
+                withdrawal_sell_volume INTEGER DEFAULT NULL,
+                withdrawal_buy_amount REAL DEFAULT NULL,
+                withdrawal_sell_amount REAL DEFAULT NULL,
+                seal_price REAL DEFAULT NULL,
+                seal_volume INTEGER DEFAULT NULL,
+                seal_amount REAL DEFAULT NULL,
+                seal_side TEXT DEFAULT '',
+                source TEXT NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(symbol, trade_date, auction_time, source)
+            )"""
+        )
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_stock_auction_snapshots_symbol ON stock_auction_snapshots(symbol)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_stock_auction_snapshots_trade_date ON stock_auction_snapshots(trade_date)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_stock_auction_snapshots_auction_time ON stock_auction_snapshots(auction_time)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_stock_auction_snapshots_phase ON stock_auction_snapshots(phase)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_stock_auction_snapshots_source ON stock_auction_snapshots(source)')
+
+        cur.execute(
             """CREATE TABLE IF NOT EXISTS market_sync_states (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 tenant_id INTEGER NOT NULL DEFAULT 1,

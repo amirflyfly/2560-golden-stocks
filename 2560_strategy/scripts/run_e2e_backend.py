@@ -5,10 +5,13 @@ from pathlib import Path
 
 os.environ.setdefault('APP_ENV', 'development')
 os.environ.setdefault('APP_DEBUG', '0')
-os.environ.setdefault('MARKET_DATA_PROVIDER', 'mock')
-os.environ.setdefault('ALLOW_MOCK_MARKET_DATA', '1')
+os.environ.setdefault('MARKET_DATA_PROVIDER', 'mootdx')
+os.environ.setdefault('MARKET_DATA_FALLBACKS', 'akshare')
 os.environ.setdefault('SECRET_KEY', 'e2e-dev-secret-key-please-do-not-use-in-prod')
 os.environ.setdefault('SESSION_COOKIE_SAMESITE', 'Lax')
+os.environ['CACHE_BACKEND'] = os.getenv('E2E_CACHE_BACKEND', 'memory')
+os.environ['TASK_QUEUE_BACKEND'] = os.getenv('E2E_TASK_QUEUE_BACKEND', 'memory')
+os.environ['TASK_EXECUTION_MODE'] = os.getenv('E2E_TASK_EXECUTION_MODE', 'threadpool')
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 E2E_DATA_DIR = BASE_DIR / 'data' / 'e2e'
@@ -27,7 +30,7 @@ from backend import create_app
 from backend.repositories import users_repo
 from backend.services.multiuser_auth_service import create_user
 
-backend_package.DIST_DIR = BASE_DIR / 'frontend' / 'dist'
+backend_package.DIST_DIR = Path(os.getenv('E2E_DIST_DIR', BASE_DIR / 'dist'))
 
 
 def reset_database() -> None:

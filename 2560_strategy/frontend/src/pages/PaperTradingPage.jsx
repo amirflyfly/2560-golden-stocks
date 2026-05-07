@@ -147,7 +147,7 @@ export function PaperTradingPage({ authz }) {
   }
 
   return (
-    <main className="page">
+    <main className="page" data-testid="paper-trading-page">
       <div className="page-header">
         <div>
           <p className="eyebrow">Paper Trading</p>
@@ -155,13 +155,13 @@ export function PaperTradingPage({ authz }) {
           <p className="muted">策略生产运行命中后会进入纸上账户，形成订单、成交、持仓和权益汇总。</p>
         </div>
         <div className="button-row">
-          <button type="button" className="btn-secondary" onClick={evaluateExits} disabled={state.actionLoading || !mayWrite}>
+          <button type="button" data-testid="paper-evaluate-exits-button" className="btn-secondary" onClick={evaluateExits} disabled={state.actionLoading || !mayWrite}>
             评估卖出
           </button>
-          <button type="button" className="btn-secondary" onClick={resetAccount} disabled={state.actionLoading || !mayAdmin}>
+          <button type="button" data-testid="paper-reset-account-button" className="btn-secondary" onClick={resetAccount} disabled={state.actionLoading || !mayAdmin}>
             重置账户
           </button>
-          <button type="button" onClick={load} disabled={state.loading}>刷新</button>
+          <button type="button" data-testid="paper-refresh-button" onClick={load} disabled={state.loading}>刷新</button>
         </div>
       </div>
 
@@ -207,7 +207,7 @@ export function PaperTradingPage({ authz }) {
         </article>
       </section>
 
-      <section className="table paper-positions-table section-gap">
+      <section className="table paper-positions-table section-gap" data-testid="paper-positions-table">
         <div className="table-row table-head">
           <span>标的</span>
           <span>持仓</span>
@@ -228,7 +228,7 @@ export function PaperTradingPage({ authz }) {
         )) : <div className="empty">暂无模拟持仓</div>}
       </section>
 
-      <section className="table paper-signals-table section-gap">
+      <section className="table paper-signals-table section-gap" data-testid="paper-signals-table">
         <div className="table-row table-head">
           <span>信号</span>
           <span>策略</span>
@@ -253,7 +253,7 @@ export function PaperTradingPage({ authz }) {
         )) : <div className="empty">暂无策略交易信号</div>}
       </section>
 
-      <section className="table paper-orders-table section-gap">
+      <section className="table paper-orders-table section-gap" data-testid="paper-orders-table">
         <div className="table-row table-head">
           <span>订单</span>
           <span>方向</span>
@@ -274,7 +274,7 @@ export function PaperTradingPage({ authz }) {
         )) : <div className="empty">暂无模拟订单</div>}
       </section>
 
-      <section className="table paper-fills-table section-gap">
+      <section className="table paper-fills-table section-gap" data-testid="paper-fills-table">
         <div className="table-row table-head">
           <span>成交</span>
           <span>方向</span>

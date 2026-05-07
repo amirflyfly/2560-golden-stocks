@@ -1,7 +1,35 @@
 import { defineConfig, devices } from '@playwright/test';
+import fs from 'node:fs';
+import path from 'node:path';
 
 const baseURL = process.env.E2E_BASE_URL || 'http://127.0.0.1:8765';
-const pythonExecutable = process.env.PYTHON || process.env.PYTHON_EXECUTABLE || 'python';
+const rootDir = path.resolve('..');
+
+function firstExistingPath(candidates) {
+  return candidates.find((candidate) => candidate && fs.existsSync(candidate));
+}
+
+function resolvePythonExecutable() {
+  if (process.env.PYTHON_EXECUTABLE) return process.env.PYTHON_EXECUTABLE;
+  if (process.env.PYTHON) return process.env.PYTHON;
+  return firstExistingPath([
+    path.join(rootDir, '.venv-codex', 'Scripts', 'python.exe'),
+    path.join(rootDir, '.venv', 'Scripts', 'python.exe'),
+    path.join(rootDir, '.venv-codex', 'bin', 'python'),
+    path.join(rootDir, '.venv', 'bin', 'python'),
+  ]) || 'python';
+}
+
+function resolveChromiumExecutable() {
+  if (process.env.PLAYWRIGHT_EXECUTABLE_PATH) return process.env.PLAYWRIGHT_EXECUTABLE_PATH;
+  return firstExistingPath([
+    'D:\\playwright-browsers\\chromium-1208\\chrome-win64\\chrome.exe',
+    'D:\\playwright-browsers\\chromium-1217\\chrome-win64\\chrome.exe',
+  ]);
+}
+
+const pythonExecutable = resolvePythonExecutable();
+const chromiumExecutable = resolveChromiumExecutable();
 const backendCommand = process.env.E2E_BACKEND_COMMAND || `${pythonExecutable} ../scripts/run_e2e_backend.py`;
 
 export default defineConfig({
@@ -29,8 +57,8 @@ export default defineConfig({
     env: {
       APP_ENV: 'development',
       APP_DEBUG: '0',
-      MARKET_DATA_PROVIDER: 'mock',
-      ALLOW_MOCK_MARKET_DATA: '1',
+      MARKET_DATA_PROVIDER: 'mootdx',
+      MARKET_DATA_FALLBACKS: 'akshare',
       SECRET_KEY: 'e2e-dev-secret-key-please-do-not-use-in-prod',
     },
   },
@@ -39,8 +67,8 @@ export default defineConfig({
       name: 'chromium',
       use: {
         ...devices['Desktop Chrome'],
-        ...(process.env.PLAYWRIGHT_EXECUTABLE_PATH
-          ? { channel: undefined, launchOptions: { executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH } }
+        ...(chromiumExecutable
+          ? { channel: undefined, launchOptions: { executablePath: chromiumExecutable } }
           : {}),
       },
     },

@@ -9,9 +9,12 @@ from backend.repositories import picks_repo
 from backend.services.logs_service import recent_logs
 
 
-_WORTHY_STATUSES = {"worthy", "worth_review", "鍊煎緱澶嶈", "值得复盘"}
-_DEAL_STATUSES = {"done", "deal", "dealt", "completed", "宸叉垚浜?", "已成交"}
-_SPREAD_STATUSES = {"yes", "true", "1", "鏄?", "是"}
+_WORTHY_STATUSES = {"worthy", "worth_review", "review", "watch", "值得复盘"}
+_DEAL_STATUSES = {"done", "deal", "dealt", "completed", "filled", "已成交"}
+_SPREAD_STATUSES = {"yes", "true", "1", "是"}
+_FIRST_LIMIT_STRATEGIES = {"FIRST_LIMIT_UP", "first_limit_up", "首板涨停策略", "首板涨停隔日", "首板策略"}
+_POSITIVE_SECOND_BOARD_EXPECTATIONS = {"强", "高", "yes", "true", "1", "strong", "high"}
+_SUCCESS_VALIDATION_STATUSES = {"成功", "命中", "hit", "success", "passed", "validated"}
 
 
 def _safe_float(value):
@@ -49,6 +52,23 @@ def _is_deal(row):
 
 def _is_spread(row):
     return (row.get("secondary_spread") or "").strip() in _SPREAD_STATUSES
+
+
+def _is_first_limit_row(row):
+    values = {
+        str(row.get("strategy_code") or "").strip(),
+        str(row.get("strategy_name") or "").strip(),
+        str(row.get("source") or "").strip(),
+    }
+    return bool(values & _FIRST_LIMIT_STRATEGIES)
+
+
+def _is_positive_second_board(row):
+    return str(row.get("second_board_expectation") or "").strip() in _POSITIVE_SECOND_BOARD_EXPECTATIONS
+
+
+def _is_validation_success(row):
+    return str(row.get("validation_result") or "").strip() in _SUCCESS_VALIDATION_STATUSES
 
 
 def _count_by(rows, key, default=""):
@@ -169,10 +189,7 @@ def dashboard_strategy_compare():
 
 
 def dashboard_second_board_pool():
-    rows = [
-        row for row in _rows()
-        if (row.get("strategy_name") or "") == "棣栨澘娑ㄥ仠" and (row.get("second_board_expectation") or "") in {"楂?", "高"}
-    ]
+    rows = [row for row in _rows() if _is_first_limit_row(row) and _is_positive_second_board(row)]
     rows.sort(key=lambda row: (_safe_float(row.get("second_board_score")), str(row.get("pick_date") or "")), reverse=True)
     return rows[:8]
 
@@ -184,28 +201,28 @@ def dashboard_watch_pool():
 
 
 def dashboard_validate_rows():
-    rows = [row for row in _rows() if (row.get("strategy_name") or "") == "棣栨澘娑ㄥ仠" and _safe_int(row.get("watch_flag")) == 1]
+    rows = [row for row in _rows() if _is_first_limit_row(row) and _safe_int(row.get("watch_flag")) == 1]
     rows.sort(key=lambda row: (str(row.get("pick_date") or ""), _safe_int(row.get("id"))), reverse=True)
     return rows[:10]
 
 
 def dashboard_validate_stats():
-    return _count_by([row for row in _rows() if (row.get("strategy_name") or "") == "棣栨澘娑ㄥ仠"], "validation_result", "pending")
+    return _count_by([row for row in _rows() if _is_first_limit_row(row)], "validation_result", "pending")
 
 
 def dashboard_validate_rate():
-    rows = [row for row in _rows() if (row.get("strategy_name") or "") == "棣栨澘娑ㄥ仠"]
-    return {"total": len(rows), "success": sum(1 for row in rows if (row.get("validation_result") or "") in {"鏅嬬骇鎴愬姛", "success"})}
+    rows = [row for row in _rows() if _is_first_limit_row(row)]
+    return {"total": len(rows), "success": sum(1 for row in rows if _is_validation_success(row))}
 
 
 def dashboard_hit_compare():
     grouped = defaultdict(lambda: {"total": 0, "hit_total": 0})
     for row in _rows():
-        if (row.get("strategy_name") or "") != "棣栨澘娑ㄥ仠":
+        if not _is_first_limit_row(row):
             continue
         key = row.get("second_board_expectation") or "pending"
         grouped[key]["total"] += 1
-        grouped[key]["hit_total"] += 1 if (row.get("validation_result") or "") in {"鏅嬬骇鎴愬姛", "success"} else 0
+        grouped[key]["hit_total"] += 1 if _is_validation_success(row) else 0
     return [{"name": key, **value} for key, value in sorted(grouped.items(), key=lambda pair: pair[1]["total"], reverse=True)]
 
 

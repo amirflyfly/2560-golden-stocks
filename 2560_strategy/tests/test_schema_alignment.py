@@ -357,7 +357,7 @@ def test_mysql_schema_validator_requires_picks_v1_contract():
         EXPECTED_UNIQUE_CONSTRAINTS,
     )
 
-    assert EXPECTED_ALEMBIC_REVISION == "0018_limit_up_return_rules"
+    assert EXPECTED_ALEMBIC_REVISION == "0021_external_push_deliveries"
     assert {"points", "last_checkin"} <= EXPECTED_COLUMNS["users"]
     assert V1_PICK_TARGET_COLUMNS <= EXPECTED_COLUMNS["picks"]
     assert "tenant_id" in EXPECTED_COLUMNS["picks"]
@@ -370,10 +370,20 @@ def test_mysql_schema_validator_requires_picks_v1_contract():
     assert {"code", "name", "category", "description", "enabled", "is_active", "sort_order"} <= EXPECTED_COLUMNS["strategies"]
     assert {"is_st", "board_type", "limit_rule_profile", "is_suspended", "is_delisting"} <= EXPECTED_COLUMNS["stocks"]
     assert {"exchange", "board_type", "security_type", "risk_warning", "effective_from", "limit_up_rate", "limit_down_rate"} <= EXPECTED_COLUMNS["limit_rule_calendar"]
+    assert {"indicative_price", "matched_volume", "order_book", "withdrawal_sell_volume", "seal_volume"} <= EXPECTED_COLUMNS["stock_auction_snapshots"]
+    assert {"idempotency_key", "request_hash", "broker_order_id", "response_json"} <= EXPECTED_COLUMNS["live_broker_requests"]
+    assert {"fill_key", "broker_order_id", "quantity", "price", "filled_at"} <= EXPECTED_COLUMNS["live_broker_fills"]
+    assert {"idempotency_key", "differences_count", "request_json", "result_json"} <= EXPECTED_COLUMNS["live_broker_reconciliations"]
+    assert {"delivery_key", "status", "task_id", "retry_count", "last_error", "notification_payload"} <= EXPECTED_COLUMNS["external_push_deliveries"]
     assert "uk_picks_tenant_date_symbol_source" in EXPECTED_UNIQUE_CONSTRAINTS["picks"]
     assert "uk_strategy_pools_strategy_code" in EXPECTED_UNIQUE_CONSTRAINTS["strategy_pools"]
     assert "uk_research_reports_pick_analysis" in EXPECTED_UNIQUE_CONSTRAINTS["research_reports"]
     assert "uk_limit_rule_calendar_profile_start" in EXPECTED_UNIQUE_CONSTRAINTS["limit_rule_calendar"]
+    assert "uk_auction_symbol_date_time_source" in EXPECTED_UNIQUE_CONSTRAINTS["stock_auction_snapshots"]
+    assert "uk_live_broker_requests_idempotency" in EXPECTED_UNIQUE_CONSTRAINTS["live_broker_requests"]
+    assert "uk_live_broker_fills_key" in EXPECTED_UNIQUE_CONSTRAINTS["live_broker_fills"]
+    assert "uk_live_broker_reconciliations_idempotency" in EXPECTED_UNIQUE_CONSTRAINTS["live_broker_reconciliations"]
+    assert "uk_external_push_deliveries_key" in EXPECTED_UNIQUE_CONSTRAINTS["external_push_deliveries"]
 
 
 def test_mysql_research_reports_path_fails_closed_when_schema_is_missing(monkeypatch):

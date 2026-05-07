@@ -184,7 +184,6 @@ def test_stock_data_service_local_only_prevents_external_history_fallback(tmp_pa
     external_source = ExternalSource()
     service.data_sources["local"] = EmptyLocalSource()
     service.data_sources["akshare"] = external_source
-    service.data_sources["mock"] = external_source
     monkeypatch.setenv("MARKET_DATA_LOCAL_ONLY", "1")
 
     df = service.get_stock_hist("000001", "2026-05-05", "2026-05-05", adjust="qfq", interval="1d")

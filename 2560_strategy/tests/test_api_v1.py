@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from datetime import date, datetime, timedelta
+from decimal import Decimal
 import os
 import tempfile
 
 import pytest
 
 from backend import create_app
+from backend.infrastructure.market_data.provider import DailyBar, HealthCheckResult, QuoteSnapshot, StockInfo
 
 
 @pytest.fixture
@@ -67,6 +70,71 @@ def tenant_headers(client, tenant_id: int = 1, *, include_csrf: bool = False, ex
     return headers
 
 
+class TestMarketProvider:
+    name = "akshare"
+
+    def get_stock_list(self):
+        return [
+            StockInfo("000001", "Ping An", "SZ"),
+            StockInfo("000002", "Vanke", "SZ"),
+            StockInfo("000003", "Test A", "SZ"),
+            StockInfo("600000", "SPDB", "SH"),
+            StockInfo("600519", "Moutai", "SH"),
+        ]
+
+    def get_daily_bars(self, symbol, start_date, end_date, adjust="qfq", interval="1d"):
+        current = date.fromisoformat(start_date)
+        end = date.fromisoformat(end_date)
+        bars = []
+        while current <= end:
+            if current.weekday() < 5:
+                trade_time = datetime.combine(current, datetime.min.time())
+                bars.append(
+                    DailyBar(
+                        symbol=symbol,
+                        trade_date=current,
+                        trade_time=trade_time,
+                        interval=interval,
+                        open=Decimal("10"),
+                        high=Decimal("11"),
+                        low=Decimal("9"),
+                        close=Decimal("10.5"),
+                        volume=100,
+                        amount=Decimal("1050"),
+                        source=self.name,
+                    )
+                )
+            current += timedelta(days=1)
+        return bars
+
+    def get_quote_snapshots(self, symbols):
+        return [
+            QuoteSnapshot(
+                symbol=symbol,
+                trade_time="2026-05-08T09:30:00",
+                last_price=Decimal("10"),
+                open=Decimal("10"),
+                high=Decimal("10"),
+                low=Decimal("10"),
+                source=self.name,
+            )
+            for symbol in symbols
+        ]
+
+    def get_trading_dates(self, start_date, end_date):
+        current = date.fromisoformat(start_date)
+        end = date.fromisoformat(end_date)
+        dates = []
+        while current <= end:
+            if current.weekday() < 5:
+                dates.append(current.isoformat())
+            current += timedelta(days=1)
+        return dates
+
+    def health_check(self):
+        return HealthCheckResult(provider=self.name, ok=True)
+
+
 def test_api_v1_health_response_shape():
     app = create_app({"TESTING": True})
     client = app.test_client()
@@ -92,7 +160,7 @@ def test_market_data_health_exposes_provider_usage_metadata():
     assert data["actual_provider"]
     assert isinstance(data["provider_chain"], list)
     assert "fallback_used" in data
-    assert data["data_quality"] in {"primary", "fallback", "mock", "unknown"}
+    assert data["data_quality"] in {"primary", "fallback", "unknown"}
 
 
 
@@ -424,8 +492,8 @@ def test_create_scan_returns_accepted_task_for_editor(client):
     assert data["data"]["strategy_code"] == "2560"
     assert data["data"]["tenant_id"] == 1
     assert data["data"]["market_data"]["healthy"] is True
-    assert data["data"]["market_data"]["actual_provider"] == "mock"
-    assert data["data"]["market_data"]["data_quality"] == "mock"
+    assert data["data"]["market_data"]["actual_provider"] != "mock"
+    assert data["data"]["market_data"]["data_quality"] in {"primary", "fallback", "unknown"}
     assert data["data"]["market_data"]["fallback_used"] is False
     assert data["data"]["explanation"]["score"] >= 0
     assert data["data"]["explanation"]["schema_version"] == "scan-task-explanation/v2"
@@ -651,12 +719,12 @@ def test_scan_results_expose_market_data_quality_on_items(client):
             "status": "completed",
             "result": {
                 "market_data": {
-                    "provider": "mock",
-                    "primary_provider": "mock",
-                    "actual_provider": "mock",
-                    "provider_chain": ["mock"],
-                    "fallback_used": False,
-                    "data_quality": "mock",
+                    "provider": "akshare",
+                    "primary_provider": "mootdx",
+                    "actual_provider": "akshare",
+                    "provider_chain": ["mootdx", "akshare"],
+                    "fallback_used": True,
+                    "data_quality": "fallback",
                     "errors": [],
                     "healthy": True,
                     "sample_symbols": [
@@ -665,9 +733,9 @@ def test_scan_results_expose_market_data_quality_on_items(client):
                             "name": "平安银行",
                             "exchange": "SZ",
                             "market": "A",
-                            "market_data_source": "mock",
-                            "data_quality": "mock",
-                            "fallback_used": False,
+                            "market_data_source": "akshare",
+                            "data_quality": "fallback",
+                            "fallback_used": True,
                         }
                     ],
                 }
@@ -679,12 +747,12 @@ def test_scan_results_expose_market_data_quality_on_items(client):
     data = response.get_json()
 
     assert response.status_code == 200
-    assert data["data"]["market_data"]["actual_provider"] == "mock"
-    assert data["data"]["market_data"]["data_quality"] == "mock"
-    assert data["data"]["items"][0]["market_data_source"] == "mock"
-    assert data["data"]["items"][0]["data_quality"] == "mock"
+    assert data["data"]["market_data"]["actual_provider"] == "akshare"
+    assert data["data"]["market_data"]["data_quality"] == "fallback"
+    assert data["data"]["items"][0]["market_data_source"] == "akshare"
+    assert data["data"]["items"][0]["data_quality"] == "fallback"
     assert data["data"]["items"][0]["explanation"]["schema_version"] == "scan-explanation/v2"
-    assert data["data"]["items"][0]["explanation"]["risk_level"] == "high"
+    assert data["data"]["items"][0]["explanation"]["risk_level"] == "medium"
 
 
 def test_scan_results_use_registered_strategy_before_market_sample(client, monkeypatch):
@@ -832,10 +900,33 @@ def test_market_discovery_returns_breadth_and_data_contract(client):
     assert data["coverage"]["requested_sample_size"] == 3
     assert data["coverage"]["successful"] == data["breadth"]["sampled"]
     assert "success_rate" in data["coverage"]
-    assert data["data_contract"]["data_quality"] in {"primary", "fallback", "mock", "unknown"}
-    assert data["data_quality_summary"]["grade"] in {"primary", "fallback", "mock", "unknown"}
+    assert data["data_contract"]["data_quality"] in {"primary", "fallback", "unknown"}
+    assert data["data_quality_summary"]["grade"] in {"primary", "fallback", "unknown"}
     assert isinstance(data["candidate_groups"], list)
     assert isinstance(data["top_movers"], list)
+
+
+def test_market_discovery_returns_empty_contract_when_stock_list_provider_fails(client, monkeypatch):
+    from backend.api_v1.routers import market as market_router
+
+    class FailingStockListProvider(TestMarketProvider):
+        name = "broken"
+
+        def get_stock_list(self):
+            raise RuntimeError("stock list unavailable")
+
+    monkeypatch.setattr(market_router.service, "market_data_provider", FailingStockListProvider())
+    authed = login_as(client, "editor_market_discovery_provider_error")
+
+    response = authed.get("/api/v1/market-discovery?sample_size=3&lookback_days=20", headers=tenant_headers(authed))
+    data = response.get_json()["data"]
+
+    assert response.status_code == 200
+    assert data["breadth"]["sampled"] == 0
+    assert data["coverage"]["successful"] == 0
+    assert data["data_quality_summary"]["research_ready"] is False
+    assert "provider_unhealthy" in data["data_quality_summary"]["warnings"]
+    assert any("stock list unavailable" in item for item in data["data_contract"]["provider_errors"])
 
 
 def test_settings_saved_views_and_alerts_are_persisted(client):
@@ -1141,7 +1232,7 @@ def test_report_summary_distinguishes_market_data_quality(client):
     for payload in [
         {"symbol": "000001", "stock_name": "Primary", "source": "manual", "data_quality": "primary", "market_data_source": "akshare"},
         {"symbol": "000002", "stock_name": "Fallback", "source": "scan", "data_quality": "primary", "market_data_source": "akshare", "fallback_used": True},
-        {"symbol": "000003", "stock_name": "Mock", "source": "scan", "data_quality": "mock", "market_data_source": "mock"},
+        {"symbol": "000003", "stock_name": "Fallback 2", "source": "scan", "data_quality": "primary", "market_data_source": "akshare", "fallback_used": True},
     ]:
         response = authed.post(
             "/api/v1/picks",
@@ -1155,19 +1246,19 @@ def test_report_summary_distinguishes_market_data_quality(client):
 
     assert response.status_code == 200
     assert data["summary"]["data_quality"]["primary"] == 1
-    assert data["summary"]["data_quality"]["fallback"] == 1
-    assert data["summary"]["data_quality"]["mock"] == 1
+    assert data["summary"]["data_quality"]["fallback"] == 2
+    assert data["summary"]["data_quality"]["mock"] == 0
     assert data["groups"][0]["data_quality"]["primary"] == 1
-    assert data["groups"][0]["data_quality"]["fallback"] == 1
+    assert data["groups"][0]["data_quality"]["fallback"] == 2
     assert data["drilldowns"]["picks"]["page"] == "picks"
     assert data["groups"][0]["drilldowns"]["picks"]["filters"]["strategy_code"] == "2560"
     assert data["groups"][0]["drilldowns"]["backtests"]["page"] == "strategies"
-    assert data["groups"][0]["data_quality"]["mock"] == 1
+    assert data["groups"][0]["data_quality"]["mock"] == 0
     assert data["attribution"]["schema_version"] == "report-attribution/v1"
     assert data["attribution"]["dimensions"]["strategy"][0]["key"] == "2560"
     assert data["attribution"]["dimensions"]["strategy"][0]["total"] == 3
     quality_keys = {item["key"] for item in data["attribution"]["dimensions"]["data_quality"]}
-    assert {"primary", "fallback", "mock"} <= quality_keys
+    assert {"primary", "fallback"} <= quality_keys
     assert data["attribution"]["dimensions"]["source"][0]["drilldown"]["page"] == "picks"
 
 
@@ -1220,7 +1311,7 @@ def test_market_sync_requires_admin_role(client):
 def test_market_sync_persists_local_bars_and_exposes_coverage(client):
     from backend.application.sync_api_service import SyncApiService
 
-    result = SyncApiService()._sync_market_data(["000001"], "2026-05-01", "2026-05-04", "qfq")
+    result = SyncApiService(TestMarketProvider())._sync_market_data(["000001"], "2026-05-01", "2026-05-04", "qfq")
 
     assert result["synced_symbols"] == 1
     assert result["persisted_bars"] >= 1
@@ -1255,7 +1346,7 @@ def test_market_sync_keeps_adjust_variants_separate(client):
     from backend.application.sync_api_service import SyncApiService
     from backend.repositories import market_data_repo
 
-    service = SyncApiService()
+    service = SyncApiService(TestMarketProvider())
     service._sync_market_data(["000001"], "2026-05-01", "2026-05-04", "qfq")
     service._sync_market_data(["000001"], "2026-05-01", "2026-05-04", "hfq")
 
@@ -1273,7 +1364,7 @@ def test_market_sync_keeps_adjust_variants_separate(client):
 def test_market_snapshot_sync_persists_and_exposes_latest_quotes(client):
     from backend.application.sync_api_service import SyncApiService
 
-    result = SyncApiService()._sync_quote_snapshots(["000001", "600519"])
+    result = SyncApiService(TestMarketProvider())._sync_quote_snapshots(["000001", "600519"])
 
     assert result["snapshot_count"] == 2
     assert result["persisted_snapshots"] == 2
@@ -1349,7 +1440,7 @@ def test_market_sync_incremental_starts_from_local_latest_bar(client):
     assert states["items"][0]["last_success_trade_date"] == "2026-05-08"
 
 
-def test_market_indicator_precompute_and_qfq_repair_tasks(client):
+def test_market_indicator_precompute_and_qfq_repair_tasks(client, monkeypatch):
     from datetime import date, timedelta
     from decimal import Decimal
 
@@ -1357,6 +1448,11 @@ def test_market_indicator_precompute_and_qfq_repair_tasks(client):
     from backend.infrastructure.market_data.provider import DailyBar, StockInfo
     from backend.infrastructure.tasks.queue import get_task
     from backend.repositories import market_data_repo
+    from backend.application import sync_api_service
+    from backend.api_v1.routers import sync as sync_router
+
+    monkeypatch.setattr(sync_api_service, "create_fallback_market_data_provider", lambda: TestMarketProvider())
+    monkeypatch.setattr(sync_router.service, "market_data_provider", TestMarketProvider())
 
     market_data_repo.upsert_stocks([StockInfo("000001", "Ping An", "SZ")])
     end = date.today()
@@ -1421,7 +1517,7 @@ def test_paper_trading_service_creates_order_fill_and_position(client):
                 open=Decimal("10"),
                 high=Decimal("10.5"),
                 low=Decimal("9.8"),
-                source="mock",
+                source="unit",
             )
         ]
     )
@@ -1492,7 +1588,7 @@ def test_paper_trading_persists_convertible_bond_interval_and_lot_size(client):
                 open=Decimal("99"),
                 high=Decimal("101"),
                 low=Decimal("98"),
-                source="mock",
+                source="unit",
             )
         ]
     )
@@ -1557,7 +1653,7 @@ def test_paper_trading_generates_technical_exit_from_local_ma60(client, monkeypa
                 open=Decimal("10"),
                 high=Decimal("10.2"),
                 low=Decimal("9.8"),
-                source="mock",
+                source="unit",
             )
         ]
     )
@@ -1604,7 +1700,7 @@ def test_paper_trading_generates_technical_exit_from_local_ma60(client, monkeypa
                 open=Decimal("9.5"),
                 high=Decimal("9.6"),
                 low=Decimal("9.4"),
-                source="mock",
+                source="unit",
             )
         ]
     )
@@ -1653,7 +1749,11 @@ def test_strategy_production_run_blocks_without_realtime_snapshot(client):
     assert task["result"]["warnings"]
 
 
-def test_market_sync_all_uses_plan_and_child_batches(client):
+def test_market_sync_all_uses_plan_and_child_batches(client, monkeypatch):
+    from backend.api_v1.routers import sync as sync_router
+
+    monkeypatch.setattr(sync_router.service, "market_data_provider", TestMarketProvider())
+
     admin = login_as(client, "admin_market_sync_plan", role="admin")
     response = admin.post(
         "/api/v1/market-data/sync",
@@ -1682,7 +1782,7 @@ def test_market_sync_all_uses_plan_and_child_batches(client):
 def test_strategy_production_run_blocks_without_local_history(client):
     from backend.application.sync_api_service import SyncApiService
 
-    SyncApiService()._sync_quote_snapshots(["000001"])
+    SyncApiService(TestMarketProvider())._sync_quote_snapshots(["000001"])
     authed = login_as(client, "editor_production_history_gate")
     strategies_response = authed.get("/api/v1/strategies", headers=tenant_headers(authed))
     strategy = next(item for item in strategies_response.get_json()["data"]["items"] if item["code"] == "2560")
@@ -2378,13 +2478,13 @@ def test_scan_explanation_includes_strategy_signal_fields():
             "volume_phase": "active",
             "signal_subtype": "ma25_breakout",
         },
-        {"actual_provider": "mock", "provider_chain": ["mock"], "fallback_used": False, "data_quality": "mock"},
+        {"actual_provider": "akshare", "provider_chain": ["akshare"], "fallback_used": False, "data_quality": "primary"},
         "2560",
     )
 
     assert explanation["schema_version"] == "scan-explanation/v2"
     assert explanation["confidence"] > 0
-    assert explanation["risk_level"] == "high"
+    assert explanation["risk_level"] == "medium"
     assert "策略信号：站上25日均线" in explanation["reasons"]
     assert explanation["indicators"]["risk_score"] == 72
     assert explanation["indicators"]["vol_ratio"] == 1.8
@@ -2424,7 +2524,7 @@ def test_scan_explanation_accepts_2560_signal_sections():
             "risk": {"risk_score": 22},
             "data": {"score": 82, "total_score": 86},
         },
-        {"actual_provider": "mock", "provider_chain": ["mock"], "fallback_used": False, "data_quality": "primary"},
+        {"actual_provider": "akshare", "provider_chain": ["akshare"], "fallback_used": False, "data_quality": "primary"},
         "2560",
     )
 
@@ -2461,7 +2561,7 @@ def test_scan_normalized_strategy_pick_preserves_2560_signal_sections():
             "risk": {"risk_score": 22},
             "data": {"score": 82, "total_score": 86},
         },
-        {"actual_provider": "mock", "provider_chain": ["mock"], "fallback_used": False, "data_quality": "primary"},
+        {"actual_provider": "akshare", "provider_chain": ["akshare"], "fallback_used": False, "data_quality": "primary"},
         "2560",
     )
 

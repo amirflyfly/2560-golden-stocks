@@ -10,6 +10,7 @@ from decimal import Decimal, InvalidOperation
 from math import floor
 from typing import Any
 
+from backend.application.live_broker_service import BrokerAdapter
 from backend.infrastructure.market_data.utils import normalize_bar_interval
 from backend.repositories import market_data_repo
 from backend.repositories import paper_trading_repo
@@ -17,18 +18,8 @@ from backend.repositories import paper_trading_repo
 
 LIMIT_UP_RETURN_CODE = "LIMIT_UP_RETURN"
 LIMIT_UP_RETURN_BUY_SUBTYPE = "breakout_confirmed"
-
-
-class BrokerAdapter:
-    """Reserved live-trading contract. Production live adapters must implement this interface."""
-
-    mode = "paper"
-
-    def submit_order(self, order_intent: dict) -> dict:  # pragma: no cover - contract only
-        raise NotImplementedError
-
-    def reconcile_orders(self, account_id: int) -> dict:  # pragma: no cover - contract only
-        raise NotImplementedError
+FIRST_LIMIT_UP_CODE = "FIRST_LIMIT_UP"
+FIRST_LIMIT_UP_BUY_SUBTYPE = "auction_confirmed"
 
 
 class PaperTradingService:
@@ -126,6 +117,18 @@ class PaperTradingService:
         if subtype == "failed_pullback":
             return "limit_up_return_failed_pullback"
         return "limit_up_return_unconfirmed_signal"
+
+    def _first_limit_up_skip_reason(self, strategy: dict, candidate: dict) -> str:
+        if self._strategy_code(strategy) != FIRST_LIMIT_UP_CODE:
+            return ""
+        subtype = self._candidate_subtype(candidate)
+        if subtype == FIRST_LIMIT_UP_BUY_SUBTYPE:
+            return ""
+        if subtype == "preopen_watch":
+            return "first_limit_up_auction_pending"
+        if subtype == "auction_rejected":
+            return "first_limit_up_auction_rejected"
+        return "first_limit_up_unconfirmed_signal"
 
     def _snapshot_flag(self, snapshot: dict | None, candidate: dict | None, keys: tuple[str, ...]) -> bool:
         for source in (snapshot or {}, candidate or {}):
@@ -297,6 +300,10 @@ class PaperTradingService:
             if limit_up_return_skip_reason:
                 skipped.append({"symbol": symbol, "reason": limit_up_return_skip_reason, "signal_subtype": self._candidate_subtype(candidate)})
                 continue
+            first_limit_up_skip_reason = self._first_limit_up_skip_reason(strategy, candidate)
+            if first_limit_up_skip_reason:
+                skipped.append({"symbol": symbol, "reason": first_limit_up_skip_reason, "signal_subtype": self._candidate_subtype(candidate)})
+                continue
             candidate_score = self._decimal(candidate.get("total_score") if candidate.get("total_score") is not None else candidate.get("score"))
             if min_signal_score > 0 and candidate_score < min_signal_score:
                 skipped.append({"symbol": symbol, "reason": "score_below_threshold", "score": float(candidate_score), "threshold": float(min_signal_score)})
@@ -396,9 +403,11 @@ class PaperTradingService:
                 "created_open_count": created_open_count,
             },
             "live_trading": {
-                "supported": False,
-                "reserved_adapter": "BrokerAdapter.submit_order/reconcile_orders",
-                "guard": "paper execution only; no real broker order is sent",
+                "supported": True,
+                "default_enabled": False,
+                "adapter_contract": "BrokerAdapter.submit_order/reconcile_orders",
+                "status_endpoint": "/api/v1/trading/live/broker/status",
+                "guard": "paper execution only; live broker adapters are opt-in and guarded by disabled/dry-run defaults",
                 "security_type": security_type,
                 "bar_interval": bar_interval,
                 "allow_t0": allow_t0,

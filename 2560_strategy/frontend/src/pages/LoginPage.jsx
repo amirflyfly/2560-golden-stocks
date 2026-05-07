@@ -81,7 +81,7 @@ export function LoginPage({ onLogin, authError }) {
 
         {statusMessage ? <div className={`alert ${blocked ? 'warning' : 'success'}`}>{statusMessage}</div> : null}
         {bootstrapError ? <div className="alert warning">{bootstrapError}</div> : null}
-        {authError && !loginError ? <div className="alert warning">当前会话未登录或已过期，请重新登录。</div> : null}
+        {authError && !loginError ? <div className="alert warning">{authError}</div> : null}
         {loginError ? <div className="alert">{loginError}</div> : null}
 
         <form className="login-form" onSubmit={handleSubmit}>

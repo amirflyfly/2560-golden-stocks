@@ -136,6 +136,22 @@ def enqueue_market_snapshot_sync():
     return success(task, status_code=202)
 
 
+@bp.post("/market-data/auction/sync")
+def enqueue_market_auction_sync():
+    context = get_authenticated_tenant_context()
+    require_role(context, "admin")
+    payload = request.get_json(silent=True) or {}
+    task = service.enqueue_auction_snapshot_sync(context.tenant_id, payload)
+    audit_log_service.record(
+        context=context,
+        action="market.auction.create",
+        resource_type="task",
+        resource_id=task.get("id"),
+        detail={"payload": payload, "task_name": task.get("name")},
+    )
+    return success(task, status_code=202)
+
+
 @bp.post("/market-data/indicators/precompute")
 def enqueue_indicator_precompute():
     context = get_authenticated_tenant_context()

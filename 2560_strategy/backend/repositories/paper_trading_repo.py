@@ -108,7 +108,7 @@ def ensure_default_account(
         if row:
             return _account_item(row)
         sqlite_execute_many(
-            """INSERT INTO paper_accounts
+            """INSERT OR IGNORE INTO paper_accounts
             (tenant_id, name, mode, broker_type, status, currency, initial_cash, cash, config_json, created_at, updated_at)
             VALUES (?, ?, 'paper', 'paper', 'active', 'CNY', ?, ?, '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)""",
             [(int(tenant_id or 0), name, _float(initial), _float(initial))],
@@ -507,7 +507,12 @@ def summary(tenant_id: int, account_id: int | None = None) -> dict:
         "total_return_pct": _float((equity - initial_cash) / initial_cash) if initial_cash else 0,
         "active_positions": len(positions),
         "mode": "paper",
-        "live_trading": {"supported": False, "adapter_contract": "BrokerAdapter.submit_order/reconcile_orders is reserved but disabled"},
+        "live_trading": {
+            "supported": True,
+            "default_enabled": False,
+            "adapter_contract": "BrokerAdapter.submit_order/reconcile_orders",
+            "guard": "paper ledger never sends broker orders; live adapters are configured outside paper trading",
+        },
     }
 
 

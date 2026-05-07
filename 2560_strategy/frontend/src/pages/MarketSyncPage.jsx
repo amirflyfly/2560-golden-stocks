@@ -51,6 +51,23 @@ function syncStatusLabels(rows, synced) {
   return statuses.length ? statuses : [synced ? '已同步' : '未同步'];
 }
 
+function taskProgress(task) {
+  return task?.result?.progress || task?.result_summary || {};
+}
+
+function taskSymbolsText(task) {
+  const symbols = task?.payload?.symbols;
+  if (Array.isArray(symbols)) return symbols.slice(0, 8).join(', ') + (symbols.length > 8 ? ` +${symbols.length - 8}` : '');
+  return symbols || '-';
+}
+
+function eventLine(task, event) {
+  const status = event?.status || task?.status || '-';
+  const message = event?.message || '';
+  const at = event?.at || task?.updated_at || task?.created_at || '';
+  return `[${at}] ${task?.id?.slice(0, 8) || '-'} ${task?.name || '-'} ${status}: ${message}`;
+}
+
 export function MarketSyncPage({ authz }) {
   const [form, setForm] = useState({ symbols: '000001,600519', start_date: '', end_date: '', adjust: 'qfq', interval: '1d', security_type: 'stock', max_symbols: '', batch_size: '' });
   const [state, setState] = useState({
@@ -76,6 +93,13 @@ export function MarketSyncPage({ authz }) {
   const disabledReason = authz?.loading ? '正在确认当前角色权限' : '当前操作需要 admin 角色。';
   const failedTasks = state.tasks.filter((task) => task.status === 'failed');
   const runningTasks = state.tasks.filter((task) => task.status === 'running' || task.status === 'pending');
+  const latestTask = state.tasks[0] || null;
+  const latestTaskProgress = taskProgress(latestTask);
+  const taskEventLines = state.tasks
+    .slice(0, 6)
+    .flatMap((task) => (task.events || []).slice(-8).map((event) => eventLine(task, event)))
+    .slice(-30)
+    .reverse();
   const coverageItems = state.coverage?.items || [];
   const coverageSummary = state.coverage?.summary || {};
   const securityTypeCounts = coverageSummary.security_type_counts || {};
@@ -225,14 +249,14 @@ export function MarketSyncPage({ authz }) {
   }
 
   return (
-    <main className="page">
+    <main className="page" data-testid="market-sync-page">
       <div className="page-header">
         <div>
           <p className="eyebrow">Data Center</p>
           <h1>数据中心</h1>
           <p className="muted">统一管理本地行情仓、同步任务、数据源健康和每只股票的覆盖截止日。</p>
         </div>
-        <button type="button" onClick={load} disabled={state.loading}>刷新</button>
+        <button type="button" data-testid="market-sync-refresh-button" onClick={load} disabled={state.loading}>刷新</button>
       </div>
       {state.error ? <div className="alert">{state.error}</div> : null}
       {state.marketHealthError ? <div className="alert warning">行情源健康检查失败：{state.marketHealthError}</div> : null}
@@ -302,7 +326,7 @@ export function MarketSyncPage({ authz }) {
         </div>
       </section>
 
-      <form className="toolbar section-gap" onSubmit={submit}>
+      <form className="toolbar section-gap" data-testid="market-sync-form" onSubmit={submit}>
         <label>标的代码
           <input value={form.symbols} placeholder="000001,600519 或 all" onChange={(event) => setForm({ ...form, symbols: event.target.value })} />
         </label>
@@ -341,8 +365,8 @@ export function MarketSyncPage({ authz }) {
         <label>批大小
           <input type="number" min="0" max="1000" placeholder="all 默认分批" value={form.batch_size} onChange={(event) => setForm({ ...form, batch_size: event.target.value })} />
         </label>
-        <button type="submit" disabled={state.submitting || !mayAdmin} title={disabledReason}>创建同步</button>
-        <button type="button" className="btn-secondary" onClick={syncSnapshots} disabled={state.submitting || !mayAdmin} title={disabledReason}>同步实时快照</button>
+        <button type="submit" data-testid="market-sync-submit-button" disabled={state.submitting || !mayAdmin} title={disabledReason}>创建同步</button>
+        <button type="button" data-testid="market-snapshot-sync-button" className="btn-secondary" onClick={syncSnapshots} disabled={state.submitting || !mayAdmin} title={disabledReason}>同步实时快照</button>
       </form>
 
       <section className="card section-gap">
@@ -372,7 +396,6 @@ export function MarketSyncPage({ authz }) {
               <option value="">全部</option>
               <option value="mootdx">mootdx</option>
               <option value="akshare">akshare</option>
-              <option value="mock">mock</option>
             </select>
           </label>
           <label>证券类型
@@ -404,7 +427,7 @@ export function MarketSyncPage({ authz }) {
           </label>
           <button type="submit" disabled={state.coverageLoading}>查询覆盖</button>
         </form>
-        <div className="table task-table market-coverage-table">
+        <div className="table task-table market-coverage-table" data-testid="market-coverage-table">
           <div className="table-row table-head"><span>标的</span><span>类型</span><span>同步状态</span><span>覆盖/最新</span><span>K线/复权/来源</span></div>
           {coverageItems.map((item) => {
             const syncRows = syncStateBySymbol[item.symbol] || [];
@@ -439,7 +462,7 @@ export function MarketSyncPage({ authz }) {
           <h2>实时快照</h2>
           <span className="status-badge info">{(snapshotSummary.sources || []).join(', ') || 'local'}</span>
         </div>
-        <div className="table task-table market-snapshot-table">
+        <div className="table task-table market-snapshot-table" data-testid="market-snapshot-table">
           <div className="table-row table-head"><span>标的</span><span>类型</span><span>最新价</span><span>成交量/额</span><span>快照时间</span><span>来源</span></div>
           {snapshotItems.map((item) => (
             <div className="table-row" key={item.symbol}>
@@ -455,12 +478,41 @@ export function MarketSyncPage({ authz }) {
         </div>
       </section>
 
+      <section className="card section-gap" data-testid="market-sync-debug-log">
+        <div className="section-title-row">
+          <h2>Sync Debug Log</h2>
+          <span className={`status-badge ${latestTask?.status === 'failed' ? 'danger' : latestTask?.status === 'completed' ? 'success' : latestTask ? 'info' : 'warning'}`}>
+            {latestTask ? latestTask.status : 'no task'}
+          </span>
+        </div>
+        <div className="grid">
+          <article className="panel-card">
+            <h3>Latest Task</h3>
+            <p>{latestTask ? `${latestTask.id.slice(0, 8)} / ${latestTask.name}` : '-'}</p>
+            <small className="muted">symbols: {taskSymbolsText(latestTask)}</small>
+          </article>
+          <article className="panel-card">
+            <h3>Progress</h3>
+            <p>{latestTaskProgress.percent ?? '-'}%</p>
+            <small className="muted">{latestTaskProgress.current ?? '-'} / {latestTaskProgress.total ?? '-'}</small>
+          </article>
+          <article className="panel-card">
+            <h3>Heartbeat</h3>
+            <p>{latestTask?.heartbeat_at || '-'}</p>
+            <small className="muted">duration: {latestTask?.duration_seconds ?? '-'}s</small>
+          </article>
+        </div>
+        <pre className="code-block task-debug-log" data-testid="market-sync-debug-log-lines">
+          {taskEventLines.length ? taskEventLines.join('\n') : 'No task events yet. Create a sync task to see live progress here.'}
+        </pre>
+      </section>
+
       <section className="card">
         <h2>同步任务</h2>
-        <div className="table task-table">
+        <div className="table task-table" data-testid="market-sync-task-table">
           <div className="table-row table-head"><span>任务</span><span>状态</span><span>进度</span><span>时间</span><span>操作</span></div>
           {state.tasks.map((task) => {
-            const progress = task.result?.progress || task.result_summary || {};
+            const progress = taskProgress(task);
             return (
               <div className="table-row" key={task.id}>
                 <span>{task.id.slice(0, 8)} / {task.name}</span>

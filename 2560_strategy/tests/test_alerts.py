@@ -264,3 +264,247 @@ def test_alert_evaluation_supports_limit_up_return_state_transition(client):
     assert notification["match"]["metric"] == "signal_state_transition"
     assert notification["match"]["actual"]["from"] == "pullback_setup"
     assert notification["match"]["actual"]["to"] == "breakout_confirmed"
+
+
+def test_external_push_channel_config_is_redacted(client):
+    authed = login_as(client, "admin_external_push_config", role="admin")
+    write_headers = tenant_headers(authed, include_csrf=True)
+
+    response = authed.post(
+        "/api/v1/settings/external-push-channels",
+        json={
+            "name": "Ops webhook",
+            "type": "webhook",
+            "enabled": True,
+            "config": {
+                "webhook_url": "https://alerts.example.com/hooks/strategy",
+                "bearer_token": "secret-token",
+                "headers": {"X-Alert-Source": "strategy"},
+            },
+        },
+        headers=write_headers,
+    )
+    data = response.get_json()["data"]
+
+    assert response.status_code == 201
+    assert data["type"] == "webhook"
+    assert data["config"]["webhook_url"] == "***configured***"
+    assert data["config"]["bearer_token"] == "***configured***"
+    assert data["config"]["headers"]["X-Alert-Source"] == "strategy"
+
+    list_response = authed.get(
+        "/api/v1/settings/external-push-channels",
+        headers=tenant_headers(authed),
+    )
+    item = list_response.get_json()["data"]["items"][0]
+    assert item["id"] == data["id"]
+    assert item["config"]["webhook_url"] == "***configured***"
+
+
+def test_alert_evaluation_dispatches_generic_webhook_channel(client, monkeypatch):
+    import backend.application.external_push as external_push_module
+    from backend.api_v1.routers import settings as settings_router
+    from backend.application.external_push import ExternalPushService
+
+    sent = []
+
+    class Response:
+        status_code = 204
+        text = ""
+
+    def fake_post(url, json, headers, timeout):
+        sent.append({"url": url, "json": json, "headers": headers, "timeout": timeout})
+        return Response()
+
+    monkeypatch.setattr(
+        external_push_module.socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [(2, 1, 6, "", ("93.184.216.34", 443))],
+    )
+    monkeypatch.setattr(
+        settings_router.alert_service,
+        "external_push_service",
+        ExternalPushService(http_post=fake_post),
+    )
+
+    authed = login_as(client, "admin_external_push_alert", role="admin")
+    write_headers = tenant_headers(authed, include_csrf=True)
+    authed.post(
+        "/api/v1/settings/external-push-channels",
+        json={
+            "name": "Ops webhook",
+            "type": "webhook",
+            "config": {
+                "webhook_url": "https://alerts.example.com/hooks/strategy",
+                "bearer_token": "secret-token",
+                "headers": {"X-Alert-Source": "strategy"},
+            },
+        },
+        headers=write_headers,
+    )
+    pick = authed.post(
+        "/api/v1/picks",
+        json={
+            "symbol": "009904",
+            "stock_name": "Webhook Pick",
+            "trade_date": "2026-05-04",
+            "source": "manual-alert",
+        },
+        headers=write_headers,
+    ).get_json()["data"]
+    authed.patch(
+        f"/api/v1/picks/{pick['id']}/review",
+        json={"drawdown_pct": -0.09, "status": "watching"},
+        headers=write_headers,
+    )
+    authed.post(
+        "/api/v1/settings/alerts",
+        json={
+            "name": "Webhook drawdown",
+            "scope": "picks",
+            "target": "009904",
+            "rule": {"field": "drawdown_pct", "operator": "<=", "value": -0.05},
+            "channels": ["webhook"],
+        },
+        headers=write_headers,
+    )
+
+    response = authed.post("/api/v1/settings/alerts/evaluate", json={}, headers=write_headers)
+    data = response.get_json()["data"]
+
+    assert response.status_code == 200
+    assert data["matches"] == 1
+    assert data["notifications_created"] == 0
+    assert data["external_deliveries_count"] == 1
+    assert data["external_deliveries"][0]["ok"] is True
+    assert sent[0]["url"] == "https://alerts.example.com/hooks/strategy"
+    assert sent[0]["headers"]["Authorization"] == "Bearer secret-token"
+    assert sent[0]["json"]["event"] == "alert_triggered"
+    assert sent[0]["json"]["notification"]["entity"]["symbol"] == "009904"
+
+
+def test_external_push_rejects_unsafe_webhook_urls():
+    from backend.application.external_push import ExternalPushService
+
+    service = ExternalPushService(http_post=lambda *args, **kwargs: pytest.fail("unsafe URL was posted"))
+    notification = {"title": "Unsafe", "body": "blocked"}
+
+    insecure = service.dispatch(
+        {
+            "id": "bad-http",
+            "type": "webhook",
+            "enabled": True,
+            "config": {"webhook_url": "http://alerts.example.com/hook"},
+        },
+        notification,
+    )
+    loopback = service.dispatch(
+        {
+            "id": "bad-loopback",
+            "type": "webhook",
+            "enabled": True,
+            "config": {"webhook_url": "https://127.0.0.1/hook"},
+        },
+        notification,
+    )
+
+    assert insecure["ok"] is False
+    assert "https" in insecure["message"]
+    assert loopback["ok"] is False
+    assert "public" in loopback["message"]
+
+
+@pytest.mark.parametrize("channel_type", ["dingtalk", "wecom"])
+def test_external_push_webhook_adapters_send_platform_payloads(channel_type, monkeypatch):
+    import backend.application.external_push as external_push_module
+    from backend.application.external_push import ExternalPushService
+
+    sent = []
+
+    class Response:
+        status_code = 200
+        text = "ok"
+
+    def fake_post(url, json, headers, timeout):
+        sent.append({"url": url, "json": json, "headers": headers, "timeout": timeout})
+        return Response()
+
+    monkeypatch.setattr(
+        external_push_module.socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [(2, 1, 6, "", ("93.184.216.34", 443))],
+    )
+
+    config = {
+        "id": channel_type,
+        "type": channel_type,
+        "enabled": True,
+        "config": {"webhook_url": f"https://{channel_type}.example.com/robot/send"},
+    }
+    if channel_type == "dingtalk":
+        config["config"]["secret"] = "ding-secret"
+
+    result = ExternalPushService(http_post=fake_post).dispatch(
+        config,
+        {"title": "Platform alert", "body": "body", "scope": "picks", "entity": {"symbol": "009905"}},
+    )
+
+    assert result["ok"] is True
+    assert sent[0]["json"]["msgtype"] == "markdown"
+    if channel_type == "dingtalk":
+        assert "timestamp=" in sent[0]["url"]
+        assert "sign=" in sent[0]["url"]
+        assert sent[0]["json"]["markdown"]["title"] == "Platform alert"
+    else:
+        assert sent[0]["json"]["markdown"]["content"].startswith("### Platform alert")
+
+
+def test_external_push_smtp_email_adapter_sends_message():
+    from backend.application.external_push import ExternalPushService
+
+    sent = []
+
+    class FakeSMTP:
+        def __init__(self, host, port, timeout):
+            self.host = host
+            self.port = port
+            self.timeout = timeout
+            self.started_tls = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def starttls(self):
+            self.started_tls = True
+
+        def login(self, username, password):
+            sent.append({"login": (username, password)})
+
+        def send_message(self, message):
+            sent.append({"message": message, "started_tls": self.started_tls})
+
+    result = ExternalPushService(smtp_factory=FakeSMTP).dispatch(
+        {
+            "id": "email",
+            "type": "email",
+            "enabled": True,
+            "config": {
+                "host": "smtp.example.com",
+                "port": 587,
+                "from_email": "alerts@example.com",
+                "to_emails": ["ops@example.com"],
+                "username": "alerts",
+                "password": "smtp-secret",
+            },
+        },
+        {"title": "Email alert", "body": "body", "scope": "picks", "entity": {"symbol": "009906"}},
+    )
+
+    assert result["ok"] is True
+    assert sent[0]["login"] == ("alerts", "smtp-secret")
+    assert sent[1]["started_tls"] is True
+    assert sent[1]["message"]["Subject"] == "Email alert"
+    assert sent[1]["message"]["To"] == "ops@example.com"

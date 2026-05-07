@@ -38,13 +38,7 @@ class SimpleTable(list):
 
 
 def _fallback_stock_table():
-    rows = [
-        {'代码': '600000', '名称': '浦发银行'},
-        {'代码': '600519', '名称': '贵州茅台'},
-        {'代码': '000001', '名称': '平安银行'},
-        {'代码': '000002', '名称': '万科A'},
-        {'代码': '002594', '名称': '比亚迪'},
-    ]
+    rows = []
     if pd is not None:
         return pd.DataFrame(rows)
     return SimpleTable(rows)
@@ -118,8 +112,7 @@ def get_stock_list():
         merged = merged[['代码','名称']].dropna().drop_duplicates()
         return merged
 
-    # 4. 兜底少量样本
-    print("使用兜底样本代码集")
+    print("未获取到真实股票列表")
     return _fallback_stock_table()
 
 

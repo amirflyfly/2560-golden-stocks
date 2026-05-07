@@ -10,7 +10,7 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from typing import TypeVar
 
-from .provider import DailyBar, HealthCheckResult, MarketDataProvider, QuoteSnapshot, StockInfo
+from .provider import AuctionSnapshot, DailyBar, HealthCheckResult, MarketDataProvider, QuoteSnapshot, StockInfo
 
 T = TypeVar("T")
 
@@ -89,6 +89,9 @@ class FallbackMarketDataProvider:
 
     def get_quote_snapshots(self, symbols: list[str]) -> list[QuoteSnapshot]:
         return self._try_each("get_quote_snapshots", symbols)
+
+    def get_auction_snapshots(self, symbols: list[str], trade_date: str | None = None) -> list[AuctionSnapshot]:
+        return self._try_each("get_auction_snapshots", symbols, trade_date)
 
     def get_trading_dates(self, start_date: str, end_date: str) -> list[str]:
         return self._try_each("get_trading_dates", start_date, end_date)

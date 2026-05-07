@@ -84,6 +84,38 @@ def test_limit_up_return_only_breakout_confirmed_can_buy(monkeypatch):
     assert result["non_executable_sample_ratio"] == 0.6667
 
 
+def test_first_limit_up_only_auction_confirmed_can_buy(monkeypatch):
+    from backend.application.paper_trading_service import PaperTradingService
+
+    _install_repo(
+        monkeypatch,
+        snapshots={
+            "000001": {"symbol": "000001", "last_price": Decimal("11.45")},
+            "000002": {"symbol": "000002", "last_price": Decimal("10.95")},
+            "000003": {"symbol": "000003", "last_price": Decimal("10.20")},
+        },
+    )
+
+    result = PaperTradingService().apply_strategy_scan(
+        1,
+        {"id": 1, "code": "FIRST_LIMIT_UP"},
+        _scan(
+            [
+                {"symbol": "000001", "trade_date": "2026-05-05", "signal_subtype": "auction_confirmed", "total_score": 88},
+                {"symbol": "000002", "trade_date": "2026-05-05", "signal_subtype": "preopen_watch", "total_score": 91},
+                {"symbol": "000003", "trade_date": "2026-05-05", "signal_subtype": "auction_rejected", "total_score": 80},
+            ]
+        ),
+        {"cash_per_trade": 10000, "max_paper_positions": 5},
+    )
+
+    assert [order["symbol"] for order in result["orders"]] == ["000001"]
+    assert result["skipped_reasons"] == {
+        "first_limit_up_auction_pending": 1,
+        "first_limit_up_auction_rejected": 1,
+    }
+
+
 def test_strategy_kill_switch_prefers_config_over_environment(monkeypatch):
     from backend.application.paper_trading_service import PaperTradingService
 

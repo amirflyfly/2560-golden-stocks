@@ -12,9 +12,9 @@ from uuid import uuid4
 from sqlalchemy import and_, case, func, or_, select
 
 from backend.core.config import get_settings
-from backend.db.models.market import LimitRuleCalendar, MarketSyncRun, MarketSyncRunItem, MarketSyncState, Stock, StockDailyBar, StockPriceSnapshot
+from backend.db.models.market import LimitRuleCalendar, MarketSyncRun, MarketSyncRunItem, MarketSyncState, Stock, StockAuctionSnapshot, StockDailyBar, StockPriceSnapshot
 from backend.db.session import session_scope
-from backend.infrastructure.market_data.provider import DailyBar, QuoteSnapshot, StockInfo
+from backend.infrastructure.market_data.provider import AuctionSnapshot, DailyBar, QuoteSnapshot, StockInfo
 from backend.infrastructure.market_data.utils import clean_security_name, infer_board_type, infer_exchange, infer_limit_rate, infer_security_type, is_risk_warning_name, normalize_bar_interval
 from backend.repositories.db import execute_many as sqlite_execute_many
 from backend.repositories.db import q as sqlite_q
@@ -455,6 +455,170 @@ def upsert_quote_snapshots(items: list[QuoteSnapshot | dict]) -> int:
                 model.bid_price = _decimal_value(item["bid_price"])
                 model.ask_price = _decimal_value(item["ask_price"])
                 model.source = item["source"]
+            count += 1
+    return count
+
+
+def _auction_payload(item: AuctionSnapshot | dict) -> dict:
+    data = item.to_dict() if isinstance(item, AuctionSnapshot) else dict(item)
+    symbol = str(data.get("symbol") or data.get("code") or "").strip()
+    trade_date = _date_text(data.get("trade_date") or str(data.get("auction_time") or "")[:10])
+    auction_time = _dt_text(data.get("auction_time") or data.get("trade_time"))
+    order_book = data.get("order_book")
+    if order_book in (None, ""):
+        order_book = data.get("order_book_json")
+    if isinstance(order_book, str):
+        order_book = _loads_json(order_book)
+    return {
+        "symbol": symbol,
+        "trade_date": trade_date,
+        "auction_time": auction_time,
+        "phase": str(data.get("phase") or "call_auction_0920_0925").strip() or "call_auction_0920_0925",
+        "prev_close": data.get("prev_close"),
+        "indicative_price": data.get("indicative_price") or data.get("auction_price") or data.get("open") or data.get("last_price"),
+        "matched_volume": data.get("matched_volume") or data.get("volume"),
+        "matched_amount": data.get("matched_amount") or data.get("amount"),
+        "unmatched_buy_volume": data.get("unmatched_buy_volume"),
+        "unmatched_sell_volume": data.get("unmatched_sell_volume"),
+        "bid_price": data.get("bid_price"),
+        "bid_volume": data.get("bid_volume"),
+        "ask_price": data.get("ask_price"),
+        "ask_volume": data.get("ask_volume"),
+        "order_book": order_book if isinstance(order_book, (dict, list)) else {},
+        "withdrawal_buy_volume": data.get("withdrawal_buy_volume"),
+        "withdrawal_sell_volume": data.get("withdrawal_sell_volume"),
+        "withdrawal_buy_amount": data.get("withdrawal_buy_amount"),
+        "withdrawal_sell_amount": data.get("withdrawal_sell_amount"),
+        "seal_price": data.get("seal_price"),
+        "seal_volume": data.get("seal_volume"),
+        "seal_amount": data.get("seal_amount"),
+        "seal_side": str(data.get("seal_side") or "").strip().lower(),
+        "source": str(data.get("source") or "unknown").strip() or "unknown",
+    }
+
+
+def upsert_auction_snapshots(items: list[AuctionSnapshot | dict]) -> int:
+    snapshots = [_auction_payload(item) for item in items]
+    snapshots = [item for item in snapshots if item["symbol"] and item["trade_date"] and item["auction_time"]]
+    if not snapshots:
+        return 0
+    upsert_stocks(
+        [
+            {
+                "symbol": item["symbol"],
+                "exchange": infer_exchange(item["symbol"]),
+                "name": item["symbol"],
+                "market": "A",
+                "security_type": infer_security_type(item["symbol"], item["symbol"]),
+            }
+            for item in snapshots
+        ]
+    )
+    if _repo_backend() == "sqlite":
+        return sqlite_execute_many(
+            """INSERT INTO stock_auction_snapshots
+            (symbol, trade_date, auction_time, phase, prev_close, indicative_price,
+             matched_volume, matched_amount, unmatched_buy_volume, unmatched_sell_volume,
+             bid_price, bid_volume, ask_price, ask_volume, order_book_json,
+             withdrawal_buy_volume, withdrawal_sell_volume, withdrawal_buy_amount, withdrawal_sell_amount,
+             seal_price, seal_volume, seal_amount, seal_side, source, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(symbol, trade_date, auction_time, source) DO UPDATE SET
+                phase=excluded.phase,
+                prev_close=excluded.prev_close,
+                indicative_price=excluded.indicative_price,
+                matched_volume=excluded.matched_volume,
+                matched_amount=excluded.matched_amount,
+                unmatched_buy_volume=excluded.unmatched_buy_volume,
+                unmatched_sell_volume=excluded.unmatched_sell_volume,
+                bid_price=excluded.bid_price,
+                bid_volume=excluded.bid_volume,
+                ask_price=excluded.ask_price,
+                ask_volume=excluded.ask_volume,
+                order_book_json=excluded.order_book_json,
+                withdrawal_buy_volume=excluded.withdrawal_buy_volume,
+                withdrawal_sell_volume=excluded.withdrawal_sell_volume,
+                withdrawal_buy_amount=excluded.withdrawal_buy_amount,
+                withdrawal_sell_amount=excluded.withdrawal_sell_amount,
+                seal_price=excluded.seal_price,
+                seal_volume=excluded.seal_volume,
+                seal_amount=excluded.seal_amount,
+                seal_side=excluded.seal_side,
+                updated_at=CURRENT_TIMESTAMP""",
+            [
+                (
+                    item["symbol"],
+                    item["trade_date"],
+                    item["auction_time"],
+                    item["phase"],
+                    _decimal_float(_decimal_value(item["prev_close"])),
+                    _decimal_float(_decimal_value(item["indicative_price"])),
+                    _int_value(item["matched_volume"]),
+                    _decimal_float(_decimal_value(item["matched_amount"])),
+                    _int_value(item["unmatched_buy_volume"]),
+                    _int_value(item["unmatched_sell_volume"]),
+                    _decimal_float(_decimal_value(item["bid_price"])),
+                    _int_value(item["bid_volume"]),
+                    _decimal_float(_decimal_value(item["ask_price"])),
+                    _int_value(item["ask_volume"]),
+                    json.dumps(item.get("order_book") or {}, ensure_ascii=False),
+                    _int_value(item["withdrawal_buy_volume"]),
+                    _int_value(item["withdrawal_sell_volume"]),
+                    _decimal_float(_decimal_value(item["withdrawal_buy_amount"])),
+                    _decimal_float(_decimal_value(item["withdrawal_sell_amount"])),
+                    _decimal_float(_decimal_value(item["seal_price"])),
+                    _int_value(item["seal_volume"]),
+                    _decimal_float(_decimal_value(item["seal_amount"])),
+                    item["seal_side"],
+                    item["source"],
+                )
+                for item in snapshots
+            ],
+        )
+
+    count = 0
+    with session_scope() as session:
+        for item in snapshots:
+            auction_time = _parse_datetime(item["auction_time"])
+            trade_date = _parse_date(item["trade_date"])
+            if auction_time is None or trade_date is None:
+                continue
+            model = session.execute(
+                select(StockAuctionSnapshot).where(
+                    StockAuctionSnapshot.symbol == item["symbol"],
+                    StockAuctionSnapshot.trade_date == trade_date,
+                    StockAuctionSnapshot.auction_time == auction_time,
+                    StockAuctionSnapshot.source == item["source"],
+                )
+            ).scalar_one_or_none()
+            if model is None:
+                model = StockAuctionSnapshot(
+                    symbol=item["symbol"],
+                    trade_date=trade_date,
+                    auction_time=auction_time,
+                    source=item["source"],
+                )
+                session.add(model)
+            model.phase = item["phase"]
+            model.prev_close = _decimal_value(item["prev_close"])
+            model.indicative_price = _decimal_value(item["indicative_price"])
+            model.matched_volume = _int_value(item["matched_volume"])
+            model.matched_amount = _decimal_value(item["matched_amount"])
+            model.unmatched_buy_volume = _int_value(item["unmatched_buy_volume"])
+            model.unmatched_sell_volume = _int_value(item["unmatched_sell_volume"])
+            model.bid_price = _decimal_value(item["bid_price"])
+            model.bid_volume = _int_value(item["bid_volume"])
+            model.ask_price = _decimal_value(item["ask_price"])
+            model.ask_volume = _int_value(item["ask_volume"])
+            model.order_book = item.get("order_book") or {}
+            model.withdrawal_buy_volume = _int_value(item["withdrawal_buy_volume"])
+            model.withdrawal_sell_volume = _int_value(item["withdrawal_sell_volume"])
+            model.withdrawal_buy_amount = _decimal_value(item["withdrawal_buy_amount"])
+            model.withdrawal_sell_amount = _decimal_value(item["withdrawal_sell_amount"])
+            model.seal_price = _decimal_value(item["seal_price"])
+            model.seal_volume = _int_value(item["seal_volume"])
+            model.seal_amount = _decimal_value(item["seal_amount"])
+            model.seal_side = item["seal_side"]
             count += 1
     return count
 
@@ -1079,6 +1243,124 @@ def get_latest_snapshot(symbol: str, *, source: str | None = None) -> dict | Non
         return _snapshot_item(
             _public_model_snapshot(
                 snapshot,
+                name,
+                exchange,
+                security_type,
+                status=status,
+                is_suspended=is_suspended,
+                is_delisting=is_delisting,
+            )
+        )
+
+
+def auction_snapshot_summary(source: str | None = None, *, security_type: str | None = None) -> dict:
+    normalized_source = (source or "").strip() or None
+    normalized_security_type = str(security_type or "").strip().lower() or None
+    if _repo_backend() == "sqlite":
+        where = ["1=1"]
+        params: list[Any] = []
+        if normalized_source:
+            where.append("a.source=?")
+            params.append(normalized_source)
+        if normalized_security_type:
+            where.append("s.security_type=?")
+            params.append(normalized_security_type)
+        row = sqlite_q1(
+            f"""SELECT COUNT(*) AS snapshot_count, MAX(a.auction_time) AS latest_auction_time,
+                GROUP_CONCAT(DISTINCT a.source) AS sources
+            FROM stock_auction_snapshots a
+            LEFT JOIN stocks s ON s.symbol=a.symbol
+            WHERE {' AND '.join(where)}""",
+            tuple(params),
+        ) or {}
+        return {
+            "backend": _repo_backend(),
+            "snapshot_count": int(row.get("snapshot_count") or 0),
+            "latest_auction_time": row.get("latest_auction_time"),
+            "sources": [item for item in str(row.get("sources") or "").split(",") if item],
+            "source": normalized_source or "",
+            "security_type": normalized_security_type or "",
+        }
+
+    with session_scope() as session:
+        query = select(
+            func.count(StockAuctionSnapshot.id),
+            func.max(StockAuctionSnapshot.auction_time),
+            func.group_concat(func.distinct(StockAuctionSnapshot.source)),
+        ).select_from(StockAuctionSnapshot).outerjoin(Stock, Stock.symbol == StockAuctionSnapshot.symbol)
+        if normalized_source:
+            query = query.where(StockAuctionSnapshot.source == normalized_source)
+        if normalized_security_type:
+            query = query.where(Stock.security_type == normalized_security_type)
+        snapshot_count, latest_auction_time, sources = session.execute(query).one()
+        return {
+            "backend": _repo_backend(),
+            "snapshot_count": int(snapshot_count or 0),
+            "latest_auction_time": _dt_text(latest_auction_time),
+            "sources": [item for item in str(sources or "").split(",") if item],
+            "source": normalized_source or "",
+            "security_type": normalized_security_type or "",
+        }
+
+
+def get_latest_auction_snapshot(
+    symbol: str,
+    *,
+    trade_date: str | None = None,
+    source: str | None = None,
+    phase: str | None = "call_auction_0920_0925",
+) -> dict | None:
+    normalized_symbol = str(symbol or "").strip()
+    if not normalized_symbol:
+        return None
+    normalized_source = (source or "").strip()
+    normalized_phase = str(phase or "").strip()
+    normalized_trade_date = str(trade_date or "").strip()
+    if _repo_backend() == "sqlite":
+        where = ["a.symbol=?"]
+        params: list[Any] = [normalized_symbol]
+        if normalized_trade_date:
+            where.append("a.trade_date=?")
+            params.append(normalized_trade_date)
+        if normalized_source:
+            where.append("a.source=?")
+            params.append(normalized_source)
+        if normalized_phase:
+            where.append("a.phase=?")
+            params.append(normalized_phase)
+        row = sqlite_q1(
+            f"""SELECT a.*, COALESCE(s.name, a.symbol) AS name, s.exchange, s.security_type,
+                s.status, s.is_suspended, s.is_delisting
+            FROM stock_auction_snapshots a
+            LEFT JOIN stocks s ON s.symbol=a.symbol
+            WHERE {' AND '.join(where)}
+            ORDER BY a.trade_date DESC, a.auction_time DESC
+            LIMIT 1""",
+            tuple(params),
+        )
+        return _auction_item(row) if row else None
+
+    with session_scope() as session:
+        query = (
+            select(StockAuctionSnapshot, Stock.name, Stock.exchange, Stock.security_type, Stock.status, Stock.is_suspended, Stock.is_delisting)
+            .outerjoin(Stock, Stock.symbol == StockAuctionSnapshot.symbol)
+            .where(StockAuctionSnapshot.symbol == normalized_symbol)
+        )
+        if normalized_trade_date:
+            parsed_trade_date = _parse_date(normalized_trade_date)
+            if parsed_trade_date:
+                query = query.where(StockAuctionSnapshot.trade_date == parsed_trade_date)
+        if normalized_source:
+            query = query.where(StockAuctionSnapshot.source == normalized_source)
+        if normalized_phase:
+            query = query.where(StockAuctionSnapshot.phase == normalized_phase)
+        row = session.execute(query.order_by(StockAuctionSnapshot.trade_date.desc(), StockAuctionSnapshot.auction_time.desc()).limit(1)).first()
+        if not row:
+            return None
+        auction, name, exchange, security_type, status, is_suspended, is_delisting = row
+        return _auction_item(
+            _public_model_auction(
+                auction,
                 name,
                 exchange,
                 security_type,
@@ -1895,6 +2177,46 @@ def _snapshot_item(row: dict) -> dict:
     }
 
 
+def _auction_item(row: dict) -> dict:
+    return {
+        "symbol": row.get("symbol") or "",
+        "name": row.get("name") or row.get("symbol") or "",
+        "exchange": row.get("exchange") or "",
+        "security_type": row.get("security_type") or "other",
+        "status": row.get("status") or "",
+        "is_suspended": _bool_value(row.get("is_suspended")),
+        "is_delisting": _bool_value(row.get("is_delisting")),
+        "trade_date": _date_text(row.get("trade_date")) if row.get("trade_date") else None,
+        "auction_time": _dt_text(row.get("auction_time")),
+        "trade_time": _dt_text(row.get("auction_time")),
+        "phase": row.get("phase") or "call_auction_0920_0925",
+        "prev_close": row.get("prev_close"),
+        "indicative_price": row.get("indicative_price"),
+        "matched_volume": row.get("matched_volume"),
+        "matched_amount": row.get("matched_amount"),
+        "volume": row.get("matched_volume"),
+        "amount": row.get("matched_amount"),
+        "unmatched_buy_volume": row.get("unmatched_buy_volume"),
+        "unmatched_sell_volume": row.get("unmatched_sell_volume"),
+        "bid_price": row.get("bid_price"),
+        "bid_volume": row.get("bid_volume"),
+        "ask_price": row.get("ask_price"),
+        "ask_volume": row.get("ask_volume"),
+        "order_book": row.get("order_book") if isinstance(row.get("order_book"), (dict, list)) else _loads_json(row.get("order_book_json")),
+        "withdrawal_buy_volume": row.get("withdrawal_buy_volume"),
+        "withdrawal_sell_volume": row.get("withdrawal_sell_volume"),
+        "withdrawal_buy_amount": row.get("withdrawal_buy_amount"),
+        "withdrawal_sell_amount": row.get("withdrawal_sell_amount"),
+        "seal_price": row.get("seal_price"),
+        "seal_volume": row.get("seal_volume"),
+        "seal_amount": row.get("seal_amount"),
+        "seal_side": row.get("seal_side") or "",
+        "source": row.get("source") or "local",
+        "updated_at": _dt_text(row.get("updated_at")),
+        "data_model": "auction_snapshot",
+    }
+
+
 def _loads_json(value: Any) -> Any:
     if isinstance(value, (dict, list)):
         return value
@@ -2035,6 +2357,51 @@ def _public_model_snapshot(
         "amount": _decimal_float(row.amount),
         "bid_price": _decimal_float(row.bid_price),
         "ask_price": _decimal_float(row.ask_price),
+        "source": row.source,
+        "updated_at": row.updated_at,
+    }
+
+
+def _public_model_auction(
+    row: StockAuctionSnapshot,
+    name: str | None = None,
+    exchange: str | None = None,
+    security_type: str | None = None,
+    *,
+    status: str | None = None,
+    is_suspended: bool | None = None,
+    is_delisting: bool | None = None,
+) -> dict:
+    return {
+        "symbol": row.symbol,
+        "name": name or row.symbol,
+        "exchange": exchange or infer_exchange(row.symbol),
+        "security_type": security_type or infer_security_type(row.symbol, name or row.symbol),
+        "status": status or "",
+        "is_suspended": bool(is_suspended),
+        "is_delisting": bool(is_delisting),
+        "trade_date": row.trade_date,
+        "auction_time": row.auction_time,
+        "phase": row.phase,
+        "prev_close": _decimal_float(row.prev_close),
+        "indicative_price": _decimal_float(row.indicative_price),
+        "matched_volume": row.matched_volume,
+        "matched_amount": _decimal_float(row.matched_amount),
+        "unmatched_buy_volume": row.unmatched_buy_volume,
+        "unmatched_sell_volume": row.unmatched_sell_volume,
+        "bid_price": _decimal_float(row.bid_price),
+        "bid_volume": row.bid_volume,
+        "ask_price": _decimal_float(row.ask_price),
+        "ask_volume": row.ask_volume,
+        "order_book": row.order_book or {},
+        "withdrawal_buy_volume": row.withdrawal_buy_volume,
+        "withdrawal_sell_volume": row.withdrawal_sell_volume,
+        "withdrawal_buy_amount": _decimal_float(row.withdrawal_buy_amount),
+        "withdrawal_sell_amount": _decimal_float(row.withdrawal_sell_amount),
+        "seal_price": _decimal_float(row.seal_price),
+        "seal_volume": row.seal_volume,
+        "seal_amount": _decimal_float(row.seal_amount),
+        "seal_side": row.seal_side or "",
         "source": row.source,
         "updated_at": row.updated_at,
     }

@@ -6,7 +6,7 @@ from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 
 from backend.infrastructure.market_data.factory import create_fallback_market_data_provider
-from backend.infrastructure.market_data.provider import MarketDataProvider
+from backend.infrastructure.market_data.provider import HealthCheckResult, MarketDataProvider
 from backend.infrastructure.market_data.utils import normalize_bar_interval
 from backend.repositories import market_data_repo
 from backend.repositories import paper_trading_repo
@@ -127,16 +127,31 @@ class MarketApiService:
         end_date = today.isoformat()
 
         health = self.market_data_provider.health_check()
-        stock_universe = self.market_data_provider.get_stock_list() if health.ok else []
+        provider_errors = []
+        if health.ok:
+            try:
+                stock_universe = self.market_data_provider.get_stock_list()
+            except Exception as exc:  # pragma: no cover - real providers fail in environment-specific ways.
+                provider_errors.append(str(exc))
+                health = HealthCheckResult(
+                    provider=health.provider,
+                    ok=False,
+                    message=f"stock list unavailable: {exc}",
+                )
+                stock_universe = []
+        else:
+            provider_errors.append(health.message)
+            stock_universe = []
+
         stocks = stock_universe[:normalized_sample_size]
         usage = self._market_data_usage()
         items = []
-        provider_errors = list(usage.get("errors") or [])
+        provider_errors = list(usage.get("errors") or []) + provider_errors
         sample_errors = []
 
         for stock in stocks:
             try:
-                bars = self.market_data_provider.get_daily_bars(stock.symbol, start_date, end_date, adjust="qfq")
+                bars = self.market_data_provider.get_daily_bars(stock.symbol, start_date, end_date, adjust="none")
                 insight = self._stock_discovery_item(stock.to_dict(), bars)
                 items.append(insight)
             except Exception as exc:  # pragma: no cover - provider failures are environment-specific.

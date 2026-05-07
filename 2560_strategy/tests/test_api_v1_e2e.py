@@ -130,7 +130,7 @@ def test_health_market_stocks_and_kline_contracts(client):
     assert kline["total"] == len(kline["items"])
     if kline["items"]:
         assert kline["items"][0]["interval"] == "1d"
-        assert kline["items"][0]["trade_time"]
+        assert kline["items"][0]["trade_time"] or kline["items"][0]["trade_date"]
         assert kline["items"][0]["source"]
 
 

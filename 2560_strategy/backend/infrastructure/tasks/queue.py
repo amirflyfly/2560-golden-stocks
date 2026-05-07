@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import traceback
+from contextvars import ContextVar
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from typing import Any, Callable
@@ -22,6 +23,7 @@ _TASK_QUEUE_KEY = "tasks:queue"
 _TASK_TTL_SECONDS = 86400
 _STALE_AFTER_SECONDS = 900
 _TERMINAL_STATUSES = {"completed", "failed", "cancelled", "stale"}
+_CURRENT_TASK_ID: ContextVar[str | None] = ContextVar("current_task_id", default=None)
 
 
 def _now() -> str:
@@ -43,6 +45,34 @@ def _make_idempotency_key(name: str, tenant_id: int | None, payload: dict | None
 
 def _event(status: str, message: str = "") -> dict:
     return {"status": status, "message": message, "at": _now()}
+
+
+def current_task_id() -> str | None:
+    return _CURRENT_TASK_ID.get()
+
+
+def append_task_event(task_id: str | None, message: str, *, status: str | None = None, progress: dict | None = None, detail: dict | None = None) -> dict | None:
+    if not task_id:
+        return None
+    task = get_task(task_id)
+    if not task:
+        return None
+    event = _event(status or task.get("status") or "running", message)
+    if detail:
+        event["detail"] = detail
+    events = [*(task.get("events") or []), event]
+    task["events"] = events[-100:]
+    task["heartbeat_at"] = _now()
+    if progress is not None:
+        result = task.get("result") if isinstance(task.get("result"), dict) else {}
+        task["result"] = {**result, "progress": progress}
+    task["duration_seconds"] = _duration_seconds(task)
+    save_task(task)
+    return task
+
+
+def append_current_task_event(message: str, *, status: str | None = None, progress: dict | None = None, detail: dict | None = None) -> dict | None:
+    return append_task_event(current_task_id(), message, status=status, progress=progress, detail=detail)
 
 
 def _duration_seconds(task: dict) -> float | None:
@@ -177,7 +207,11 @@ def _execute_task(task_id: str, func: TaskCallable, *args: Any, **kwargs: Any) -
         try:
             current["heartbeat_at"] = _now()
             save_task(current)
-            result = func(*args, **kwargs)
+            token = _CURRENT_TASK_ID.set(task_id)
+            try:
+                result = func(*args, **kwargs)
+            finally:
+                _CURRENT_TASK_ID.reset(token)
             latest = get_task(task_id) or current
             if latest.get("status") == "cancelled":
                 latest.update({"finished_at": latest.get("finished_at") or _now(), "duration_seconds": _duration_seconds(latest)})
@@ -312,6 +346,7 @@ def enqueue_task(
         "market.indicators.precompute",
         "market.qfq.repair",
         "strategy.production_run",
+        "reports.daily_review",
     }:
         _execute_task(task["id"], func, *args, **kwargs)
         return get_task(task["id"]) or task

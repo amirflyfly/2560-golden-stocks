@@ -1,1014 +1,1096 @@
-"""首板涨停第二天上车策略 - First Limit-Up Next Day Entry Strategy.
+"""First limit-up next-day entry strategy.
 
-================================================================================
-策略核心逻辑深度解析
-================================================================================
+The model is deliberately split into two stages:
 
-一、为什么首板涨停第二天能上车？
+1. T-day preselection: find first limit-up stocks with acceptable market,
+   sector, limit-up quality, volume/liquidity, and stock-character factors.
+2. T+1 auction confirmation: only a confirmed auction/open snapshot may become
+   an executable signal. T-day candidates remain observation-only.
 
-1. 【筹码结构好】
-   - 首板意味着前期没有获利盘抛压
-   - 涨停价成为新的成本锚点，第二天高开显示资金愿意接力
-   - 散户在首板当天很难买入，第二天才有上车机会
-
-2. 【资金意图明确】
-   - 首板封死说明主力资金强势
-   - 第二天高开说明主力不想给低位筹码，志在高远
-   - 竞价放量说明资金抢筹意愿强烈
-
-3. 【市场情绪传导】
-   - 首板涨停引发市场关注
-   - 晚上复盘被各路资金发现
-   - 第二天竞价形成抢筹效应
-
-二、首板形态分析（分时图特征）
-
-1. 【涨停时间】
-   - 早盘涨停（10点前）：最强，主力意图坚决
-   - 上午涨停（10-11:30）：较强，有准备但略显犹豫
-   - 下午涨停（13:00-14:00）：一般，跟风或偷袭
-   - 尾盘涨停（14:00后）：较弱，封单不坚决
-
-2. 【封板质量】
-   - 一字板：最强，但买不到，第二天风险大
-   - 秒板：很强，开盘即涨停，显示资金饥渴
-   - 稳步封板：较好，有节奏地拉升后封死
-   - 反复开板：较差，抛压大或主力实力不足
-   - 尾盘偷袭：最差，非主力行为
-
-3. 【量能特征】
-   - 缩量涨停：最好，筹码锁定良好
-   - 温和放量：较好，有换手但不过分
-   - 爆量涨停：一般，分歧大，需要第二天确认
-   - 天量涨停：较差，可能是出货
-
-4. 【封单金额】
-   - 封单金额大：显示资金实力
-   - 封单坚决：不开板，显示决心
-   - 撤单少：不是诱多
-
-三、除首板形态外的关键因素
-
-1. 【板块效应】⭐⭐⭐⭐⭐
-   - 所属板块当天有多只涨停
-   - 板块龙头效应明显
-   - 第二天板块继续强势
-   - 同板块有连板股
-
-2. 【市场情绪】⭐⭐⭐⭐
-   - 当天涨停家数>50家：情绪好
-   - 当天跌停家数<5家：情绪稳定
-   - 连板股数量多：接力意愿强
-   - 高标股表现：空间板是否断板
-
-3. 【龙虎榜数据】⭐⭐⭐⭐
-   - 知名游资介入：章盟主、赵老哥、作手新一
-   - 机构买入：有基本面支撑
-   - 买入金额均匀：不是独食
-   - 无大金额卖出：无主力出货
-
-4. 【个股基本面】⭐⭐⭐
-   - 有热点题材概念
-   - 近期有利好消息
-   - 流通市值适中（50-200亿最佳）
-   - 股价位置不高（非高位）
-
-5. 【大盘环境】⭐⭐⭐
-   - 大盘不暴跌
-   - 成交量不萎缩
-   - 北向资金流向
-   - 外围市场表现
-
-四、第二天上车条件（按重要性排序）
-
-1. 【竞价高开】2%-5%最佳
-   - <2%：太弱，可能低开低走
-   - 2%-5%：强势但不过分，有空间
-   - >5%：风险大，可能高开低走
-
-2. 【竞价量能】
-   - 竞价成交量>昨日5%
-   - 量比>2
-   - 竞价金额>1000万
-
-3. 【竞价走势】
-   - 竞价最后一分钟向上：抢筹
-   - 竞价未出现大幅回落：抛压小
-   - 竞价未出现天地板：情绪稳定
-
-4. 【板块竞价】
-   - 同板块有高开股
-   - 板块龙头继续强势
-   - 无大面积低开
-
-五、风险控制
-
-1. 【绝不买入的情况】
-   - 竞价高开>7%（风险收益比差）
-   - 竞价量能<昨日3%（无人关注）
-   - 大盘暴跌>1.5%
-   - 板块龙头跌停
-   - 首板反复开板>3次
-
-2. 【止损条件】
-   - 买入后跌破首板涨停价
-   - 当天收盘跌停
-   - 第二天低开低走不修复
-
-================================================================================
+The strategy uses the local market data service first and returns the same
+explainable payload contract used by the scan API.
 """
 
-from typing import List, Dict, Any, Optional, Tuple
-from backend.strategies import BaseStrategy, register_strategy
-import akshare as ak
-import pandas as pd
-import numpy as np
+from __future__ import annotations
+
+from dataclasses import asdict
 from datetime import datetime, timedelta
-import json
-import os
+from typing import Any
+
+from backend.infrastructure.market_data.utils import infer_board_type, infer_exchange, infer_security_type
+from backend.strategies import BaseStrategy, register_strategy
+from backend.strategies.strategy_limit_up_return import LimitUpRule, infer_limit_up_rule
+
+try:
+    import pandas as pd
+except ModuleNotFoundError:  # pragma: no cover - local test fallback
+    pd = None
+
+
+SIGNAL_SCHEMA_VERSION = "strategy-signal/first-limit-up-next-board/v1"
 
 
 @register_strategy
 class StrategyFirstLimitUp(BaseStrategy):
-    """首板涨停第二天上车策略 - 深度优化版.
+    """First limit-up watchlist with next-day auction confirmation."""
 
-    核心逻辑:
-    1. 首板识别：当日涨停，且前5个交易日未涨停
-    2. 首板质量评分：涨停时间、封板质量、量能、封单
-    3. 板块效应：所属板块强度、同板块涨停数
-    4. 市场情绪：当日涨停家数、连板股数量
-    5. 第二天上车：竞价高开、量能、板块联动
-
-    评分维度:
-    - 首板形态分 (40分): 涨停时间、封板质量、量能
-    - 板块效应分 (25分): 板块涨停数、板块持续性
-    - 市场情绪分 (20分): 市场涨跌家数、连板股数量
-    - 资金实力分 (15分): 封单金额、龙虎榜数据
-    """
+    essential_cols = ["date", "open", "close", "high", "low", "volume"]
 
     def __init__(self):
         super().__init__()
-        self.config = self._load_config()
-        self.essential_cols = ['date', 'open', 'close', 'high', 'low', 'volume', 'pct_chg', 'turnover']
-        self.market_data_cache = {}  # 缓存市场数据
-
-    def _load_config(self) -> dict:
-        """加载策略配置."""
-        config_path = "config.json"
-        default_config = {
-            'strategy': {
-                # 基础筛选
-                'price_limit': 100.0,
-                'exclude_st': True,
-                'exclude_kechuang': True,
-                'select_count': 10,
-                'scan_limit': 500,
-                'min_circulating_market_cap': 30,  # 最小流通市值(亿)
-                'max_circulating_market_cap': 300,  # 最大流通市值(亿)
-
-                # 首板条件
-                'limit_up_threshold': 9.9,
-                'no_limit_up_days': 5,
-                'min_turnover': 3.0,  # 最小换手率
-                'max_turnover': 35.0,  # 最大换手率
-                'min_limit_amount': 50000000,  # 最小封单金额(5000万)
-
-                # 涨停时间权重
-                'early_limit_bonus': 15,  # 早盘涨停加分
-                'morning_limit_bonus': 10,  # 上午涨停加分
-                'afternoon_limit_bonus': 0,  # 下午涨停加分
-                'late_limit_penalty': -10,  # 尾盘涨停扣分
-
-                # 封板质量
-                'one_word_bonus': 20,  # 一字板加分
-                'quick_limit_bonus': 15,  # 秒板加分
-                'steady_limit_bonus': 10,  # 稳步封板加分
-                'reopen_penalty_per_time': -5,  # 每次开板扣分
-
-                # 板块效应
-                'sector_limit_up_threshold': 3,  # 板块最少涨停数
-                'sector_leader_bonus': 15,  # 板块龙头加分
-                'sector_strong_bonus': 10,  # 板块强势加分
-
-                # 市场情绪
-                'market_good_limit_count': 50,  # 情绪好：涨停家数>
-                'market_bad_limit_down_count': 10,  # 情绪差：跌停家数>
-                'high_board_intact_bonus': 10,  # 高标完好加分
-
-                # 第二天上车条件
-                'open_high_min': 2.0,
-                'open_high_max': 6.0,
-                'min_volume_ratio': 0.05,  # 竞价量能/昨日成交量
-                'min_quantity_ratio': 2.0,  # 最小量比
-                'min_auction_amount': 5000000,  # 最小竞价金额(500万)
-
-                # 风险控制
-                'min_total_score': 60,  # 最低综合评分
-                'max_risk_score': 40,  # 最大风险评分
-                'market_drop_threshold': -1.5,
-            },
-            'output': {
-                'file_path': 'data/first_limit_up_selection.json'
-            }
+        self.config: dict[str, Any] = {
+            "lookback_days": 160,
+            "scan_limit": 600,
+            "select_count": 10,
+            "min_bars": 35,
+            "no_limit_up_lookback": 10,
+            "price_limit": 0,
+            "exclude_st": True,
+            "exclude_kechuang": False,
+            "exclude_bj": True,
+            "min_amount": 20_000_000,
+            "min_turnover": 1.5,
+            "max_turnover": 35.0,
+            "min_amount_ratio_20": 0.5,
+            "max_amount_ratio_20": 5.0,
+            "one_word_turnover": 1.5,
+            "one_word_amount_ratio": 0.55,
+            "limit_price_tolerance_pct": 0.003,
+            "min_preselect_score": 70,
+            "min_auction_score": 70,
+            "market_min_score": 40,
+            "auction_open_min_ratio": 0.20,
+            "auction_open_max_ratio": 0.75,
+            "auction_open_reject_ratio": 0.90,
+            "auction_amount_ratio_min": 0.03,
+            "auction_volume_ratio_min": 0.03,
+            "min_auction_amount": 3_000_000,
+            "include_rejected": False,
+            "bar_interval": "1d",
+            "adjust": "qfq",
         }
-
-        if os.path.exists(config_path):
-            try:
-                with open(config_path, 'r', encoding='utf-8') as f:
-                    loaded_config = json.load(f)
-                    for key, value in default_config.items():
-                        if key not in loaded_config:
-                            loaded_config[key] = value
-                        elif isinstance(value, dict):
-                            for sub_key, sub_value in value.items():
-                                if sub_key not in loaded_config[key]:
-                                    loaded_config[key][sub_key] = sub_value
-                    return loaded_config
-            except Exception as e:
-                print(f"加载配置失败: {e}, 使用默认配置")
-                return default_config
-        return default_config
 
     def get_code(self) -> str:
-        return 'FIRST_LIMIT_UP'
+        return "FIRST_LIMIT_UP"
 
     def get_name(self) -> str:
-        return '首板涨停次日上车'
+        return "First Limit-Up Next-Day Entry"
 
     def get_description(self) -> str:
-        return '首板涨停后，综合评估板块效应、市场情绪、资金实力，第二天竞价上车'
+        return "T-day first limit-up preselection plus T+1 auction confirmation for next-board candidates."
 
     def get_category(self) -> str:
-        return '短线策略'
+        return "Short-term event strategy"
 
-    def get_parameters(self) -> Dict[str, Any]:
-        """返回策略可调参数."""
+    def get_parameters(self) -> dict[str, Any]:
         return {
-            'price_limit': {
-                'name': '价格上限',
-                'type': 'float',
-                'default': 100.0,
-                'min': 10.0,
-                'max': 1000.0,
-                'description': '选股价格上限'
-            },
-            'select_count': {
-                'name': '选股数量',
-                'type': 'int',
-                'default': 10,
-                'min': 1,
-                'max': 30,
-                'description': '最终选出的股票数量'
-            },
-            'min_turnover': {
-                'name': '最小换手率',
-                'type': 'float',
-                'default': 3.0,
-                'min': 1.0,
-                'max': 20.0,
-                'description': '首板最小换手率(%)'
-            },
-            'max_turnover': {
-                'name': '最大换手率',
-                'type': 'float',
-                'default': 35.0,
-                'min': 10.0,
-                'max': 50.0,
-                'description': '首板最大换手率(%)'
-            },
-            'sector_limit_up_threshold': {
-                'name': '板块涨停阈值',
-                'type': 'int',
-                'default': 3,
-                'min': 1,
-                'max': 10,
-                'description': '板块最少涨停家数'
-            },
-            'open_high_min': {
-                'name': '最小高开幅度',
-                'type': 'float',
-                'default': 2.0,
-                'min': 0.0,
-                'max': 5.0,
-                'description': '第二天最小高开幅度(%)'
-            },
-            'open_high_max': {
-                'name': '最大高开幅度',
-                'type': 'float',
-                'default': 6.0,
-                'min': 3.0,
-                'max': 15.0,
-                'description': '第二天最大高开幅度(%)'
-            },
-            'min_total_score': {
-                'name': '最低综合评分',
-                'type': 'int',
-                'default': 60,
-                'min': 40,
-                'max': 80,
-                'description': '入选最低综合评分'
-            }
+            "no_limit_up_lookback": {"type": "int", "default": 10, "min": 3, "max": 30},
+            "min_preselect_score": {"type": "float", "default": 70, "min": 50, "max": 90},
+            "min_auction_score": {"type": "float", "default": 70, "min": 50, "max": 90},
+            "auction_open_min_ratio": {"type": "float", "default": 0.20, "min": 0.0, "max": 0.5},
+            "auction_open_max_ratio": {"type": "float", "default": 0.75, "min": 0.4, "max": 1.0},
+            "auction_amount_ratio_min": {"type": "float", "default": 0.03, "min": 0.0, "max": 0.2},
+            "bar_interval": {"type": "string", "default": "1d"},
+            "adjust": {"type": "string", "default": "qfq"},
         }
 
-    def _rename_hist_cols(self, df: pd.DataFrame) -> pd.DataFrame:
-        """重命名历史数据列."""
+    def _safe_float(self, value: Any, default: float = 0.0) -> float:
+        try:
+            if value is None or value == "":
+                return default
+            if pd is not None and pd.isna(value):
+                return default
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    def _safe_int(self, value: Any, default: int = 0) -> int:
+        try:
+            if value is None or value == "":
+                return default
+            return int(float(value))
+        except (TypeError, ValueError):
+            return default
+
+    def _float_config(self, key: str, default: float) -> float:
+        return self._safe_float(self.config.get(key), default)
+
+    def _int_config(self, key: str, default: int) -> int:
+        return self._safe_int(self.config.get(key), default)
+
+    def _bool_config(self, key: str, default: bool = False) -> bool:
+        value = self.config.get(key)
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+    def _find_column(self, df, candidates: list[str]) -> str | None:
+        lower_to_col = {str(col).strip().lower(): col for col in getattr(df, "columns", [])}
+        for candidate in candidates:
+            found = lower_to_col.get(str(candidate).strip().lower())
+            if found is not None:
+                return found
+        return None
+
+    def _normalize_hist_cols(self, df):
+        if pd is None or df is None or getattr(df, "empty", True):
+            return df
+        aliases = {
+            "date": ["date", "trade_date", "datetime", "日期"],
+            "open": ["open", "开盘"],
+            "close": ["close", "last_price", "收盘", "最新价"],
+            "high": ["high", "最高"],
+            "low": ["low", "最低"],
+            "volume": ["volume", "vol", "成交量"],
+            "amount": ["amount", "成交额"],
+            "turnover": ["turnover", "turnover_rate", "换手率"],
+            "pct_chg": ["pct_chg", "change_pct", "pct_change", "涨跌幅"],
+            "source": ["source", "provider"],
+            "adjust": ["adjust"],
+            "interval": ["interval", "bar_interval"],
+        }
+        rename_map: dict[Any, str] = {}
+        for target, candidates in aliases.items():
+            column = self._find_column(df, candidates)
+            if column is not None:
+                rename_map[column] = target
+        normalized = df.rename(columns=rename_map).copy()
+        for col in self.essential_cols:
+            if col not in normalized.columns:
+                normalized[col] = None
+        normalized["date"] = pd.to_datetime(normalized["date"], errors="coerce")
+        normalized = normalized.dropna(subset=["date"]).sort_values("date")
+        normalized["date"] = normalized["date"].dt.strftime("%Y-%m-%d")
+        for col in ["open", "close", "high", "low", "volume", "amount", "turnover", "pct_chg"]:
+            if col in normalized.columns:
+                normalized[col] = pd.to_numeric(normalized[col], errors="coerce")
+        normalized = normalized.dropna(subset=self.essential_cols)
+        normalized = normalized.drop_duplicates(subset=["date"], keep="last").reset_index(drop=True)
+        if "amount" not in normalized.columns or normalized["amount"].isna().all():
+            normalized["amount"] = normalized["close"] * normalized["volume"]
+        if "turnover" not in normalized.columns:
+            normalized["turnover"] = 0.0
+        return normalized
+
+    def _calculate_indicators(self, df):
+        if pd is None:
+            return df
+        df = self._normalize_hist_cols(df)
         if df is None or df.empty:
             return df
+        df["prev_close"] = df["close"].shift(1)
+        df["pct_chg_calc"] = (df["close"] / df["prev_close"] - 1.0) * 100
+        if "pct_chg" not in df.columns or df["pct_chg"].isna().all():
+            df["pct_chg"] = df["pct_chg_calc"]
+        df["ma20_close"] = df["close"].rolling(window=20, min_periods=5).mean()
+        df["ma60_close"] = df["close"].rolling(window=60, min_periods=20).mean()
+        df["ma20_volume"] = df["volume"].rolling(window=20, min_periods=5).mean()
+        df["ma20_amount"] = df["amount"].rolling(window=20, min_periods=5).mean()
+        df["volume_ratio_20"] = df["volume"] / df["ma20_volume"].shift(1).replace(0, pd.NA)
+        df["amount_ratio_20"] = df["amount"] / df["ma20_amount"].shift(1).replace(0, pd.NA)
+        day_range = (df["high"] - df["low"]).replace(0, pd.NA)
+        df["close_position"] = (df["close"] - df["low"]) / day_range
+        df["return_5d"] = df["close"] / df["close"].shift(5) - 1.0
+        df["volatility_20"] = df["close"].pct_change().rolling(window=20, min_periods=5).std()
+        return df
 
-        mapping_cn = {
-            '日期': 'date',
-            '开盘': 'open',
-            '收盘': 'close',
-            '最高': 'high',
-            '最低': 'low',
-            '成交量': 'volume',
-            '成交额': 'amount',
-            '振幅': 'amplitude',
-            '涨跌幅': 'pct_chg',
-            '涨跌额': 'chg_amt',
-            '换手率': 'turnover',
-        }
+    def _limit_price(self, prev_close: float, rule: LimitUpRule) -> float | None:
+        if prev_close <= 0 or rule.percent is None:
+            return None
+        return round(prev_close * (1.0 + rule.percent) + 1e-8, 2)
 
-        cols = list(df.columns)
-        rename_map = {}
-        for c in cols:
-            if c in mapping_cn:
-                rename_map[c] = mapping_cn[c]
-            else:
-                rename_map[c] = c
-        return df.rename(columns=rename_map)
+    def _is_limit_up_bar(self, row, rule: LimitUpRule) -> tuple[bool, float | None, float]:
+        prev_close = self._safe_float(row.get("prev_close"))
+        close = self._safe_float(row.get("close"))
+        high = self._safe_float(row.get("high"))
+        pct_chg = self._safe_float(row.get("pct_chg"))
+        limit_price = self._limit_price(prev_close, rule)
+        if limit_price is None:
+            return False, None, pct_chg
+        tolerance = self._float_config("limit_price_tolerance_pct", 0.003)
+        price_hit = close >= limit_price * (1 - tolerance) and high >= limit_price * (1 - tolerance)
+        pct_hit = pct_chg >= (rule.percent * 100) - 0.25
+        return bool(price_hit or pct_hit), limit_price, pct_chg
 
-    def _get_market_type(self, code: str) -> str:
-        """判断股票所属市场."""
-        if code.startswith('6'):
-            return 'sh'
-        elif code.startswith('0') or code.startswith('3'):
-            return 'sz'
-        elif code.startswith('8') or code.startswith('4'):
-            return 'bj'
-        return 'sz'
-
-    def _is_limit_up(self, pct_chg: float, market: str = 'sh') -> bool:
-        """判断是否为涨停."""
-        if market in ['cy', 'kc']:
-            return pct_chg >= 19.9
-        return pct_chg >= 9.9
-
-    def _check_no_recent_limit_up(self, df: pd.DataFrame, current_idx: int, days: int = 5, market: str = 'sh') -> bool:
-        """检查前N天是否没有涨停."""
-        if current_idx < days:
-            return False
-
-        for i in range(current_idx - days, current_idx):
-            if i < 0:
-                continue
-            pct_chg = float(df.iloc[i].get('pct_chg', 0))
-            if self._is_limit_up(pct_chg, market):
+    def _no_recent_limit_up(self, df, current_index: int, rule: LimitUpRule) -> bool:
+        lookback = self._int_config("no_limit_up_lookback", 10)
+        start = max(1, current_index - lookback)
+        for idx in range(start, current_index):
+            matched, _, _ = self._is_limit_up_bar(df.iloc[idx], rule)
+            if matched:
                 return False
         return True
 
-    def _get_market_sentiment(self, date: str = None) -> Dict[str, Any]:
-        """获取市场情绪数据."""
-        if os.getenv("MARKET_DATA_LOCAL_ONLY", "").strip() == "1":
-            return {
-                'limit_up_count': 0,
-                'limit_down_count': 0,
-                'sentiment_score': 50,
-                'is_good_market': True
-            }
-        try:
-            # 获取当日涨停跌停数据
-            if date:
-                zt_df = ak.stock_zt_pool_em(date=date)
-                dt_df = ak.stock_zt_pool_dtgc_em(date=date)
-            else:
-                today = datetime.now().strftime('%Y%m%d')
-                zt_df = ak.stock_zt_pool_em(date=today)
-                dt_df = ak.stock_zt_pool_dtgc_em(date=today)
-
-            limit_up_count = len(zt_df) if zt_df is not None else 0
-            limit_down_count = len(dt_df) if dt_df is not None else 0
-
-            # 计算情绪分数
-            sentiment_score = 50
-            if limit_up_count > 80:
-                sentiment_score += 20
-            elif limit_up_count > 50:
-                sentiment_score += 10
-            elif limit_up_count < 20:
-                sentiment_score -= 20
-
-            if limit_down_count < 5:
-                sentiment_score += 10
-            elif limit_down_count > 20:
-                sentiment_score -= 20
-
-            return {
-                'limit_up_count': limit_up_count,
-                'limit_down_count': limit_down_count,
-                'sentiment_score': min(max(sentiment_score, 0), 100),
-                'is_good_market': limit_up_count >= 50 and limit_down_count < 10
-            }
-        except Exception as e:
-            print(f"获取市场情绪失败: {e}")
-            return {
-                'limit_up_count': 0,
-                'limit_down_count': 0,
-                'sentiment_score': 50,
-                'is_good_market': True
-            }
-
-    def _get_sector_data(self, stock_code: str, date: str = None) -> Dict[str, Any]:
-        """获取股票所属板块数据."""
-        if os.getenv("MARKET_DATA_LOCAL_ONLY", "").strip() == "1":
-            return {'sector_name': '本地数据', 'sector_limit_count': 0, 'sector_score': 0}
-        try:
-            # 获取股票所属概念板块
-            sector_df = ak.stock_board_concept_name_ths()
-            if sector_df is None or sector_df.empty:
-                return {'sector_name': '未知', 'sector_limit_count': 0, 'sector_score': 0}
-
-            # 这里简化处理，实际应该获取个股所属板块
-            # 然后统计板块内涨停数量
-            return {
-                'sector_name': '待分析',
-                'sector_limit_count': 0,
-                'sector_score': 10  # 默认给基础分
-            }
-        except Exception as e:
-            print(f"获取板块数据失败: {e}")
-            return {'sector_name': '未知', 'sector_limit_count': 0, 'sector_score': 0}
-
-    def _calculate_limit_up_quality_score(self, df: pd.DataFrame, limit_up_idx: int,
-                                          market: str = 'sh') -> Tuple[float, Dict[str, Any]]:
-        """计算首板质量评分.
-
-        评分维度:
-        - 涨停时间 (40分)
-        - 封板质量 (30分)
-        - 量能特征 (20分)
-        - 封单金额 (10分)
-        """
-        config = self.config['strategy']
-        score = 0.0
-        details = {}
-
-        if limit_up_idx < 0 or limit_up_idx >= len(df):
-            return 0, details
-
-        limit_up_day = df.iloc[limit_up_idx]
-        prev_day = df.iloc[limit_up_idx - 1] if limit_up_idx > 0 else limit_up_day
-
-        # 1. 涨停时间评分 (40分)
-        # 注意：这里用日线数据无法精确判断涨停时间
-        # 实际应该用分时数据，这里用换手率作为间接判断
-        turnover = float(limit_up_day.get('turnover', 0))
-
-        # 早盘涨停特征：换手率适中，不是天量
-        if turnover < 10:
-            time_score = config.get('early_limit_bonus', 15)
-            time_desc = "早盘涨停特征"
-        elif turnover < 20:
-            time_score = config.get('morning_limit_bonus', 10)
-            time_desc = "上午涨停特征"
-        elif turnover < 30:
-            time_score = config.get('afternoon_limit_bonus', 0)
-            time_desc = "下午涨停特征"
-        else:
-            time_score = config.get('late_limit_penalty', -10)
-            time_desc = "尾盘涨停特征"
-
-        score += max(time_score, 0)
-        details['time_score'] = max(time_score, 0)
-        details['time_desc'] = time_desc
-
-        # 2. 封板质量评分 (30分)
-        # 用振幅判断：振幅小说明封板坚决
-        amplitude = float(limit_up_day.get('amplitude', 0))
-        if amplitude < 5:
-            quality_score = 30
-            quality_desc = "封板坚决"
-        elif amplitude < 8:
-            quality_score = 20
-            quality_desc = "封板较好"
-        elif amplitude < 12:
-            quality_score = 10
-            quality_desc = "封板一般"
-        else:
-            quality_score = 0
-            quality_desc = "反复开板"
-
-        score += quality_score
-        details['quality_score'] = quality_score
-        details['quality_desc'] = quality_desc
-
-        # 3. 量能特征评分 (20分)
-        volume_ratio = float(limit_up_day.get('volume', 0)) / float(prev_day.get('volume', 1))
-
-        if 1.5 <= volume_ratio <= 3:
-            vol_score = 20
-            vol_desc = "量能完美"
-        elif 1 <= volume_ratio < 1.5:
-            vol_score = 15
-            vol_desc = "量能较好"
-        elif 3 < volume_ratio <= 5:
-            vol_score = 10
-            vol_desc = "量能偏大"
-        elif volume_ratio > 5:
-            vol_score = 5
-            vol_desc = "天量涨停"
-        else:
-            vol_score = 10
-            vol_desc = "缩量涨停"
-
-        score += vol_score
-        details['vol_score'] = vol_score
-        details['vol_desc'] = vol_desc
-        details['volume_ratio'] = round(volume_ratio, 2)
-
-        # 4. 换手率评分 (10分)
-        if 5 <= turnover <= 15:
-            turnover_score = 10
-            turnover_desc = "换手理想"
-        elif 3 <= turnover < 5:
-            turnover_score = 8
-            turnover_desc = "换手偏低"
-        elif 15 < turnover <= 25:
-            turnover_score = 6
-            turnover_desc = "换手偏高"
-        elif turnover > 25:
-            turnover_score = 3
-            turnover_desc = "换手过高"
-        else:
-            turnover_score = 5
-            turnover_desc = "换手过低"
-
-        score += turnover_score
-        details['turnover_score'] = turnover_score
-        details['turnover_desc'] = turnover_desc
-
-        return min(score, 100), details
-
-    def _calculate_comprehensive_score(self, limit_up_score: float, limit_up_details: Dict,
-                                       sector_data: Dict, market_sentiment: Dict) -> Tuple[float, Dict[str, Any]]:
-        """计算综合评分."""
-        config = self.config['strategy']
-
-        # 基础分：首板质量 (占50%)
-        base_score = limit_up_score * 0.5
-
-        # 板块效应分 (占25%)
-        sector_score = sector_data.get('sector_score', 0)
-        if sector_data.get('sector_limit_count', 0) >= config.get('sector_limit_up_threshold', 3):
-            sector_score += config.get('sector_strong_bonus', 10)
-        sector_score = min(sector_score, 25)
-
-        # 市场情绪分 (占15%)
-        sentiment_score = market_sentiment.get('sentiment_score', 50) * 0.15
-
-        # 市场环境加分/扣分
-        if market_sentiment.get('is_good_market', True):
-            market_bonus = 10
-        else:
-            market_bonus = -10
-
-        total_score = base_score + sector_score + sentiment_score + market_bonus
-
-        details = {
-            'limit_up_score': round(limit_up_score, 1),
-            'limit_up_details': limit_up_details,
-            'sector_score': round(sector_score, 1),
-            'sentiment_score': round(sentiment_score, 1),
-            'market_bonus': market_bonus,
-            'total_score': round(total_score, 1)
+    def _stock_info(self, row: dict) -> dict[str, Any]:
+        code = str(row.get("code") or row.get("symbol") or row.get("stock_code") or row.get("代码") or row.get("证券代码") or "").strip()
+        name = str(row.get("name") or row.get("stock_name") or row.get("名称") or row.get("证券简称") or code).strip()
+        exchange = str(row.get("exchange") or infer_exchange(code)).strip().upper()
+        security_type = str(row.get("security_type") or infer_security_type(code, name)).strip().lower()
+        board_type = str(row.get("board_type") or infer_board_type(code, exchange=exchange, security_type=security_type)).strip().lower()
+        return {
+            "code": code,
+            "name": name,
+            "exchange": exchange,
+            "market": str(row.get("market") or "").strip().lower(),
+            "security_type": security_type,
+            "board_type": board_type,
+            "industry": str(row.get("industry") or "").strip(),
+            "status": str(row.get("status") or "").strip().lower(),
+            "is_st": bool(row.get("is_st")) or name.upper().replace(" ", "").startswith(("*ST", "ST")),
+            "is_suspended": bool(row.get("is_suspended")),
+            "is_delisting": bool(row.get("is_delisting")) or "退" in name,
         }
 
-        return total_score, details
-
-    def _get_realtime_data(self, stock_code: str) -> Optional[Dict[str, Any]]:
-        """获取实时行情数据."""
-        if os.getenv("MARKET_DATA_LOCAL_ONLY", "").strip() == "1":
-            return None
-        try:
-            df = ak.stock_zh_a_spot_em()
-            if df is not None and not df.empty:
-                stock_data = df[df['代码'] == stock_code]
-                if not stock_data.empty:
-                    row = stock_data.iloc[0]
-                    return {
-                        'open': float(row.get('开盘', 0)),
-                        'prev_close': float(row.get('昨收', 0)),
-                        'volume': float(row.get('成交量', 0)),
-                        'amount': float(row.get('成交额', 0)),
-                        'pct_chg': float(row.get('涨跌幅', 0)),
-                        'quantity_ratio': float(row.get('量比', 0)),
-                    }
-        except Exception as e:
-            print(f"获取实时数据失败 {stock_code}: {e}")
-        return None
-
-    def _analyze_first_limit_up(self, stock_code: str, stock_name: str,
-                                target_date: str = None) -> Tuple[bool, str, Dict[str, Any]]:
-        """分析首板涨停股票.
-
-        Returns:
-            (是否匹配, 信号类型, 详细信息)
-        """
-        config = self.config['strategy']
-
-        try:
-            market = self._get_market_type(stock_code)
-
-            # 获取历史数据
-            if os.getenv("MARKET_DATA_LOCAL_ONLY", "").strip() == "1":
-                from backend.services.stock_data_service import get_stock_data_service
-
-                stock_data = get_stock_data_service()
-                end_date = datetime.strptime(target_date, '%Y-%m-%d') if target_date else datetime.now()
-                start_date = end_date - timedelta(days=60)
-                df = stock_data.get_stock_hist(
-                    stock_code,
-                    start_date.strftime('%Y-%m-%d'),
-                    end_date.strftime('%Y-%m-%d'),
-                    adjust="qfq",
-                )
-            if target_date:
-                if os.getenv("MARKET_DATA_LOCAL_ONLY", "").strip() != "1":
-                    end_date = datetime.strptime(target_date, '%Y-%m-%d')
-                    start_date = end_date - timedelta(days=60)
-                    start_str = start_date.strftime('%Y%m%d')
-                    end_str = end_date.strftime('%Y%m%d')
-
-                    df = ak.stock_zh_a_hist(
-                        symbol=stock_code,
-                        period="daily",
-                        adjust="qfq",
-                        start_date=start_str,
-                        end_date=end_str
-                    )
-            elif os.getenv("MARKET_DATA_LOCAL_ONLY", "").strip() != "1":
-                start_date = (datetime.now() - timedelta(days=60)).strftime('%Y%m%d')
-                df = ak.stock_zh_a_hist(
-                    symbol=stock_code,
-                    period="daily",
-                    adjust="qfq",
-                    start_date=start_date
-                )
-
-            if df is None or df.empty:
-                return False, "无数据", {}
-
-            df = self._rename_hist_cols(df)
-
-            for col in self.essential_cols:
-                if col not in df.columns:
-                    return False, "字段缺失", {}
-
-            if len(df) < 10:
-                return False, "数据不足", {}
-
-            last = df.iloc[-1]
-            prev = df.iloc[-2] if len(df) > 1 else last
-
-            # 基础筛选
-            price_limit = float(config.get('price_limit', 100.0))
-            if float(last['close']) > price_limit:
-                return False, "价格过高", {}
-
-            # 检查是否涨停
-            if not self._is_limit_up(float(last.get('pct_chg', 0)), market):
-                return False, "非涨停", {}
-
-            # 检查是否首板
-            if not self._check_no_recent_limit_up(df, len(df) - 1, config.get('no_limit_up_days', 5), market):
-                return False, "非首板", {}
-
-            # 换手率筛选
-            turnover = float(last.get('turnover', 0))
-            min_turnover = float(config.get('min_turnover', 3.0))
-            max_turnover = float(config.get('max_turnover', 35.0))
-            if turnover < min_turnover or turnover > max_turnover:
-                return False, f"换手率不达标({turnover:.1f}%)", {}
-
-            # 获取市场情绪
-            market_sentiment = self._get_market_sentiment(target_date)
-
-            # 获取板块数据
-            sector_data = self._get_sector_data(stock_code, target_date)
-
-            # 计算首板质量评分
-            limit_up_score, limit_up_details = self._calculate_limit_up_quality_score(
-                df, len(df) - 1, market
-            )
-
-            # 计算综合评分
-            total_score, score_details = self._calculate_comprehensive_score(
-                limit_up_score, limit_up_details, sector_data, market_sentiment
-            )
-
-            # 检查最低评分要求
-            min_total_score = float(config.get('min_total_score', 60))
-            if total_score < min_total_score:
-                return False, f"综合评分不足({total_score:.0f}<{min_total_score})", {}
-
-            # 风险评分
-            risk_score = 100 - total_score
-            max_risk = float(config.get('max_risk_score', 40))
-            if risk_score > max_risk:
-                return False, f"风险过高({risk_score:.0f}>{max_risk})", {}
-
-            # 获取实时数据（第二天竞价）
-            realtime = self._get_realtime_data(stock_code)
-
-            # 判断上车信号
-            entry_signal = ""
-            entry_strength = 0
-
-            if realtime:
-                open_price = realtime.get('open', 0)
-                prev_close = realtime.get('prev_close', 0)
-                quantity_ratio = realtime.get('quantity_ratio', 0)
-
-                if prev_close > 0:
-                    open_pct = ((open_price - prev_close) / prev_close) * 100
-
-                    open_high_min = float(config.get('open_high_min', 2.0))
-                    open_high_max = float(config.get('open_high_max', 6.0))
-                    min_quantity_ratio = float(config.get('min_quantity_ratio', 2.0))
-
-                    if open_high_min <= open_pct <= open_high_max:
-                        if quantity_ratio >= min_quantity_ratio:
-                            entry_signal = "竞价强势"
-                            entry_strength = 3
-                        else:
-                            entry_signal = "竞价高开"
-                            entry_strength = 2
-                    elif open_pct > open_high_max:
-                        entry_signal = "高开过大"
-                        entry_strength = 1
-                    elif open_pct > 0:
-                        entry_signal = "小幅高开"
-                        entry_strength = 1
-                    else:
-                        entry_signal = "低开"
-                        entry_strength = 0
-
-                    score_details['open_pct'] = round(open_pct, 2)
-                    score_details['quantity_ratio'] = round(quantity_ratio, 2)
-            else:
-                entry_signal = "首板待观察"
-                entry_strength = 1
-
-            # 构建结果
-            result = {
-                'code': stock_code,
-                'name': stock_name,
-                'pick_price': float(last['close']),
-                'signal': entry_signal,
-                'signal_strength': entry_strength,
-                'limit_up_date': str(last['date']),
-                'limit_up_score': round(limit_up_score, 1),
-                'total_score': round(total_score, 1),
-                'risk_score': round(risk_score, 1),
-                'turnover': round(turnover, 2),
-                'volume': int(last['volume']),
-                'pct_chg': round(float(last.get('pct_chg', 0)), 2),
-                'market_sentiment': market_sentiment.get('sentiment_score', 50),
-                'limit_up_count': market_sentiment.get('limit_up_count', 0),
-                'limit_down_count': market_sentiment.get('limit_down_count', 0),
-                'score_details': score_details,
-                'reason_tag': entry_signal,
-                'note': f"首板分:{limit_up_score:.0f} 综合:{total_score:.0f} 风险:{risk_score:.0f} {limit_up_details.get('time_desc', '')}"
-            }
-
-            if realtime:
-                result['open_price'] = realtime.get('open', 0)
-                result['quantity_ratio'] = realtime.get('quantity_ratio', 0)
-
-            return True, entry_signal, result
-
-        except Exception as e:
-            import traceback
-            print(f"分析错误 {stock_code}: {e}")
-            print(traceback.format_exc())
-            return False, f"错误:{str(e)}", {}
-
-    def scan(self, date: str = None) -> List[Dict[str, Any]]:
-        """运行首板涨停策略扫描.
-
-        Args:
-            date: 目标日期 (YYYY-MM-DD格式), None表示今天
-
-        Returns:
-            选股结果列表
-        """
-        print(f"🚀 启动首板涨停次日上车策略... 时间: {datetime.now()}")
-        if date:
-            print(f"📅 回测日期: {date}")
-
-        config = self.config['strategy']
-
-        # 获取市场情绪（只获取一次）
-        market_sentiment = self._get_market_sentiment(date)
-        print(f"📊 市场情绪: 涨停{market_sentiment['limit_up_count']}家 跌停{market_sentiment['limit_down_count']}家 "
-              f"情绪分:{market_sentiment['sentiment_score']}")
-
-        if not market_sentiment.get('is_good_market', True):
-            print("⚠️ 市场情绪较差，谨慎操作")
-
-        stock_list = self._get_stock_list()
-        if stock_list.empty:
-            print("未获取到股票列表")
-            return []
-
-        code_col = '代码' if '代码' in stock_list.columns else ('code' if 'code' in stock_list.columns else None)
-        name_col = '名称' if '名称' in stock_list.columns else ('name' if 'name' in stock_list.columns else None)
-
-        if not code_col or not name_col:
-            print("股票列表字段异常")
-            return []
-
-        scan_limit = config.get('scan_limit', 500)
-        if scan_limit > 0 and len(stock_list) > scan_limit:
-            stock_list = stock_list.head(scan_limit)
-
-        print(f"📊 开始扫描 {len(stock_list)} 只股票，寻找首板涨停...")
-
-        selected_stocks = []
-        processed = 0
-
-        for _, row in stock_list.iterrows():
-            code = str(row[code_col])
-            name = str(row[name_col])
-
-            if self._should_exclude(code, name):
-                continue
-
-            match, reason, result = self._analyze_first_limit_up(code, name, date)
-
-            if match:
-                selected_stocks.append(result)
-
-            processed += 1
-            if processed % 100 == 0:
-                print(f"  已处理 {processed}/{len(stock_list)} 只, 选中 {len(selected_stocks)} 只")
-
-        print(f"✅ 扫描完成: 共处理 {processed} 只, 初选 {len(selected_stocks)} 只")
-
-        selected_stocks = self._sort_and_filter(selected_stocks)
-        self._save_results(selected_stocks, date)
-
-        return selected_stocks
-
-    def _get_stock_list(self) -> pd.DataFrame:
-        """获取股票列表."""
-        if os.getenv("MARKET_DATA_LOCAL_ONLY", "").strip() == "1":
-            from backend.services.stock_data_service import get_stock_data_service
-
-            return get_stock_data_service().get_stock_list(source="local")
-        try:
-            df = ak.stock_info_a_code_name()
-            if isinstance(df, pd.DataFrame) and not df.empty:
-                return df
-        except Exception as e:
-            print(f"stock_info_a_code_name 失败: {e}")
-
-        try:
-            df2 = ak.stock_zh_a_spot_em()
-            if isinstance(df2, pd.DataFrame) and not df2.empty:
-                return df2[[c for c in df2.columns if c in ('代码', '名称', 'code', 'name')]]
-        except Exception as e:
-            print(f"stock_zh_a_spot_em 失败: {e}")
-
-        try:
-            sh = ak.stock_info_sh_name_code()
-        except Exception:
-            sh = pd.DataFrame()
-        try:
-            sz = ak.stock_info_sz_name_code()
-        except Exception:
-            sz = pd.DataFrame()
-
-        if isinstance(sh, pd.DataFrame) and not sh.empty:
-            sh = sh.rename(columns={'证券代码': '代码', '证券简称': '名称'})
-        if isinstance(sz, pd.DataFrame) and not sz.empty:
-            sz = sz.rename(columns={'A股代码': '代码', 'A股简称': '名称'})
-
-        merged = pd.concat([d for d in [sh, sz] if isinstance(d, pd.DataFrame)], ignore_index=True)
-        if not merged.empty and '代码' in merged.columns and '名称' in merged.columns:
-            merged = merged[['代码', '名称']].dropna().drop_duplicates()
-            return merged
-
-        return pd.DataFrame({
-            '代码': ['600000', '600519', '000001', '000002', '002594'],
-            '名称': ['浦发银行', '贵州茅台', '平安银行', '万科A', '比亚迪']
-        })
-
-    def _should_exclude(self, code: str, name: str) -> bool:
-        """检查是否应该排除该股票."""
-        config = self.config['strategy']
-
-        if config.get('exclude_st', True) and ('ST' in name.upper() or '*ST' in name.upper()):
+    def _should_exclude(self, info: dict[str, Any]) -> bool:
+        code = info.get("code") or ""
+        if not code:
             return True
-        if config.get('exclude_kechuang', True) and code.startswith('688'):
+        if info.get("security_type") != "stock":
             return True
-        if code.startswith('8') or code.startswith('4'):
+        if self._bool_config("exclude_st", True) and info.get("is_st"):
             return True
-
+        if info.get("is_suspended") or info.get("status") in {"suspended", "halted"}:
+            return True
+        if info.get("is_delisting"):
+            return True
+        if self._bool_config("exclude_kechuang", False) and code.startswith(("688", "689")):
+            return True
+        if self._bool_config("exclude_bj", True) and (info.get("exchange") == "BJ" or code.startswith(("4", "8", "920"))):
+            return True
         return False
 
-    def _sort_and_filter(self, stocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """排序和筛选股票."""
-        config = self.config['strategy']
+    def _sector_key(self, info: dict[str, Any]) -> str:
+        return str(info.get("industry") or info.get("board_type") or info.get("exchange") or "unknown").strip() or "unknown"
 
-        def sort_key(x):
-            signal_rank = {'竞价强势': 0, '竞价高开': 1, '小幅高开': 2, '首板待观察': 3, '高开过大': 4, '低开': 5}
-            return (
-                signal_rank.get(x['signal'], 6),
-                -x.get('signal_strength', 0),
-                -x.get('total_score', 0),
-                -x.get('limit_up_score', 0),
-                x.get('risk_score', 100)
+    def _history_summary(self, info: dict[str, Any], df) -> dict[str, Any] | None:
+        if df is None or getattr(df, "empty", True) or len(df) < 2:
+            return None
+        rule = infer_limit_up_rule(info.get("code"), info.get("name"), info.get("exchange"), info.get("security_type"))
+        last = df.iloc[-1]
+        limit_up, _, pct_chg = self._is_limit_up_bar(last, rule)
+        close = self._safe_float(last.get("close"))
+        ma20 = self._safe_float(last.get("ma20_close"))
+        return {
+            "code": info.get("code"),
+            "sector_key": self._sector_key(info),
+            "pct_chg": pct_chg,
+            "limit_up": limit_up,
+            "above_ma20": bool(ma20 > 0 and close >= ma20),
+            "amount": self._safe_float(last.get("amount")),
+            "turnover": self._safe_float(last.get("turnover")),
+            "rule_percent": rule.percent or 0.10,
+        }
+
+    def _candidate_from_frame(self, info: dict[str, Any], df) -> tuple[dict[str, Any] | None, str]:
+        if df is None or getattr(df, "empty", True):
+            return None, "no history"
+        if len(df) < self._int_config("min_bars", 35):
+            return None, "insufficient history"
+        rule = infer_limit_up_rule(info.get("code"), info.get("name"), info.get("exchange"), info.get("security_type"))
+        if rule.percent is None:
+            return None, "limit rule unavailable"
+
+        last = df.iloc[-1]
+        limit_up, limit_price, pct_chg = self._is_limit_up_bar(last, rule)
+        if not limit_up or limit_price is None:
+            return None, "not limit-up"
+        if not self._no_recent_limit_up(df, len(df) - 1, rule):
+            return None, "not first limit-up"
+
+        close = self._safe_float(last.get("close"))
+        price_limit = self._float_config("price_limit", 0)
+        if price_limit > 0 and close > price_limit:
+            return None, "price above limit"
+
+        turnover = self._safe_float(last.get("turnover"))
+        amount = self._safe_float(last.get("amount"))
+        amount_ratio_20 = self._safe_float(last.get("amount_ratio_20"), 1.0)
+        volume_ratio_20 = self._safe_float(last.get("volume_ratio_20"), 1.0)
+        open_price = self._safe_float(last.get("open"))
+        low = self._safe_float(last.get("low"))
+        close_position = self._safe_float(last.get("close_position"), 1.0)
+
+        risk_flags: list[str] = []
+        if not rule.confirmed:
+            risk_flags.append("limit_rule_unconfirmed")
+
+        min_amount = self._float_config("min_amount", 20_000_000)
+        if min_amount > 0 and amount < min_amount:
+            return None, "amount below minimum"
+        if turnover > 0 and turnover < self._float_config("min_turnover", 1.5):
+            return None, "turnover below minimum"
+        if turnover > self._float_config("max_turnover", 35.0):
+            return None, "turnover too high"
+        if amount_ratio_20 < self._float_config("min_amount_ratio_20", 0.5):
+            return None, "amount ratio too low"
+        if amount_ratio_20 > self._float_config("max_amount_ratio_20", 5.0) and close_position < 0.9:
+            return None, "over-volume weak close"
+
+        one_word = (
+            abs(open_price - limit_price) / limit_price <= self._float_config("limit_price_tolerance_pct", 0.003)
+            and abs(low - limit_price) / limit_price <= self._float_config("limit_price_tolerance_pct", 0.003)
+        )
+        if one_word and (
+            (turnover > 0 and turnover < self._float_config("one_word_turnover", 1.5))
+            or amount_ratio_20 < self._float_config("one_word_amount_ratio", 0.55)
+        ):
+            return None, "one-word shrink limit-up"
+
+        if self._safe_float(last.get("return_5d")) > 0.35:
+            risk_flags.append("short_term_overheated")
+        if self._safe_float(last.get("volatility_20")) > 0.06:
+            risk_flags.append("high_volatility")
+        if turnover <= 0:
+            risk_flags.append("turnover_missing")
+
+        return {
+            "info": info,
+            "df": df,
+            "rule": rule,
+            "last": last.to_dict(),
+            "limit_price": limit_price,
+            "pct_chg": pct_chg,
+            "amount": amount,
+            "turnover": turnover,
+            "amount_ratio_20": amount_ratio_20,
+            "volume_ratio_20": volume_ratio_20,
+            "close_position": close_position,
+            "one_word": one_word,
+            "sector_key": self._sector_key(info),
+            "risk_flags": risk_flags,
+        }, "candidate"
+
+    def _market_context(self, summaries: list[dict[str, Any]]) -> dict[str, Any]:
+        valid = [item for item in summaries if item]
+        total = len(valid)
+        if not total:
+            return {
+                "total": 0,
+                "advancers": 0,
+                "decliners": 0,
+                "limit_up_count": 0,
+                "limit_down_count": 0,
+                "advance_ratio": 0.5,
+                "above_ma20_ratio": 0.5,
+                "score": 8.0,
+                "regime": "neutral",
+            }
+        advancers = sum(1 for item in valid if self._safe_float(item.get("pct_chg")) > 0)
+        decliners = sum(1 for item in valid if self._safe_float(item.get("pct_chg")) < 0)
+        limit_up_count = sum(1 for item in valid if item.get("limit_up"))
+        limit_down_count = sum(
+            1
+            for item in valid
+            if self._safe_float(item.get("pct_chg")) <= -(self._safe_float(item.get("rule_percent"), 0.10) * 100 - 0.25)
+        )
+        above_ma20 = sum(1 for item in valid if item.get("above_ma20"))
+        advance_ratio = advancers / total
+        above_ma20_ratio = above_ma20 / total
+        limit_ratio = limit_up_count / total
+
+        score = 7.5
+        if advance_ratio >= 0.60:
+            score += 3.0
+        elif advance_ratio <= 0.35:
+            score -= 4.0
+        if above_ma20_ratio >= 0.55:
+            score += 2.0
+        elif above_ma20_ratio <= 0.30:
+            score -= 2.0
+        if limit_up_count >= max(2, int(total * 0.03)) or limit_ratio >= 0.04:
+            score += 2.5
+        if limit_down_count > limit_up_count:
+            score -= 4.0
+        score = max(0.0, min(15.0, score))
+        if score >= 11:
+            regime = "risk_on"
+        elif score <= 5:
+            regime = "risk_off"
+        else:
+            regime = "neutral"
+        return {
+            "total": total,
+            "advancers": advancers,
+            "decliners": decliners,
+            "limit_up_count": limit_up_count,
+            "limit_down_count": limit_down_count,
+            "advance_ratio": round(advance_ratio, 4),
+            "above_ma20_ratio": round(above_ma20_ratio, 4),
+            "score": round(score, 2),
+            "regime": regime,
+        }
+
+    def _sector_context(self, summaries: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for item in summaries:
+            grouped.setdefault(str(item.get("sector_key") or "unknown"), []).append(item)
+        result = {}
+        for key, items in grouped.items():
+            total = len(items)
+            limit_count = sum(1 for item in items if item.get("limit_up"))
+            advancers = sum(1 for item in items if self._safe_float(item.get("pct_chg")) > 0)
+            avg_pct = sum(self._safe_float(item.get("pct_chg")) for item in items) / total if total else 0.0
+            result[key] = {
+                "sector_key": key,
+                "total": total,
+                "limit_up_count": limit_count,
+                "advance_ratio": round(advancers / total, 4) if total else 0,
+                "avg_pct_chg": round(avg_pct, 4),
+            }
+        return result
+
+    def _limit_quality_score(self, candidate: dict[str, Any]) -> float:
+        last = candidate["last"]
+        limit_price = self._safe_float(candidate.get("limit_price"))
+        close = self._safe_float(last.get("close"))
+        high = self._safe_float(last.get("high"))
+        close_position = self._safe_float(candidate.get("close_position"), 1.0)
+        amount_ratio = self._safe_float(candidate.get("amount_ratio_20"), 1.0)
+        turnover = self._safe_float(candidate.get("turnover"))
+
+        score = 0.0
+        if limit_price > 0 and abs(close - limit_price) / limit_price <= 0.003:
+            score += 8
+        elif limit_price > 0 and close >= limit_price * 0.995:
+            score += 6
+        if limit_price > 0 and high >= limit_price * 0.997:
+            score += 4
+        if close_position >= 0.95:
+            score += 4
+        elif close_position >= 0.85:
+            score += 2
+        if 1.0 <= amount_ratio <= 3.5:
+            score += 5
+        elif 0.7 <= amount_ratio < 1.0 or 3.5 < amount_ratio <= 5.0:
+            score += 3
+        if 3.0 <= turnover <= 15.0:
+            score += 4
+        elif 1.5 <= turnover < 3.0 or 15.0 < turnover <= 25.0:
+            score += 2
+        if candidate.get("one_word"):
+            score -= 2
+        return round(max(0.0, min(25.0, score)), 2)
+
+    def _volume_score(self, candidate: dict[str, Any]) -> float:
+        amount = self._safe_float(candidate.get("amount"))
+        amount_ratio = self._safe_float(candidate.get("amount_ratio_20"), 1.0)
+        volume_ratio = self._safe_float(candidate.get("volume_ratio_20"), 1.0)
+        turnover = self._safe_float(candidate.get("turnover"))
+        score = 0.0
+        if amount >= 500_000_000:
+            score += 5
+        elif amount >= 100_000_000:
+            score += 4
+        elif amount >= 20_000_000:
+            score += 2.5
+        if 1.0 <= amount_ratio <= 3.5:
+            score += 4
+        elif 0.6 <= amount_ratio < 1.0 or 3.5 < amount_ratio <= 5.0:
+            score += 2
+        if 1.0 <= volume_ratio <= 3.5:
+            score += 3
+        elif 0.6 <= volume_ratio < 1.0 or 3.5 < volume_ratio <= 5.0:
+            score += 1.5
+        if 3.0 <= turnover <= 18.0:
+            score += 3
+        elif turnover > 0:
+            score += 1.5
+        return round(max(0.0, min(15.0, score)), 2)
+
+    def _stock_character_score(self, candidate: dict[str, Any]) -> tuple[float, dict[str, Any]]:
+        df = candidate["df"]
+        rule = candidate["rule"]
+        events = []
+        for idx in range(1, max(1, len(df) - 1)):
+            if idx >= len(df) - 1:
+                continue
+            matched, _, _ = self._is_limit_up_bar(df.iloc[idx], rule)
+            if not matched:
+                continue
+            current = df.iloc[idx]
+            next_row = df.iloc[idx + 1]
+            base = self._safe_float(current.get("close"))
+            if base <= 0:
+                continue
+            next_open = self._safe_float(next_row.get("open"))
+            next_high = self._safe_float(next_row.get("high"))
+            next_close = self._safe_float(next_row.get("close"))
+            next_limit, _, _ = self._is_limit_up_bar(next_row, rule)
+            events.append(
+                {
+                    "open_up": next_open > base,
+                    "close_up": next_close > base,
+                    "next_limit": next_limit,
+                    "high_follow_pct": (next_high / base) - 1.0 if next_high > 0 else 0.0,
+                }
+            )
+        if not events:
+            return 7.5, {
+                "sample_count": 0,
+                "next_open_up_rate": None,
+                "next_close_up_rate": None,
+                "next_limit_rate": None,
+                "avg_high_follow_pct": None,
+            }
+        total = len(events)
+        open_rate = sum(1 for item in events if item["open_up"]) / total
+        close_rate = sum(1 for item in events if item["close_up"]) / total
+        next_limit_rate = sum(1 for item in events if item["next_limit"]) / total
+        avg_high_follow = sum(item["high_follow_pct"] for item in events) / total
+        score = 5.0 + open_rate * 3.0 + close_rate * 2.0 + next_limit_rate * 4.0 + min(max(avg_high_follow, 0.0) * 40, 1.0)
+        return round(max(0.0, min(15.0, score)), 2), {
+            "sample_count": total,
+            "next_open_up_rate": round(open_rate, 4),
+            "next_close_up_rate": round(close_rate, 4),
+            "next_limit_rate": round(next_limit_rate, 4),
+            "avg_high_follow_pct": round(avg_high_follow, 4),
+        }
+
+    def _sector_score(self, candidate: dict[str, Any], sector_context: dict[str, dict[str, Any]]) -> float:
+        sector = sector_context.get(candidate.get("sector_key")) or {}
+        score = 8.0
+        limit_count = int(sector.get("limit_up_count") or 0)
+        advance_ratio = self._safe_float(sector.get("advance_ratio"), 0.5)
+        avg_pct = self._safe_float(sector.get("avg_pct_chg"))
+        if limit_count >= 3:
+            score += 7
+        elif limit_count == 2:
+            score += 4
+        elif limit_count == 1:
+            score += 2
+        if advance_ratio >= 0.60:
+            score += 3
+        elif advance_ratio <= 0.35:
+            score -= 2
+        if avg_pct >= 2:
+            score += 2
+        elif avg_pct < 0:
+            score -= 2
+        return round(max(0.0, min(20.0, score)), 2)
+
+    def _score_candidate(
+        self,
+        candidate: dict[str, Any],
+        market_context: dict[str, Any],
+        sector_context: dict[str, dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        risk_flags = list(candidate.get("risk_flags") or [])
+        market_score = self._safe_float(market_context.get("score"), 8.0)
+        if market_score / 15.0 * 100 < self._float_config("market_min_score", 40):
+            risk_flags.append("weak_market_regime")
+        sector_score = self._sector_score(candidate, sector_context)
+        quality_score = self._limit_quality_score(candidate)
+        volume_score = self._volume_score(candidate)
+        character_score, character_stats = self._stock_character_score(candidate)
+        event_risk_score = max(0.0, 10.0 - len(set(risk_flags)) * 2.0)
+        total_score = market_score + sector_score + quality_score + volume_score + character_score + event_risk_score
+        total_score = round(max(0.0, min(100.0, total_score)), 2)
+        if total_score < self._float_config("min_preselect_score", 70):
+            return None
+        return {
+            **candidate,
+            "component_scores": {
+                "market": round(market_score, 2),
+                "sector": sector_score,
+                "limit_quality": quality_score,
+                "volume_liquidity": volume_score,
+                "stock_character": character_score,
+                "event_risk": round(event_risk_score, 2),
+            },
+            "stock_character": character_stats,
+            "market_context": market_context,
+            "sector_context": sector_context.get(candidate.get("sector_key")) or {},
+            "preselect_score": total_score,
+            "risk_flags": sorted(set(risk_flags)),
+        }
+
+    def _get_snapshot(self, symbol: str) -> dict | None:
+        try:
+            from backend.repositories import market_data_repo
+
+            return market_data_repo.get_latest_snapshot(symbol)
+        except Exception:
+            return None
+
+    def _get_auction_snapshot(self, symbol: str) -> dict | None:
+        try:
+            from backend.repositories import market_data_repo
+
+            return market_data_repo.get_latest_auction_snapshot(symbol)
+        except Exception:
+            return None
+
+    def _auction_microstructure_score(self, snapshot: dict[str, Any], matched_volume: float) -> tuple[float, dict[str, Any], bool]:
+        buy_volume = self._safe_float(snapshot.get("unmatched_buy_volume") or snapshot.get("bid_volume"))
+        sell_volume = self._safe_float(snapshot.get("unmatched_sell_volume") or snapshot.get("ask_volume"))
+        withdrawal_buy = self._safe_float(snapshot.get("withdrawal_buy_volume"))
+        withdrawal_sell = self._safe_float(snapshot.get("withdrawal_sell_volume"))
+        seal_volume = self._safe_float(snapshot.get("seal_volume"))
+        seal_side = str(snapshot.get("seal_side") or "").strip().lower()
+
+        has_book = buy_volume > 0 or sell_volume > 0
+        if has_book:
+            total_book = buy_volume + sell_volume
+            book_imbalance = (buy_volume - sell_volume) / total_book if total_book > 0 else 0.0
+            book_score = 5.0 if book_imbalance >= 0.25 else 3.0 if book_imbalance >= -0.10 else 0.0
+        else:
+            book_imbalance = None
+            book_score = 5.0
+
+        if seal_volume > 0 and seal_side in {"buy", "bid", "b"}:
+            seal_score = 5.0
+        elif seal_volume > 0 and seal_side in {"sell", "ask", "s"}:
+            seal_score = 0.0
+        else:
+            seal_score = 5.0 if not has_book else 2.5
+
+        withdrawal_pressure = withdrawal_sell / matched_volume if matched_volume > 0 and withdrawal_sell > 0 else 0.0
+        micro_ok = True
+        if book_imbalance is not None and book_imbalance < -0.20:
+            micro_ok = False
+        if withdrawal_pressure > 1.5 and withdrawal_sell > max(withdrawal_buy * 2, matched_volume):
+            micro_ok = False
+        if seal_volume > 0 and seal_side in {"sell", "ask", "s"}:
+            micro_ok = False
+
+        return round(book_score + seal_score, 2), {
+            "unmatched_buy_volume": buy_volume,
+            "unmatched_sell_volume": sell_volume,
+            "order_book_imbalance": round(book_imbalance, 4) if book_imbalance is not None else None,
+            "withdrawal_buy_volume": withdrawal_buy,
+            "withdrawal_sell_volume": withdrawal_sell,
+            "withdrawal_sell_pressure": round(withdrawal_pressure, 4),
+            "seal_side": seal_side,
+            "seal_volume": seal_volume,
+            "seal_amount": self._safe_float(snapshot.get("seal_amount")),
+        }, micro_ok
+
+    def _auction_confirmation(self, candidate: dict[str, Any]) -> dict[str, Any]:
+        info = candidate["info"]
+        last = candidate["last"]
+        rule = candidate["rule"]
+        auction_snapshot = self._get_auction_snapshot(info["code"])
+        snapshot = auction_snapshot or self._get_snapshot(info["code"])
+        if not snapshot:
+            return {
+                "available": False,
+                "signal_subtype": "preopen_watch",
+                "signal": "first_limit_watch",
+                "score": None,
+                "reason": "T-day first-limit candidate; waiting for T+1 9:20-9:25 auction/order-book confirmation.",
+                "snapshot": None,
+                "metrics": {"auction_data_source": "missing"},
+            }
+        uses_auction_model = bool(auction_snapshot)
+        prev_close = self._safe_float(snapshot.get("prev_close"))
+        open_price = self._safe_float(snapshot.get("indicative_price") if uses_auction_model else snapshot.get("open"))
+        last_price = self._safe_float(snapshot.get("indicative_price") if uses_auction_model else snapshot.get("last_price"))
+        snapshot_amount = self._safe_float(snapshot.get("matched_amount") if uses_auction_model else snapshot.get("amount"))
+        snapshot_volume = self._safe_float(snapshot.get("matched_volume") if uses_auction_model else snapshot.get("volume"))
+        t_close = self._safe_float(last.get("close"))
+        t_amount = self._safe_float(last.get("amount"))
+        t_volume = self._safe_float(last.get("volume"))
+        if prev_close <= 0 or open_price <= 0 or t_close <= 0:
+            return {
+                "available": False,
+                "signal_subtype": "preopen_watch",
+                "signal": "first_limit_watch",
+                "score": None,
+                "reason": "Auction/open snapshot exists but indicative/open price or prev_close is incomplete; keep observation-only.",
+                "snapshot": snapshot,
+                "metrics": {"auction_data_source": "auction_model" if uses_auction_model else "quote_snapshot"},
+            }
+        if abs(prev_close - t_close) / t_close > 0.03:
+            return {
+                "available": False,
+                "signal_subtype": "preopen_watch",
+                "signal": "first_limit_watch",
+                "score": None,
+                "reason": "Auction/open snapshot prev_close does not match T-day limit-up close; keep observation-only.",
+                "snapshot": snapshot,
+                "metrics": {"prev_close": prev_close, "t_close": t_close, "auction_data_source": "auction_model" if uses_auction_model else "quote_snapshot"},
+            }
+
+        open_gap = (open_price / prev_close) - 1.0
+        limit_rate = rule.percent or 0.10
+        normalized_open = open_gap / limit_rate if limit_rate else 0.0
+        amount_ratio = snapshot_amount / t_amount if t_amount > 0 and snapshot_amount > 0 else 0.0
+        volume_ratio = snapshot_volume / t_volume if t_volume > 0 and snapshot_volume > 0 else 0.0
+        price_stability = (last_price / open_price - 1.0) if last_price > 0 and open_price > 0 else 0.0
+
+        open_score = 25.0 if self._float_config("auction_open_min_ratio", 0.20) <= normalized_open <= self._float_config("auction_open_max_ratio", 0.75) else 8.0
+        if normalized_open <= 0:
+            open_score = 0.0
+        elif normalized_open > self._float_config("auction_open_reject_ratio", 0.90):
+            open_score = 6.0
+        amount_score = 25.0 if amount_ratio >= self._float_config("auction_amount_ratio_min", 0.03) else max(0.0, amount_ratio / self._float_config("auction_amount_ratio_min", 0.03) * 18.0)
+        volume_score = 15.0 if volume_ratio >= self._float_config("auction_volume_ratio_min", 0.03) else max(0.0, volume_ratio / self._float_config("auction_volume_ratio_min", 0.03) * 10.0)
+        stability_score = 10.0 if price_stability >= -0.005 else 5.0 if price_stability >= -0.015 else 0.0
+        sector_score = min(15.0, self._safe_float(candidate.get("component_scores", {}).get("sector")) / 20.0 * 15.0)
+        market_score = min(5.0, self._safe_float(candidate.get("component_scores", {}).get("market")) / 15.0 * 5.0)
+        imbalance_score, micro_metrics, micro_ok = (
+            self._auction_microstructure_score(snapshot, snapshot_volume) if uses_auction_model else (10.0, {}, True)
+        )
+        score = round(open_score + amount_score + volume_score + stability_score + sector_score + market_score + imbalance_score, 2)
+
+        hard_confirmed = (
+            self._float_config("auction_open_min_ratio", 0.20)
+            <= normalized_open
+            <= self._float_config("auction_open_max_ratio", 0.75)
+            and amount_ratio >= self._float_config("auction_amount_ratio_min", 0.03)
+            and volume_ratio >= self._float_config("auction_volume_ratio_min", 0.03)
+            and snapshot_amount >= self._float_config("min_auction_amount", 3_000_000)
+            and price_stability >= -0.015
+            and micro_ok
+        )
+        confirmed = hard_confirmed and score >= self._float_config("min_auction_score", 70)
+        signal_subtype = "auction_confirmed" if confirmed else "auction_rejected"
+        reason = (
+            "T+1 9:20-9:25 auction model confirms suitable gap, matched volume, order-book/withdrawal/seal support."
+            if confirmed and uses_auction_model
+            else "T+1 auction/open snapshot confirms suitable gap, volume commitment, and sector/market support."
+            if confirmed
+            else "T+1 9:20-9:25 auction/order-book data does not meet entry confirmation rules."
+            if uses_auction_model
+            else "T+1 auction/open snapshot does not meet entry confirmation rules."
+        )
+        return {
+            "available": True,
+            "signal_subtype": signal_subtype,
+            "signal": "auction_entry_confirmed" if confirmed else "auction_rejected",
+            "score": score,
+            "reason": reason,
+            "snapshot": snapshot,
+            "metrics": {
+                "open_gap_pct": round(open_gap * 100, 4),
+                "normalized_open_strength": round(normalized_open, 4),
+                "amount_ratio_to_limit_day": round(amount_ratio, 4),
+                "volume_ratio_to_limit_day": round(volume_ratio, 4),
+                "price_stability_pct": round(price_stability * 100, 4),
+                "snapshot_amount": snapshot_amount,
+                "snapshot_volume": snapshot_volume,
+                "auction_data_source": "auction_model" if uses_auction_model else "quote_snapshot",
+                "auction_phase": snapshot.get("phase") or ("call_auction_0920_0925" if uses_auction_model else "open_snapshot"),
+                **micro_metrics,
+            },
+        }
+
+    def _build_recommend_reason(self, candidate: dict[str, Any], auction: dict[str, Any]) -> str:
+        info = candidate["info"]
+        market = candidate["market_context"]
+        sector = candidate["sector_context"]
+        scores = candidate["component_scores"]
+        if auction["signal_subtype"] == "auction_confirmed":
+            auction_text = (
+                f"T+1竞价确认：高开{auction['metrics'].get('open_gap_pct', 0):.2f}%，"
+                f"竞价/快照成交额为T日{auction['metrics'].get('amount_ratio_to_limit_day', 0) * 100:.1f}%。"
+            )
+        elif auction["signal_subtype"] == "auction_rejected":
+            auction_text = "T+1竞价未达到上车条件，模型建议放弃或继续观察。"
+        else:
+            auction_text = "T日预选通过，等待T+1 9:20-9:25后的真实竞价确认。"
+        return (
+            f"{info['code']} {info['name']}为首板涨停候选，近{self._int_config('no_limit_up_lookback', 10)}个交易日无涨停；"
+            f"预选分{candidate['preselect_score']:.1f}/100。"
+            f"大盘情绪{market.get('regime')}，涨停{market.get('limit_up_count')}家、跌停{market.get('limit_down_count')}家；"
+            f"板块/分组{candidate.get('sector_key')}内涨停{sector.get('limit_up_count', 0)}只；"
+            f"涨停质量{scores['limit_quality']:.1f}/25、量能流动性{scores['volume_liquidity']:.1f}/15、股性{scores['stock_character']:.1f}/15。"
+            f"{auction_text}"
+        )
+
+    def _build_payload(self, candidate: dict[str, Any], auction: dict[str, Any]) -> dict[str, Any]:
+        info = candidate["info"]
+        last = candidate["last"]
+        rule = candidate["rule"]
+        auction_score = auction.get("score")
+        final_score = candidate["preselect_score"] if auction_score is None else round(candidate["preselect_score"] * 0.6 + self._safe_float(auction_score) * 0.4, 2)
+        risk_flags = list(candidate.get("risk_flags") or [])
+        if auction["signal_subtype"] == "auction_rejected":
+            risk_flags.append("auction_not_confirmed")
+        if auction["signal_subtype"] == "preopen_watch":
+            risk_flags.append("auction_pending")
+        risk_score = round(max(0.0, min(100.0, 100.0 - final_score + len(set(risk_flags)) * 4.0)), 1)
+        risk_level = "high" if risk_score >= 70 else "medium" if risk_score >= 45 else "low"
+        recommend_reason = self._build_recommend_reason(candidate, auction)
+        signal_type = "BUY" if auction["signal_subtype"] == "auction_confirmed" else "WATCH"
+        phase = {
+            "TDayFirstLimitUp": True,
+            "MarketRegime": candidate["market_context"].get("regime"),
+            "SectorBreadth": candidate["sector_context"],
+            "AuctionConfirmation": auction["signal_subtype"] == "auction_confirmed",
+            "signal_subtype": auction["signal_subtype"],
+        }
+        indicators = {
+            "first_limit_up": {
+                "limit_rule": asdict(rule),
+                "limit_up_date": str(last.get("date")),
+                "limit_up_price": round(self._safe_float(last.get("close")), 4),
+                "limit_price": round(self._safe_float(candidate.get("limit_price")), 4),
+                "pct_chg": round(self._safe_float(candidate.get("pct_chg")), 4),
+                "amount": round(self._safe_float(candidate.get("amount")), 2),
+                "turnover": round(self._safe_float(candidate.get("turnover")), 4),
+                "amount_ratio_20": round(self._safe_float(candidate.get("amount_ratio_20")), 4),
+                "volume_ratio_20": round(self._safe_float(candidate.get("volume_ratio_20")), 4),
+                "close_position": round(self._safe_float(candidate.get("close_position")), 4),
+                "one_word": bool(candidate.get("one_word")),
+            },
+            "market": candidate["market_context"],
+            "sector": candidate["sector_context"],
+            "scores": candidate["component_scores"],
+            "stock_character": candidate["stock_character"],
+            "auction": auction["metrics"],
+            "preselect_score": candidate["preselect_score"],
+            "auction_score": auction_score,
+            "final_score": final_score,
+        }
+        return {
+            "schema_version": SIGNAL_SCHEMA_VERSION,
+            "strategy_code": self.get_code(),
+            "code": info["code"],
+            "symbol": info["code"],
+            "name": info["name"],
+            "stock_name": info["name"],
+            "market": info.get("exchange") or "",
+            "security_type": info.get("security_type") or "stock",
+            "bar_interval": self.config.get("bar_interval") or "1d",
+            "interval": self.config.get("bar_interval") or "1d",
+            "adjust": self.config.get("adjust") or "qfq",
+            "signal_date": str(last.get("date")),
+            "trade_date": str(last.get("date")),
+            "date": str(last.get("date")),
+            "signal": auction["signal"],
+            "signal_type": signal_type,
+            "signal_subtype": auction["signal_subtype"],
+            "reason_tag": auction["signal"],
+            "signal_strength": 5 if auction["signal_subtype"] == "auction_confirmed" else 3,
+            "score": final_score,
+            "total_score": final_score,
+            "preselect_score": candidate["preselect_score"],
+            "auction_score": auction_score,
+            "second_board_score": final_score,
+            "second_board_expectation": "confirmed_entry" if auction["signal_subtype"] == "auction_confirmed" else "watch_only",
+            "prediction_reason": recommend_reason,
+            "recommend_reason": recommend_reason,
+            "risk_score": risk_score,
+            "risk_level": risk_level,
+            "risk_flags": sorted(set(risk_flags)),
+            "pick_price": round(self._safe_float(last.get("close")), 4),
+            "last_price": round(self._safe_float(last.get("close")), 4),
+            "price_ref": round(self._safe_float(last.get("close")), 4),
+            "limit_up_date": str(last.get("date")),
+            "limit_up_price": round(self._safe_float(last.get("close")), 4),
+            "volume": self._safe_int(last.get("volume")),
+            "amount": round(self._safe_float(last.get("amount")), 2),
+            "turnover": round(self._safe_float(last.get("turnover")), 4),
+            "indicators": indicators,
+            "phase": phase,
+            "risk": {"risk_score": risk_score, "risk_level": risk_level, "risk_flags": sorted(set(risk_flags))},
+            "data": {
+                "source": str(last.get("source") or "local"),
+                "provider": str(last.get("source") or "local"),
+                "data_quality": "primary",
+                "fallback_used": False,
+                "bar_count": int(len(candidate["df"])),
+                "latest_bar_time": str(last.get("date")),
+                "auction_snapshot": auction.get("snapshot"),
+            },
+            "reason": recommend_reason,
+            "note": recommend_reason,
+        }
+
+    def _get_hist(self, stock_code: str, target_date: str | None, bar_interval: str, adjust: str):
+        from backend.services.stock_data_service import get_stock_data_service
+
+        end_date = datetime.strptime(target_date, "%Y-%m-%d") if target_date else datetime.now()
+        start_date = end_date - timedelta(days=int(self.config["lookback_days"]))
+        stock_data = get_stock_data_service()
+        try:
+            return stock_data.get_stock_hist(
+                symbol=stock_code,
+                start_date=start_date.strftime("%Y-%m-%d"),
+                end_date=end_date.strftime("%Y-%m-%d"),
+                adjust=adjust,
+                interval=bar_interval,
+            )
+        except TypeError:
+            return stock_data.get_stock_hist(
+                stock_code,
+                start_date.strftime("%Y-%m-%d"),
+                end_date.strftime("%Y-%m-%d"),
+                adjust=adjust,
             )
 
-        stocks.sort(key=sort_key)
-
-        select_count = config.get('select_count', 10)
-        return stocks[:select_count]
-
-    def _save_results(self, stocks: List[Dict[str, Any]], date: str = None):
-        """保存选股结果."""
-        os.makedirs('data', exist_ok=True)
-
-        out_json = self.config['output'].get('file_path', 'data/first_limit_up_selection.json')
-        with open(out_json, 'w', encoding='utf-8') as f:
-            json.dump(stocks, f, ensure_ascii=False, indent=2)
-
-        if stocks:
-            df = pd.DataFrame(stocks)
-            out_csv = out_json.replace('.json', '.csv')
-            df.to_csv(out_csv, index=False, encoding='utf-8-sig')
-
-        print(f"💾 结果已保存至: {out_json}")
-
-    def backtest(self, start_date: str, end_date: str) -> Dict[str, Any]:
-        """回测策略.
-
-        Args:
-            start_date: 开始日期 (YYYY-MM-DD)
-            end_date: 结束日期 (YYYY-MM-DD)
-
-        Returns:
-            回测结果统计
-        """
-        print(f"📊 开始回测: {start_date} 至 {end_date}")
-
+    def _get_stock_list(self):
+        if pd is None:
+            return []
         try:
-            cal = ak.tool_trade_date_hist_sina()
-            trade_dates = cal[cal['trade_date'] >= start_date]['trade_date'].tolist()
-            trade_dates = [d for d in trade_dates if d <= end_date]
+            from backend.repositories import market_data_repo
+
+            payload = market_data_repo.list_stocks(limit=int(self.config["scan_limit"]), security_type="stock")
+            rows = payload.get("items") or []
+            if rows:
+                return pd.DataFrame(
+                    [
+                        {
+                            "code": item.get("symbol") or item.get("code"),
+                            "name": item.get("name"),
+                            "exchange": item.get("exchange"),
+                            "market": item.get("market"),
+                            "security_type": item.get("security_type") or "stock",
+                            "industry": item.get("industry") or "",
+                            "board_type": item.get("board_type"),
+                            "status": item.get("status"),
+                            "is_st": item.get("is_st"),
+                            "is_suspended": item.get("is_suspended"),
+                            "is_delisting": item.get("is_delisting"),
+                        }
+                        for item in rows
+                    ]
+                )
         except Exception:
-            start = datetime.strptime(start_date, '%Y-%m-%d')
-            end = datetime.strptime(end_date, '%Y-%m-%d')
-            trade_dates = []
+            pass
+        from backend.services.stock_data_service import get_stock_data_service
+
+        return get_stock_data_service().get_stock_list()
+
+    def _row_records(self, stock_list) -> list[dict[str, Any]]:
+        if stock_list is None:
+            return []
+        if pd is not None and hasattr(stock_list, "iterrows"):
+            return [dict(row) for _, row in stock_list.iterrows()]
+        return [dict(item) for item in stock_list]
+
+    def _analyze_stock(
+        self,
+        stock_code: str,
+        stock_name: str,
+        market: str = "",
+        target_date: str | None = None,
+        security_type: str = "stock",
+        bar_interval: str | None = None,
+        adjust: str | None = None,
+    ) -> tuple[bool, str, dict[str, Any]]:
+        if pd is None:
+            return False, "pandas unavailable", {}
+        info = self._stock_info(
+            {
+                "code": stock_code,
+                "name": stock_name,
+                "exchange": market or infer_exchange(stock_code),
+                "security_type": security_type,
+            }
+        )
+        if self._should_exclude(info):
+            return False, "excluded security", {}
+        bar_interval = str(bar_interval or self.config.get("bar_interval") or "1d")
+        adjust = str(adjust or self.config.get("adjust") or "qfq")
+        try:
+            df = self._calculate_indicators(self._get_hist(info["code"], target_date, bar_interval, adjust))
+            summary = self._history_summary(info, df)
+            candidate, reason = self._candidate_from_frame(info, df)
+            if not candidate:
+                return False, reason, {}
+            market_context = self._market_context([summary] if summary else [])
+            sector_context = self._sector_context([summary] if summary else [])
+            scored = self._score_candidate(candidate, market_context, sector_context)
+            if not scored:
+                return False, "preselect score below threshold", {}
+            auction = self._auction_confirmation(scored)
+            if auction["signal_subtype"] == "auction_rejected" and not self._bool_config("include_rejected", False):
+                return False, "auction rejected", {}
+            payload = self._build_payload(scored, auction)
+            return True, payload["signal_subtype"], payload
+        except Exception as exc:
+            return False, f"strategy error:{exc}", {}
+
+    def scan(self, date: str | None = None) -> list[dict[str, Any]]:
+        if pd is None:
+            return []
+        stock_list = self._get_stock_list()
+        records = self._row_records(stock_list)
+        if not records:
+            return []
+        scan_limit = int(self.config.get("scan_limit") or 600)
+        if scan_limit > 0:
+            records = records[:scan_limit]
+        bar_interval = str(self.config.get("bar_interval") or "1d")
+        adjust = str(self.config.get("adjust") or "qfq")
+
+        summaries: list[dict[str, Any]] = []
+        raw_candidates: list[dict[str, Any]] = []
+        for row in records:
+            info = self._stock_info(row)
+            if self._should_exclude(info):
+                continue
+            try:
+                df = self._calculate_indicators(self._get_hist(info["code"], date, bar_interval, adjust))
+            except Exception:
+                continue
+            summary = self._history_summary(info, df)
+            if summary:
+                summaries.append(summary)
+            candidate, _ = self._candidate_from_frame(info, df)
+            if candidate:
+                raw_candidates.append(candidate)
+
+        market_context = self._market_context(summaries)
+        sector_context = self._sector_context(summaries)
+        results: list[dict[str, Any]] = []
+        for candidate in raw_candidates:
+            scored = self._score_candidate(candidate, market_context, sector_context)
+            if not scored:
+                continue
+            auction = self._auction_confirmation(scored)
+            if auction["signal_subtype"] == "auction_rejected" and not self._bool_config("include_rejected", False):
+                continue
+            results.append(self._build_payload(scored, auction))
+
+        rank = {"auction_confirmed": 0, "preopen_watch": 1, "auction_rejected": 2}
+        results.sort(
+            key=lambda item: (
+                rank.get(str(item.get("signal_subtype")), 9),
+                -self._safe_float(item.get("total_score")),
+                self._safe_float(item.get("risk_score")),
+                str(item.get("code")),
+            )
+        )
+        return results[: int(self.config.get("select_count") or 10)]
+
+    def backtest(self, start_date: str, end_date: str) -> dict[str, Any]:
+        from backend.services.stock_data_service import get_stock_data_service
+
+        dates = get_stock_data_service().get_trading_dates(start_date, end_date)
+        if not dates:
+            start = datetime.strptime(start_date, "%Y-%m-%d")
+            end = datetime.strptime(end_date, "%Y-%m-%d")
+            dates = []
             current = start
             while current <= end:
                 if current.weekday() < 5:
-                    trade_dates.append(current.strftime('%Y-%m-%d'))
+                    dates.append(current.strftime("%Y-%m-%d"))
                 current += timedelta(days=1)
-
-        all_signals = []
         daily_results = []
-
-        for trade_date in trade_dates:
+        all_signals: list[dict[str, Any]] = []
+        for trade_date in dates:
             signals = self.scan(trade_date)
-            daily_results.append({
-                'date': trade_date,
-                'count': len(signals),
-                'signals': signals
-            })
+            daily_results.append({"date": trade_date, "count": len(signals), "signals": signals})
             all_signals.extend(signals)
-
-        total_signals = len(all_signals)
-        signal_types = {}
-        for s in all_signals:
-            signal_types[s['signal']] = signal_types.get(s['signal'], 0) + 1
-
-        avg_score = sum(s.get('total_score', 0) for s in all_signals) / total_signals if total_signals > 0 else 0
-        avg_risk = sum(s.get('risk_score', 0) for s in all_signals) / total_signals if total_signals > 0 else 0
-
-        result = {
-            'start_date': start_date,
-            'end_date': end_date,
-            'total_trading_days': len(trade_dates),
-            'total_signals': total_signals,
-            'avg_signals_per_day': round(total_signals / len(trade_dates), 2) if trade_dates else 0,
-            'signal_types': signal_types,
-            'avg_total_score': round(avg_score, 2),
-            'avg_risk_score': round(avg_risk, 2),
-            'daily_results': daily_results
+        subtypes: dict[str, int] = {}
+        for item in all_signals:
+            subtype = str(item.get("signal_subtype") or "")
+            subtypes[subtype] = subtypes.get(subtype, 0) + 1
+        avg_score = sum(self._safe_float(item.get("total_score")) for item in all_signals) / len(all_signals) if all_signals else 0
+        return {
+            "start_date": start_date,
+            "end_date": end_date,
+            "total_trading_days": len(dates),
+            "total_signals": len(all_signals),
+            "avg_signals_per_day": round(len(all_signals) / len(dates), 2) if dates else 0,
+            "signal_subtypes": subtypes,
+            "avg_total_score": round(avg_score, 2),
+            "daily_results": daily_results,
         }
-
-        print(f"✅ 回测完成: 共 {total_signals} 个信号, 平均每日 {result['avg_signals_per_day']} 个")
-
-        return result
