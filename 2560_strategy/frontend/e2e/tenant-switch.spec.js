@@ -10,7 +10,9 @@ async function loginFresh(page) {
 
 test('租户切换会更新 localStorage、请求头和当前租户标记', async ({ page }) => {
   await loginFresh(page);
+  await page.locator('.tenant-advanced summary').click();
   const tenantInput = page.getByTestId('tenant-switcher-input');
+  await expect(tenantInput).toBeVisible();
   await expect(tenantInput).toHaveValue('1');
 
   const tenantTwoRequest = page.waitForRequest((request) => (

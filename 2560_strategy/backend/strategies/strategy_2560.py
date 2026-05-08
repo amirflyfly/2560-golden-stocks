@@ -169,14 +169,14 @@ class Strategy2560(BaseStrategy):
             return df
 
         aliases = {
-            "date": ["date", "trade_date", "datetime", "日期", "交易日期", "鏃ユ湡"],
-            "open": ["open", "开盘", "开盘价", "寮€鐩?"],
-            "close": ["close", "收盘", "收盘价", "最新价", "鏀剁洏"],
-            "high": ["high", "最高", "最高价", "鏈€楂?"],
-            "low": ["low", "最低", "最低价", "鏈€浣?"],
-            "volume": ["volume", "vol", "成交量", "成交量(手)", "鎴愪氦閲?"],
-            "amount": ["amount", "成交额", "成交额(元)", "鎴愪氦棰?"],
-            "turnover": ["turnover", "turnover_rate", "换手率", "鎹㈡墜鐜?"],
+            "date": ["date", "trade_date", "datetime", "日期", "交易日期"],
+            "open": ["open", "开盘", "开盘价"],
+            "close": ["close", "收盘", "收盘价", "最新价"],
+            "high": ["high", "最高", "最高价"],
+            "low": ["low", "最低", "最低价"],
+            "volume": ["volume", "vol", "成交量", "成交量(手)"],
+            "amount": ["amount", "成交额", "成交额(元)"],
+            "turnover": ["turnover", "turnover_rate", "换手率"],
             "source": ["source", "数据源"],
             "adjust": ["adjust", "复权"],
             "interval": ["interval", "bar_interval", "周期"],
@@ -691,9 +691,7 @@ class Strategy2560(BaseStrategy):
         try:
             df = self._get_hist(stock_code, target_date, bar_interval, adjust)
             if df is None or getattr(df, "empty", True):
-                if os.getenv("MARKET_DATA_LOCAL_ONLY", "").strip() == "1":
-                    return False, "本地历史K线缺失", {}
-                df = self._generate_mock_data(target_date or datetime.now().strftime("%Y-%m-%d"))
+                return False, "no historical market data", {}
             df = self._calculate_indicators(df)
             if df is None or df.empty:
                 return False, "无有效K线数据", {}
@@ -808,35 +806,6 @@ class Strategy2560(BaseStrategy):
         )
         return stocks[: self._int_config("select_count", 5)]
 
-    def _generate_mock_data(self, target_date: str):
-        if pd is None:
-            return []
-        end_date = datetime.strptime(target_date, "%Y-%m-%d")
-        dates = pd.bdate_range(end=end_date, periods=120)
-        base_price = 12.0
-        base_volume = 800_000
-        rows = []
-        for index, item_date in enumerate(dates):
-            drift = 0.0015 + index / len(dates) * 0.0008
-            base_price *= 1 + drift
-            volume_wave = 1 + (0.2 if index > len(dates) - 30 else 0) + (0.08 if index % 7 == 0 else 0)
-            base_volume = max(700_000, base_volume * (1 + 0.001))
-            close = min(base_price, 29.5)
-            rows.append(
-                {
-                    "date": item_date.strftime("%Y-%m-%d"),
-                    "open": close * 0.995,
-                    "high": close * 1.02,
-                    "low": close * 0.985,
-                    "close": close,
-                    "volume": int(base_volume * volume_wave),
-                    "amount": close * base_volume * volume_wave,
-                    "turnover": 1.0,
-                    "source": "mock",
-                }
-            )
-        return pd.DataFrame(rows)
-
     def _save_results(self, stocks: list[dict[str, Any]], date: str | None = None):
         os.makedirs("data", exist_ok=True)
         out_json = self.config.get("output", {}).get("file_path", "data/daily_selection.json")
@@ -891,4 +860,3 @@ class Strategy2560(BaseStrategy):
                     dates.append(current.strftime("%Y-%m-%d"))
                 current += timedelta(days=1)
             return dates
-

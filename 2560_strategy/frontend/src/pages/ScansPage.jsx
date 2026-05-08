@@ -85,6 +85,9 @@ const SIGNAL_SUBTYPE_LABELS = {
 
 SIGNAL_SUBTYPE_LABELS.pullback_setup = '回踩准备';
 SIGNAL_SUBTYPE_LABELS.breakout_confirmed = '突破确认';
+SIGNAL_SUBTYPE_LABELS.preopen_watch = '首板观察';
+SIGNAL_SUBTYPE_LABELS.auction_confirmed = '竞价确认';
+SIGNAL_SUBTYPE_LABELS.auction_rejected = '竞价放弃';
 
 const VOLUME_PHASE_LABELS = {
   insufficient: '量能不足',
@@ -231,7 +234,7 @@ export function ScansPage({ onNavigate, authz, pagePayload = {} }) {
     metric: 'score_gte',
     threshold: 80,
     risk_level: 'high',
-    quality: 'mock',
+    quality: 'primary',
   });
   const focusSymbol = pagePayload.symbol || '';
   const mayWrite = canWrite(authz);
@@ -626,7 +629,6 @@ export function ScansPage({ onNavigate, authz, pagePayload = {} }) {
             <label>
               数据质量
               <select value={alertForm.quality} onChange={(event) => setAlertForm((prev) => ({ ...prev, quality: event.target.value }))}>
-                <option value="mock">mock</option>
                 <option value="fallback">fallback</option>
                 <option value="primary">primary</option>
                 <option value="unknown">unknown</option>
@@ -752,7 +754,6 @@ export function ScansPage({ onNavigate, authz, pagePayload = {} }) {
               <option value="all">全部</option>
               <option value="primary">primary</option>
               <option value="fallback">fallback</option>
-              <option value="mock">mock</option>
               <option value="unknown">unknown</option>
             </select>
           </label>

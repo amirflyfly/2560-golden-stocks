@@ -26,7 +26,7 @@ LOG_CANDIDATES = [
     BASE_DIR / "logs" / "app.log",
     BASE_DIR / "data" / "app.log",
 ]
-EXPECTED_ALEMBIC_REVISION = "0011_user_engagement_fields"
+EXPECTED_ALEMBIC_REVISION = "0022_stock_daily_bar_timestamps"
 
 
 def _safe_message(value: Any) -> str:

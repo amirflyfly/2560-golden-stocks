@@ -5,10 +5,11 @@ from __future__ import annotations
 from flask import Blueprint, request
 
 from backend.application.alert_service import AlertEvaluationService
+from backend.application.external_push import SUPPORTED_PUSH_TYPES, ExternalPushError, ExternalPushService
 from backend.core.errors import AppError, NotFoundError
 from backend.core.responses import success
 from backend.core.tenant_context import get_authenticated_tenant_context, require_role
-from backend.repositories import settings_repo
+from backend.repositories import external_push_delivery_repo, settings_repo
 
 bp = Blueprint("api_v1_settings", __name__)
 alert_service = AlertEvaluationService()
@@ -102,6 +103,97 @@ def delete_alert_rule(alert_id: str):
     return success({"deleted": deleted, "id": alert_id})
 
 
+@bp.get("/settings/external-push-channels")
+def list_external_push_channels():
+    context = get_authenticated_tenant_context()
+    require_role(context, "admin", "editor")
+    return success(
+        {
+            "tenant_id": context.tenant_id,
+            "user_id": context.user_id,
+            "items": settings_repo.list_external_push_channels(context.tenant_id, context.user_id),
+        }
+    )
+
+
+@bp.post("/settings/external-push-channels")
+def create_external_push_channel():
+    context = get_authenticated_tenant_context()
+    require_role(context, "admin")
+    payload = _require_payload()
+    _require_name(payload)
+    _require_external_push_channel(payload)
+    item = settings_repo.upsert_external_push_channel(context.tenant_id, context.user_id, payload)
+    return success(item, status_code=201)
+
+
+@bp.patch("/settings/external-push-channels/<channel_id>")
+def update_external_push_channel(channel_id: str):
+    context = get_authenticated_tenant_context()
+    require_role(context, "admin")
+    payload = _require_payload()
+    existing = next(
+        (
+            item
+            for item in settings_repo.list_external_push_channels(
+                context.tenant_id,
+                context.user_id,
+                include_secrets=True,
+            )
+            if str(item.get("id")) == str(channel_id)
+        ),
+        None,
+    )
+    if existing is None:
+        raise NotFoundError("external push channel not found")
+    _require_external_push_channel(payload, partial=True)
+    payload["id"] = channel_id
+    item = settings_repo.upsert_external_push_channel(context.tenant_id, context.user_id, payload)
+    return success(item)
+
+
+@bp.delete("/settings/external-push-channels/<channel_id>")
+def delete_external_push_channel(channel_id: str):
+    context = get_authenticated_tenant_context()
+    require_role(context, "admin")
+    deleted = settings_repo.delete_external_push_channel(context.tenant_id, context.user_id, channel_id)
+    if not deleted:
+        raise NotFoundError("external push channel not found")
+    return success({"deleted": deleted, "id": channel_id})
+
+
+@bp.get("/settings/external-push-deliveries")
+def list_external_push_deliveries():
+    context = get_authenticated_tenant_context()
+    require_role(context, "admin", "editor")
+    status = request.args.get("status")
+    limit = _safe_limit(request.args.get("limit"), default=50, maximum=200)
+    items = external_push_delivery_repo.list_deliveries(
+        tenant_id=context.tenant_id,
+        status=status,
+        limit=limit,
+    )
+    return success(
+        {
+            "tenant_id": context.tenant_id,
+            "items": items,
+            "total": len(items),
+            "stats": external_push_delivery_repo.delivery_stats(tenant_id=context.tenant_id),
+        }
+    )
+
+
+@bp.post("/settings/external-push-deliveries/<int:delivery_id>/retry")
+def retry_external_push_delivery(delivery_id: int):
+    context = get_authenticated_tenant_context()
+    require_role(context, "admin")
+    try:
+        result = ExternalPushService().retry_delivery(context.tenant_id, delivery_id)
+    except ExternalPushError as exc:
+        raise AppError(str(exc)) from exc
+    return success(result, status_code=202)
+
+
 @bp.post("/settings/alerts/evaluate")
 @bp.post("/settings/notifications/evaluate")
 def evaluate_alert_rules_once():
@@ -180,6 +272,27 @@ def _require_alert_rule(payload: dict) -> None:
     if str(payload.get("target") or payload.get("symbol") or "").strip():
         return
     raise AppError("alert rule or target is required")
+
+
+def _require_external_push_channel(payload: dict, *, partial: bool = False) -> None:
+    channel_type = str(payload.get("type") or "").strip().lower().replace("_", "-")
+    aliases = {
+        "ding-talk": "dingtalk",
+        "dingding": "dingtalk",
+        "enterprise-wechat": "wecom",
+        "wechat-work": "wecom",
+        "weixin-work": "wecom",
+        "smtp": "email",
+        "smtp-email": "email",
+        "generic-webhook": "webhook",
+    }
+    normalized = aliases.get(channel_type, channel_type)
+    if not partial or channel_type:
+        if normalized not in SUPPORTED_PUSH_TYPES:
+            raise AppError("unsupported external push channel type")
+        payload["type"] = normalized
+    if "config" in payload and not isinstance(payload.get("config"), dict):
+        raise AppError("config must be a json object")
 
 
 def _safe_limit(value, *, default: int, maximum: int) -> int:

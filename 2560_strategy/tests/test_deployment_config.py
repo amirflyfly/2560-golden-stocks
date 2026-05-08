@@ -15,7 +15,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 def test_wsgi_application_entrypoint_imports(monkeypatch):
     monkeypatch.setenv("APP_ENV", "development")
     monkeypatch.setenv("INIT_SQLITE_SCHEMA", "0")
-    monkeypatch.setenv("ALLOW_MOCK_MARKET_DATA", "1")
+    monkeypatch.setenv("MARKET_DATA_PROVIDER", "mootdx")
+    monkeypatch.setenv("MARKET_DATA_FALLBACKS", "akshare")
     sys.modules.pop("app", None)
 
     module = importlib.import_module("app")
@@ -43,7 +44,7 @@ def test_backend_dockerfile_uses_gunicorn_instead_of_flask_dev_server():
 def test_readiness_checks_alembic_schema_revision():
     monitoring_source = (PROJECT_ROOT / "backend" / "application" / "monitoring_service.py").read_text(encoding="utf-8")
 
-    assert 'EXPECTED_ALEMBIC_REVISION = "0011_user_engagement_fields"' in monitoring_source
+    assert 'EXPECTED_ALEMBIC_REVISION = "0022_stock_daily_bar_timestamps"' in monitoring_source
     assert "SELECT version_num FROM alembic_version LIMIT 1" in monitoring_source
     assert '"schema_revision": schema_ok' in monitoring_source
 
@@ -228,14 +229,14 @@ def test_ci_workflow_covers_tests_build_compose_and_images():
     assert "npm ci" in workflow
     assert "npm run build" in workflow
     assert "npx playwright install --with-deps chromium" in workflow
-    assert "npm run test:e2e" in workflow
+    assert "npm run test:e2e:ci" in workflow
     assert "docker compose config --quiet" in workflow
     assert "docker build -t 2560-strategy-backend:ci ." in workflow
     assert "docker build -t 2560-strategy-frontend:ci ./frontend" in workflow
     assert "http://localhost:5174/api/v1/readiness" in workflow
     assert "-X POST http://localhost:5174/api/picks" in workflow
     assert 'test "$legacy_status" = "410"' in workflow
-    assert "ALLOW_MOCK_MARKET_DATA: '1'" in workflow
+    assert "MARKET_DATA_PROVIDER: mootdx" in workflow
     assert "MARKET_DATA_FALLBACKS=akshare" in workflow
 
 

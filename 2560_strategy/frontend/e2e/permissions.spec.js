@@ -9,6 +9,13 @@ async function loginFresh(page, username = 'admin', password = 'admin123') {
   await loginViaUi(page, username, password);
 }
 
+async function openTenantInput(page) {
+  await page.locator('.tenant-advanced summary').click();
+  const tenantInput = page.getByTestId('tenant-switcher-input');
+  await expect(tenantInput).toBeVisible();
+  return tenantInput;
+}
+
 test('未登录 API 请求返回 401', async ({ page }) => {
   await page.context().clearCookies();
   const response = await page.request.get('/api/v1/strategies', {
@@ -29,15 +36,14 @@ test('viewer 通过 API 提交扫描返回 403', async ({ page }) => {
 
 test('未绑定租户访问会展示用户未绑定该租户', async ({ page }) => {
   await loginFresh(page, 'e2e_unbound', 'testpass');
-  await page.getByTestId('tenant-switcher-input').fill('2');
-  await page.getByTestId('nav-scans').click();
-  await page.getByTestId('create-scan-button').click();
-  await expect(page.getByTestId('scan-error')).toContainText('用户未绑定该租户');
+  const tenantInput = await openTenantInput(page);
+  await tenantInput.fill('2');
+  await expect(page.getByText('用户未绑定该租户')).toBeVisible();
 });
 
 test('停用租户访问会展示租户已停用', async ({ page }) => {
   await loginFresh(page);
-  await page.getByTestId('tenant-switcher-input').fill('3');
-  await page.getByTestId('nav-admin').click();
-  await expect(page.getByTestId('admin-error')).toContainText('租户已停用');
+  const tenantInput = await openTenantInput(page);
+  await tenantInput.fill('3');
+  await expect(page.getByText('租户已停用')).toBeVisible();
 });

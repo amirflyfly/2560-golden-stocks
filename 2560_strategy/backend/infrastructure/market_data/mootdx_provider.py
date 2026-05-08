@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from .provider import DailyBar, HealthCheckResult, QuoteSnapshot, StockInfo
+from .provider import AuctionSnapshot, DailyBar, HealthCheckResult, MarketDataCapabilities, QuoteSnapshot, StockInfo, derived_l1_capabilities
 from .utils import clean_security_name, infer_exchange, infer_security_type, normalize_bar_interval, parse_date, to_decimal, to_int
 
 
@@ -27,6 +27,7 @@ MOOTDX_FREQUENCIES = {
 
 class MootdxMarketDataProvider:
     name = "mootdx"
+    _auction_note = "mootdx quote API does not expose full 9:20-9:25 order withdrawal and seal details"
 
     def __init__(self):
         self._quotes_client = None
@@ -155,6 +156,43 @@ class MootdxMarketDataProvider:
             )
         return snapshots
 
+    def get_auction_snapshots(self, symbols: list[str], trade_date: str | None = None) -> list[AuctionSnapshot]:
+        snapshots = []
+        quote_snapshots = self.get_quote_snapshots(symbols)
+        requested_date = parse_date(trade_date or datetime.now())
+        capabilities = self.get_capabilities().to_dict()
+        for item in quote_snapshots:
+            trade_time = item.trade_time if isinstance(item.trade_time, datetime) else self._parse_datetime_text(item.trade_time)
+            if trade_time.date() != requested_date:
+                trade_time = datetime.combine(requested_date, trade_time.time())
+            snapshots.append(
+                AuctionSnapshot(
+                    symbol=item.symbol,
+                    trade_date=requested_date,
+                    auction_time=trade_time,
+                    indicative_price=item.open or item.last_price,
+                    matched_volume=item.volume,
+                    matched_amount=item.amount,
+                    prev_close=item.prev_close,
+                    bid_price=item.bid_price,
+                    ask_price=item.ask_price,
+                    order_book={
+                        "source_quality": "derived_l1",
+                        "data_quality": "derived_l1",
+                        "provider": self.name,
+                        "order_book_depth": 1,
+                        "note": self._auction_note,
+                    },
+                    source_quality="derived_l1",
+                    capabilities=capabilities,
+                    source=self.name,
+                )
+            )
+        return snapshots
+
+    def get_capabilities(self) -> MarketDataCapabilities:
+        return derived_l1_capabilities(self.name, note=self._auction_note)
+
     def get_trading_dates(self, start_date: str, end_date: str) -> list[str]:
         bars = self.get_daily_bars("000001", start_date, end_date, adjust="none")
         return [bar.trade_date.isoformat() for bar in bars]
@@ -211,6 +249,15 @@ class MootdxMarketDataProvider:
                     continue
         trade_date = parse_date(raw or datetime.now())
         return datetime.combine(trade_date, datetime.min.time())
+
+    def _parse_datetime_text(self, value) -> datetime:
+        text = str(value or "").strip()
+        for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y%m%d %H:%M:%S", "%Y-%m-%d", "%Y%m%d"):
+            try:
+                return datetime.strptime(text[:19] if " " in fmt or "T" in fmt else text[:10], fmt)
+            except ValueError:
+                continue
+        return datetime.now()
 
     def _iter_bar_rows(self, symbol: str, *, frequency: int, interval: str):
         max_pages = 1 if interval == "1d" else 4

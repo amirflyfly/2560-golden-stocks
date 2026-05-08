@@ -7,6 +7,7 @@ import json
 from datetime import datetime
 from typing import Any
 
+from backend.application.external_push import ExternalPushService
 from backend.infrastructure.tasks.queue import list_tasks
 from backend.repositories import picks_repo, settings_repo
 
@@ -17,6 +18,9 @@ class AlertEvaluationService:
     SCAN_METRICS = {"score_gte", "confidence_lte", "risk_eq", "quality_eq", "signal_state_transition", "signal_transition"}
     PICK_METRICS = {"watching_high_risk", "drawdown_abs_gte", "holding_days_gte", "status_eq"}
     GENERIC_TARGETS = {"", "all", "picks", "pick", "scan_results", "scans", "scan", "symbol"}
+
+    def __init__(self, external_push_service: ExternalPushService | None = None):
+        self.external_push_service = external_push_service or ExternalPushService()
 
     def evaluate_all(
         self,
@@ -38,10 +42,12 @@ class AlertEvaluationService:
             "rules_skipped": 0,
             "matches": 0,
             "notifications_created": 0,
+            "external_deliveries_count": 0,
             "notifications": [],
+            "external_deliveries": [],
             "by_scope": {
-                "picks": {"rules": 0, "matches": 0, "notifications": 0},
-                "scan_results": {"rules": 0, "matches": 0, "notifications": 0},
+                "picks": {"rules": 0, "matches": 0, "notifications": 0, "external_deliveries": 0},
+                "scan_results": {"rules": 0, "matches": 0, "notifications": 0, "external_deliveries": 0},
             },
             "errors": [],
         }
@@ -85,6 +91,10 @@ class AlertEvaluationService:
             result["notifications_created"] += len(notifications)
             result["by_scope"][scope]["notifications"] += len(notifications)
             result["notifications"].extend(notifications[:50])
+            external_deliveries = rule_matches["external_deliveries"]
+            result["external_deliveries_count"] += len(external_deliveries)
+            result["by_scope"][scope]["external_deliveries"] += len(external_deliveries)
+            result["external_deliveries"].extend(external_deliveries[:50])
             settings_repo.update_alert_rule_trigger_state(
                 record_tenant_id,
                 record_user_id,
@@ -95,6 +105,7 @@ class AlertEvaluationService:
             )
 
         result["notifications"] = result["notifications"][:50]
+        result["external_deliveries"] = result["external_deliveries"][:50]
         return result
 
     def evaluate_for_user(self, tenant_id: int, user_id: int | None, *, limit_per_rule: int = 50) -> dict:
@@ -116,6 +127,7 @@ class AlertEvaluationService:
     ) -> dict:
         matches = []
         notifications = []
+        external_deliveries = []
         errors = []
         candidates = self._picks_candidates(tenant_id, alert_rule) if scope == "picks" else self._scan_candidates(tenant_id)
         for candidate in candidates:
@@ -127,15 +139,34 @@ class AlertEvaluationService:
             if not matched:
                 continue
             matches.append(match_payload)
-            if not self._uses_in_app_channel(alert_rule):
-                continue
-            notification = settings_repo.upsert_notification(
-                tenant_id,
-                user_id,
-                self._notification_payload(alert_rule, candidate, scope, match_payload),
-            )
-            notifications.append(notification)
-        return {"matches": matches, "notifications": notifications, "errors": errors}
+            notification_payload = self._notification_payload(alert_rule, candidate, scope, match_payload)
+            if self._uses_in_app_channel(alert_rule):
+                notification = settings_repo.upsert_notification(
+                    tenant_id,
+                    user_id,
+                    notification_payload,
+                )
+                notifications.append(notification)
+            if self._uses_external_channel(alert_rule):
+                deliveries = self.external_push_service.dispatch_for_alert(
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    alert_rule=alert_rule,
+                    notification=notification_payload,
+                )
+                external_deliveries.extend(deliveries)
+                errors.extend(
+                    {
+                        "rule_id": alert_rule.get("id"),
+                        "scope": scope,
+                        "channel_id": delivery.get("channel_id"),
+                        "channel_type": delivery.get("channel_type"),
+                        "message": delivery.get("message") or "external push delivery failed",
+                    }
+                    for delivery in deliveries
+                    if not delivery.get("ok") and delivery.get("status") != "skipped"
+                )
+        return {"matches": matches, "notifications": notifications, "external_deliveries": external_deliveries, "errors": errors}
 
     def _picks_candidates(self, tenant_id: int, alert_rule: dict) -> list[dict]:
         target = self._target(alert_rule)
@@ -397,6 +428,9 @@ class AlertEvaluationService:
 
     def _uses_in_app_channel(self, alert_rule: dict) -> bool:
         return "in_app" in self._channels(alert_rule)
+
+    def _uses_external_channel(self, alert_rule: dict) -> bool:
+        return any(channel != "in_app" for channel in self._channels(alert_rule))
 
     def _severity(self, alert_rule: dict) -> str:
         metadata = alert_rule.get("metadata") if isinstance(alert_rule.get("metadata"), dict) else {}

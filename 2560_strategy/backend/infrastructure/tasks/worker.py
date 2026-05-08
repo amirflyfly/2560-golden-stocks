@@ -65,6 +65,15 @@ def _csv_env(name: str, default: str = "") -> list[str] | str:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
+def _csv_list_env(name: str, default: str = "") -> list[str]:
+    value = os.getenv(name, default).strip()
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _bool_env(name: str, default: str = "0") -> bool:
+    return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
 def _enqueue_market_sync(now: float, interval_seconds: int) -> dict:
     from datetime import date
 
@@ -74,6 +83,8 @@ def _enqueue_market_sync(now: float, interval_seconds: int) -> dict:
     max_symbols = int(os.getenv("MARKET_SYNC_MAX_SYMBOLS", "0") or 0)
     batch_size = int(os.getenv("MARKET_SYNC_BATCH_SIZE", "200") or 200)
     adjust = os.getenv("MARKET_SYNC_ADJUST", "qfq")
+    interval = os.getenv("MARKET_SYNC_INTERVAL", os.getenv("MARKET_SYNC_BAR_INTERVAL", "1d"))
+    security_type = os.getenv("MARKET_SYNC_SECURITY_TYPE", "").strip().lower()
     incremental = os.getenv("MARKET_SYNC_INCREMENTAL", "1").strip().lower() not in {"0", "false", "no"}
     bootstrap_days = int(os.getenv("MARKET_BOOTSTRAP_DAYS", "180") or 180)
     correction_days = int(os.getenv("MARKET_SYNC_CORRECTION_DAYS", "3") or 3)
@@ -87,6 +98,8 @@ def _enqueue_market_sync(now: float, interval_seconds: int) -> dict:
             "start_date": "",
             "end_date": end_date.isoformat(),
             "adjust": adjust,
+            "interval": interval,
+            "security_type": security_type,
             "max_symbols": max_symbols,
             "batch_size": batch_size,
             "incremental": incremental,
@@ -95,7 +108,7 @@ def _enqueue_market_sync(now: float, interval_seconds: int) -> dict:
             "source": "worker-scheduler",
             "scheduled_bucket": bucket,
         },
-        idempotency_key=f"market.sync:{bucket}:{symbols}:{adjust}:{max_symbols}:{batch_size}:{incremental}:{bootstrap_days}:{correction_days}",
+        idempotency_key=f"market.sync:{bucket}:{symbols}:{adjust}:{interval}:{security_type}:{max_symbols}:{batch_size}:{incremental}:{bootstrap_days}:{correction_days}",
         max_retries=1,
     )
 
@@ -108,6 +121,8 @@ def _enqueue_market_bootstrap(now: float) -> dict:
     max_symbols = int(os.getenv("MARKET_BOOTSTRAP_MAX_SYMBOLS", os.getenv("MARKET_SYNC_MAX_SYMBOLS", "0")) or 0)
     batch_size = int(os.getenv("MARKET_BOOTSTRAP_BATCH_SIZE", os.getenv("MARKET_SYNC_BATCH_SIZE", "200")) or 200)
     adjust = os.getenv("MARKET_SYNC_ADJUST", "qfq")
+    interval = os.getenv("MARKET_SYNC_INTERVAL", os.getenv("MARKET_SYNC_BAR_INTERVAL", "1d"))
+    security_type = os.getenv("MARKET_SYNC_SECURITY_TYPE", "").strip().lower()
     bootstrap_days = int(os.getenv("MARKET_BOOTSTRAP_DAYS", "180") or 180)
     bucket = date.today().isoformat()
     return enqueue_task(
@@ -119,6 +134,8 @@ def _enqueue_market_bootstrap(now: float) -> dict:
             "start_date": "",
             "end_date": date.today().isoformat(),
             "adjust": adjust,
+            "interval": interval,
+            "security_type": security_type,
             "max_symbols": max_symbols,
             "batch_size": batch_size,
             "incremental": False,
@@ -127,7 +144,7 @@ def _enqueue_market_bootstrap(now: float) -> dict:
             "source": "worker-bootstrap",
             "scheduled_bucket": bucket,
         },
-        idempotency_key=f"market.bootstrap:{tenant_id}:{bucket}:{symbols}:{adjust}:{max_symbols}:{batch_size}:{bootstrap_days}",
+        idempotency_key=f"market.bootstrap:{tenant_id}:{bucket}:{symbols}:{adjust}:{interval}:{security_type}:{max_symbols}:{batch_size}:{bootstrap_days}",
         max_retries=1,
     )
 
@@ -137,6 +154,7 @@ def _enqueue_market_snapshot(now: float, interval_seconds: int) -> dict:
     symbols = _csv_env("MARKET_SNAPSHOT_SYMBOLS", os.getenv("MARKET_SYNC_SYMBOLS", "000001,600519"))
     max_symbols = int(os.getenv("MARKET_SNAPSHOT_MAX_SYMBOLS", os.getenv("MARKET_SYNC_MAX_SYMBOLS", "0")) or 0)
     batch_size = int(os.getenv("MARKET_SNAPSHOT_BATCH_SIZE", "500") or 500)
+    security_type = os.getenv("MARKET_SNAPSHOT_SECURITY_TYPE", os.getenv("MARKET_SYNC_SECURITY_TYPE", "")).strip().lower()
     tenant_id = int(os.getenv("WORKER_TENANT_ID", "1") or 1)
     return enqueue_task(
         "market.snapshot.plan" if batch_size > 0 else "market.snapshot",
@@ -146,10 +164,11 @@ def _enqueue_market_snapshot(now: float, interval_seconds: int) -> dict:
             "symbols": symbols,
             "max_symbols": max_symbols,
             "batch_size": batch_size,
+            "security_type": security_type,
             "source": "worker-scheduler",
             "scheduled_bucket": bucket,
         },
-        idempotency_key=f"market.snapshot:{bucket}:{symbols}:{max_symbols}:{batch_size}",
+        idempotency_key=f"market.snapshot:{bucket}:{symbols}:{security_type}:{max_symbols}:{batch_size}",
         max_retries=1,
     )
 
@@ -242,6 +261,35 @@ def _enqueue_strategy_runs(now: float, interval_seconds: int) -> dict:
     return {"scheduled_strategies": len(tasks), "tasks": tasks, "bucket": bucket}
 
 
+def _enqueue_daily_review(now: float, interval_seconds: int) -> dict:
+    from datetime import date
+
+    bucket = int(now // max(1, interval_seconds))
+    tenant_id = int(os.getenv("WORKER_TENANT_ID", "1") or 1)
+    account_id = os.getenv("DAILY_REVIEW_ACCOUNT_ID", "").strip()
+    user_id = os.getenv("DAILY_REVIEW_USER_ID", "").strip()
+    channels = _csv_list_env("DAILY_REVIEW_CHANNELS", "")
+    push = _bool_env("DAILY_REVIEW_PUSH", "0")
+    trade_date = os.getenv("DAILY_REVIEW_TRADE_DATE", "").strip() or date.today().isoformat()
+    payload = {
+        "trade_date": trade_date,
+        "account_id": int(account_id) if account_id else None,
+        "user_id": int(user_id) if user_id else None,
+        "push": push,
+        "channels": channels,
+        "source": "worker-scheduler",
+        "scheduled_bucket": bucket,
+    }
+    return enqueue_task(
+        "reports.daily_review",
+        lambda: {"scheduled": True},
+        tenant_id=tenant_id,
+        payload=payload,
+        idempotency_key=f"reports.daily_review:{tenant_id}:{trade_date}:{bucket}:{account_id}:{user_id}:{push}:{','.join(channels)}",
+        max_retries=1,
+    )
+
+
 def run_worker(
     *,
     poll_seconds: float = 1.0,
@@ -252,6 +300,7 @@ def run_worker(
     indicator_precompute_interval_seconds: int = 0,
     qfq_repair_interval_seconds: int = 0,
     strategy_run_interval_seconds: int = 0,
+    daily_review_interval_seconds: int = 0,
     bootstrap_on_start: bool = False,
 ) -> int:
     signal.signal(signal.SIGTERM, _request_stop)
@@ -266,6 +315,7 @@ def run_worker(
     next_indicator_precompute_at = time.time() if indicator_precompute_interval_seconds > 0 and not once else None
     next_qfq_repair_at = time.time() if qfq_repair_interval_seconds > 0 and not once else None
     next_strategy_run_at = time.time() if strategy_run_interval_seconds > 0 and not once else None
+    next_daily_review_at = time.time() if daily_review_interval_seconds > 0 and not once else None
     while not _STOP:
         mark_stale_tasks()
         now = time.time()
@@ -288,6 +338,10 @@ def run_worker(
             scheduled = _enqueue_strategy_runs(now, strategy_run_interval_seconds)
             print(json.dumps({"scheduled": "strategy.production_run", **scheduled}, ensure_ascii=False), flush=True)
             next_strategy_run_at = now + max(1, strategy_run_interval_seconds)
+        if next_daily_review_at is not None and now >= next_daily_review_at:
+            daily_review_task = _enqueue_daily_review(now, daily_review_interval_seconds)
+            print(json.dumps({"scheduled": "reports.daily_review", "task_id": daily_review_task.get("id"), "status": daily_review_task.get("status")}, ensure_ascii=False), flush=True)
+            next_daily_review_at = now + max(1, daily_review_interval_seconds)
         task = work_once()
         if task:
             processed += 1
@@ -341,6 +395,12 @@ def main() -> int:
         help="Schedule qfq correction sync tasks at this interval; 0 disables it.",
     )
     parser.add_argument(
+        "--daily-review-interval-seconds",
+        type=int,
+        default=int(os.getenv("DAILY_REVIEW_INTERVAL_SECONDS", "0") or 0),
+        help="Schedule reports.daily_review tasks at this interval; 0 disables daily review automation.",
+    )
+    parser.add_argument(
         "--bootstrap-on-start",
         action="store_true",
         default=os.getenv("MARKET_BOOTSTRAP_ON_START", "0").strip().lower() in {"1", "true", "yes"},
@@ -357,6 +417,7 @@ def main() -> int:
         indicator_precompute_interval_seconds=args.indicator_precompute_interval_seconds,
         qfq_repair_interval_seconds=args.qfq_repair_interval_seconds,
         strategy_run_interval_seconds=args.strategy_run_interval_seconds,
+        daily_review_interval_seconds=args.daily_review_interval_seconds,
         bootstrap_on_start=args.bootstrap_on_start,
     )
 

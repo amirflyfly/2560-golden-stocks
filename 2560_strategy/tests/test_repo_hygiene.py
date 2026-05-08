@@ -58,22 +58,13 @@ def test_repo_index_cleanup_plan_keeps_git_paths_and_project_paths():
 
 def test_non_repository_runtime_code_does_not_import_sqlite_helper_directly():
     project_root = Path(__file__).resolve().parents[1]
+    repositories_dir = project_root / "backend" / "repositories"
     allowed = {
         project_root / "backend" / "__init__.py",
-        project_root / "backend" / "repositories" / "audit_logs_repo.py",
-        project_root / "backend" / "repositories" / "logs_repo.py",
-        project_root / "backend" / "repositories" / "market_data_repo.py",
-        project_root / "backend" / "repositories" / "paper_trading_repo.py",
-        project_root / "backend" / "repositories" / "picks_repo.py",
-        project_root / "backend" / "repositories" / "sessions_repo.py",
-        project_root / "backend" / "repositories" / "settings_repo.py",
-        project_root / "backend" / "repositories" / "strategy_pool_repo.py",
-        project_root / "backend" / "repositories" / "strategy_repo.py",
-        project_root / "backend" / "repositories" / "users_repo.py",
     }
     offenders = []
     for path in (project_root / "backend").rglob("*.py"):
-        if "__pycache__" in path.parts or path in allowed:
+        if "__pycache__" in path.parts or path in allowed or repositories_dir in path.parents:
             continue
         source = path.read_text(encoding="utf-8", errors="ignore")
         if "backend.repositories.db" in source:

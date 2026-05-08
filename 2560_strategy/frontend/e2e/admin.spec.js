@@ -31,5 +31,5 @@ test('admin 可以修改测试用户角色并在 UI 中反映', async ({ page })
 test('editor 打开后台管理时展示权限错误', async ({ page }) => {
   await loginFresh(page, 'e2e_editor', 'testpass');
   await page.getByTestId('nav-admin').click();
-  await expect(page.getByTestId('admin-error')).toContainText('权限不足');
+  await expect(page.getByTestId('admin-error')).toContainText('admin 角色');
 });

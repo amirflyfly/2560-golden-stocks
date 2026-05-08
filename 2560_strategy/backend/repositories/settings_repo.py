@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import json
 import os
 from datetime import datetime
@@ -23,6 +26,21 @@ TRADINGAGENTS_RUNTIME_CONFIG_KEY = "tradingagents_runtime_config"
 SAVED_VIEWS_KIND = "saved_views"
 ALERT_RULES_KIND = "alert_rules"
 NOTIFICATIONS_KIND = "notifications"
+EXTERNAL_PUSH_CHANNELS_KIND = "external_push_channels"
+EXTERNAL_PUSH_ENCRYPTION_ALG = "kms-envelope-v1"
+EXTERNAL_PUSH_LEGACY_ENCRYPTION_ALG = "sha256-stream-v1"
+EXTERNAL_PUSH_ENCRYPTED_MARKER = "__external_push_encrypted__"
+EXTERNAL_PUSH_SENSITIVE_CONFIG_KEYS = {
+    "api_key",
+    "authorization",
+    "bearer_token",
+    "password",
+    "secret",
+    "smtp_password",
+    "token",
+    "webhook_url",
+    "x-api-key",
+}
 
 
 DEFAULT_TRADINGAGENTS_RUNTIME_CONFIG = {
@@ -252,6 +270,55 @@ def delete_alert_rule(tenant_id: int, user_id: int | None, alert_id: str) -> int
     return _delete_user_setting_item(tenant_id, user_id, ALERT_RULES_KIND, alert_id)
 
 
+def list_external_push_channels(
+    tenant_id: int,
+    user_id: int | None = None,
+    *,
+    include_secrets: bool = False,
+) -> list[dict]:
+    items = [
+        _external_push_channel_for_read(item, include_secrets=include_secrets)
+        for item in _load_user_setting_list(tenant_id, user_id, EXTERNAL_PUSH_CHANNELS_KIND)
+    ]
+    if include_secrets:
+        return items
+    from backend.application.external_push import public_external_push_channel
+
+    return [public_external_push_channel(item) for item in items]
+
+
+def upsert_external_push_channel(tenant_id: int, user_id: int | None, payload: dict) -> dict:
+    items = _load_user_setting_list(tenant_id, user_id, EXTERNAL_PUSH_CHANNELS_KIND)
+    now = _now_iso()
+    item_id = str(payload.get("id") or "").strip() or uuid4().hex
+    existing = next((item for item in items if str(item.get("id")) == item_id), None)
+    base = _external_push_channel_for_read(existing or {}, include_secrets=True)
+    enabled = payload.get("enabled", base.get("enabled"))
+    config = _dict_or_empty(base.get("config"))
+    config.update(_external_push_payload_config(payload.get("config"), config))
+    normalized = {
+        "id": item_id,
+        "name": str(payload.get("name") or payload.get("title") or base.get("name") or "Untitled push channel").strip(),
+        "type": _normalize_external_push_type(payload.get("type") or base.get("type")),
+        "enabled": True if enabled is None else _bool_value(enabled),
+        "config": config,
+        "metadata": _dict_or_empty(payload.get("metadata", base.get("metadata"))),
+        "created_at": existing.get("created_at") if existing else now,
+        "updated_at": now,
+    }
+    stored = _external_push_channel_for_storage(normalized)
+    items = [item for item in items if str(item.get("id")) != item_id]
+    items.insert(0, stored)
+    _save_user_setting_list(tenant_id, user_id, EXTERNAL_PUSH_CHANNELS_KIND, items)
+    from backend.application.external_push import public_external_push_channel
+
+    return public_external_push_channel(_external_push_channel_for_read(stored, include_secrets=True))
+
+
+def delete_external_push_channel(tenant_id: int, user_id: int | None, channel_id: str) -> int:
+    return _delete_user_setting_item(tenant_id, user_id, EXTERNAL_PUSH_CHANNELS_KIND, channel_id)
+
+
 def list_all_alert_rules(tenant_id: int | None = None, user_id: int | None = None) -> list[dict]:
     rows = _list_user_setting_rows(ALERT_RULES_KIND)
     records = []
@@ -460,9 +527,193 @@ def _list_or_empty(value) -> list:
     return list(value) if isinstance(value, list) else []
 
 
+def _normalize_external_push_type(value) -> str:
+    channel_type = str(value or "").strip().lower().replace("_", "-")
+    aliases = {
+        "ding-talk": "dingtalk",
+        "dingding": "dingtalk",
+        "enterprise-wechat": "wecom",
+        "wechat-work": "wecom",
+        "weixin-work": "wecom",
+        "smtp": "email",
+        "smtp-email": "email",
+        "generic-webhook": "webhook",
+    }
+    return aliases.get(channel_type, channel_type)
+
+
 def _bool_value(value) -> bool:
     if isinstance(value, bool):
         return value
     if isinstance(value, (int, float)):
         return bool(value)
     return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _external_push_payload_config(payload_config, base_config: dict | None = None) -> dict:
+    incoming = _dict_or_empty(payload_config)
+    base = dict(base_config or {})
+    for key, value in incoming.items():
+        if _is_external_push_secret_key(key) and value == "***configured***":
+            continue
+        base[key] = value
+    return base
+
+
+def _external_push_channel_for_storage(item: dict) -> dict:
+    stored = dict(item or {})
+    config = _dict_or_empty(stored.get("config"))
+    encrypted_values: dict[str, dict] = {}
+    public_config: dict[str, Any] = {}
+    encryption_status = "unconfigured"
+    for key, value in config.items():
+        if _is_external_push_secret_key(key):
+            encrypted = _encrypt_external_push_secret(value)
+            if encrypted is None:
+                public_config[key] = value
+            else:
+                encrypted_values[key] = encrypted
+                encryption_status = "encrypted"
+        else:
+            public_config[key] = value
+    if encrypted_values:
+        public_config[EXTERNAL_PUSH_ENCRYPTED_MARKER] = encrypted_values
+    stored["config"] = public_config
+    metadata = _dict_or_empty(stored.get("metadata"))
+    metadata["encryption_status"] = encryption_status
+    metadata["encryption_alg"] = EXTERNAL_PUSH_ENCRYPTION_ALG if encryption_status == "encrypted" else ""
+    metadata["key_provider"] = _external_push_key_provider() if encryption_status == "encrypted" else ""
+    metadata["key_id"] = _external_push_key_id() if encryption_status == "encrypted" else ""
+    stored["metadata"] = metadata
+    return stored
+
+
+def _external_push_channel_for_read(item: dict, *, include_secrets: bool) -> dict:
+    readable = dict(item or {})
+    config = _dict_or_empty(readable.get("config"))
+    encrypted_values = _dict_or_empty(config.pop(EXTERNAL_PUSH_ENCRYPTED_MARKER, {}))
+    metadata = _dict_or_empty(readable.get("metadata"))
+    for key, encrypted in encrypted_values.items():
+        decrypted = _decrypt_external_push_secret(encrypted)
+        if include_secrets:
+            config[key] = decrypted if decrypted is not None else ""
+        else:
+            config[key] = "***configured***" if decrypted is not None or encrypted else ""
+    if include_secrets:
+        for key in list(config.keys()):
+            value = config[key]
+            if _is_external_push_secret_key(key) and isinstance(value, dict):
+                config[key] = _decrypt_external_push_secret(value) or ""
+    metadata.setdefault("encryption_status", "encrypted" if encrypted_values else "unconfigured")
+    readable["config"] = config
+    readable["metadata"] = metadata
+    return readable
+
+
+def _is_external_push_secret_key(key: Any) -> bool:
+    normalized = str(key or "").strip().lower()
+    return normalized in EXTERNAL_PUSH_SENSITIVE_CONFIG_KEYS or any(part in normalized for part in ("secret", "token", "password", "webhook_url"))
+
+
+def _external_push_key_provider() -> str:
+    return str(os.getenv("EXTERNAL_PUSH_KMS_PROVIDER") or os.getenv("EXTERNAL_PUSH_SECRET_PROVIDER") or "local-env").strip() or "local-env"
+
+
+def _external_push_key_id() -> str:
+    return str(os.getenv("EXTERNAL_PUSH_KMS_KEY_ID") or os.getenv("EXTERNAL_PUSH_KEY_ID") or "external-push-local").strip() or "external-push-local"
+
+
+def _external_push_secret_key() -> bytes | None:
+    raw = os.getenv("EXTERNAL_PUSH_SECRET_KEY") or os.getenv("SETTINGS_SECRET_KEY")
+    if not raw:
+        return None
+    return hashlib.sha256(str(raw).encode("utf-8")).digest()
+
+
+def _encrypt_external_push_secret(value: Any) -> dict | None:
+    kek = _external_push_secret_key()
+    if kek is None:
+        return None
+    plaintext = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    data_key = os.urandom(32)
+    data_nonce = os.urandom(16)
+    wrap_nonce = os.urandom(16)
+    stream = _secret_stream(data_key, data_nonce, len(plaintext))
+    ciphertext = bytes(byte ^ stream[index] for index, byte in enumerate(plaintext))
+    wrap_stream = _secret_stream(kek, wrap_nonce, len(data_key))
+    wrapped_data_key = bytes(byte ^ wrap_stream[index] for index, byte in enumerate(data_key))
+    mac = hmac.new(data_key, data_nonce + ciphertext, hashlib.sha256).digest()
+    wrapped_mac = hmac.new(kek, wrap_nonce + wrapped_data_key, hashlib.sha256).digest()
+    return {
+        "alg": EXTERNAL_PUSH_ENCRYPTION_ALG,
+        "provider": _external_push_key_provider(),
+        "key_id": _external_push_key_id(),
+        "wrap_nonce": base64.urlsafe_b64encode(wrap_nonce).decode("ascii"),
+        "wrapped_data_key": base64.urlsafe_b64encode(wrapped_data_key).decode("ascii"),
+        "wrapped_mac": base64.urlsafe_b64encode(wrapped_mac).decode("ascii"),
+        "nonce": base64.urlsafe_b64encode(data_nonce).decode("ascii"),
+        "ciphertext": base64.urlsafe_b64encode(ciphertext).decode("ascii"),
+        "mac": base64.urlsafe_b64encode(mac).decode("ascii"),
+    }
+
+
+def _decrypt_external_push_secret(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return value
+    key = _external_push_secret_key()
+    if key is None:
+        return None
+    if value.get("alg") == EXTERNAL_PUSH_LEGACY_ENCRYPTION_ALG:
+        return _decrypt_legacy_external_push_secret(value, key)
+    if value.get("alg") != EXTERNAL_PUSH_ENCRYPTION_ALG:
+        return None
+    try:
+        wrap_nonce = base64.urlsafe_b64decode(str(value.get("wrap_nonce") or ""))
+        wrapped_data_key = base64.urlsafe_b64decode(str(value.get("wrapped_data_key") or ""))
+        expected_wrapped_mac = base64.urlsafe_b64decode(str(value.get("wrapped_mac") or ""))
+        data_nonce = base64.urlsafe_b64decode(str(value.get("nonce") or ""))
+        ciphertext = base64.urlsafe_b64decode(str(value.get("ciphertext") or ""))
+        expected_mac = base64.urlsafe_b64decode(str(value.get("mac") or ""))
+    except Exception:
+        return None
+    actual_wrapped_mac = hmac.new(key, wrap_nonce + wrapped_data_key, hashlib.sha256).digest()
+    if not hmac.compare_digest(actual_wrapped_mac, expected_wrapped_mac):
+        return None
+    wrap_stream = _secret_stream(key, wrap_nonce, len(wrapped_data_key))
+    data_key = bytes(byte ^ wrap_stream[index] for index, byte in enumerate(wrapped_data_key))
+    actual_mac = hmac.new(data_key, data_nonce + ciphertext, hashlib.sha256).digest()
+    if not hmac.compare_digest(actual_mac, expected_mac):
+        return None
+    stream = _secret_stream(data_key, data_nonce, len(ciphertext))
+    plaintext = bytes(byte ^ stream[index] for index, byte in enumerate(ciphertext))
+    try:
+        return json.loads(plaintext.decode("utf-8"))
+    except Exception:
+        return None
+
+
+def _decrypt_legacy_external_push_secret(value: dict, key: bytes) -> Any:
+    try:
+        nonce = base64.urlsafe_b64decode(str(value.get("nonce") or ""))
+        ciphertext = base64.urlsafe_b64decode(str(value.get("ciphertext") or ""))
+        expected_mac = base64.urlsafe_b64decode(str(value.get("mac") or ""))
+    except Exception:
+        return None
+    actual_mac = hmac.new(key, nonce + ciphertext, hashlib.sha256).digest()
+    if not hmac.compare_digest(actual_mac, expected_mac):
+        return None
+    stream = _secret_stream(key, nonce, len(ciphertext))
+    plaintext = bytes(byte ^ stream[index] for index, byte in enumerate(ciphertext))
+    try:
+        return json.loads(plaintext.decode("utf-8"))
+    except Exception:
+        return None
+
+
+def _secret_stream(key: bytes, nonce: bytes, length: int) -> bytes:
+    chunks = []
+    counter = 0
+    while sum(len(chunk) for chunk in chunks) < length:
+        chunks.append(hmac.new(key, nonce + counter.to_bytes(4, "big"), hashlib.sha256).digest())
+        counter += 1
+    return b"".join(chunks)[:length]

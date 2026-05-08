@@ -20,21 +20,21 @@ test('admin 可以创建扫描任务并看到数据质量字段', async ({ page 
   expect((await scanResponse).status()).toBe(202);
 
   const result = page.getByTestId('scan-result');
-  await expect(result).toContainText('market_data');
-  await expect(result).toContainText('actual_provider');
-  await expect(result).toContainText('data_quality');
+  await expect(result).toContainText('行情源');
+  await expect(result).toContainText('数据质量');
+  await expect(result).toContainText('primary');
 });
 
 test('editor 可以创建扫描任务', async ({ page }) => {
   await loginFresh(page, 'e2e_editor', 'testpass');
   await page.getByTestId('nav-scans').click();
   await page.getByTestId('create-scan-button').click();
-  await expect(page.getByTestId('scan-result')).toContainText('strategy_code');
+  await expect(page.getByTestId('scan-result')).toContainText('2560');
 });
 
 test('viewer 创建扫描任务会展示权限不足', async ({ page }) => {
   await loginFresh(page, 'e2e_viewer', 'testpass');
   await page.getByTestId('nav-scans').click();
-  await page.getByTestId('create-scan-button').click();
-  await expect(page.getByTestId('scan-error')).toContainText('权限不足');
+  await expect(page.getByTestId('create-scan-button')).toBeDisabled();
+  await expect(page.getByText('当前角色为 viewer')).toBeVisible();
 });

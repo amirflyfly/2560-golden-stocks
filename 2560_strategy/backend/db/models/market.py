@@ -51,7 +51,7 @@ class LimitRuleCalendar(TimestampMixin, Base):
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
-class StockDailyBar(Base):
+class StockDailyBar(TimestampMixin, Base):
     __tablename__ = "stock_daily_bars"
     __table_args__ = (UniqueConstraint("symbol", "trade_date", "trade_time", "interval", "source", "adjust", name="uk_bar_symbol_time_interval_source_adjust"),)
 
@@ -86,6 +86,39 @@ class StockPriceSnapshot(TimestampMixin, Base):
     amount: Mapped[Decimal | None] = mapped_column(Numeric(24, 4), nullable=True)
     bid_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
     ask_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    source: Mapped[str] = mapped_column(String(32), index=True, nullable=False)
+
+
+class StockAuctionSnapshot(TimestampMixin, Base):
+    __tablename__ = "stock_auction_snapshots"
+    __table_args__ = (
+        UniqueConstraint("symbol", "trade_date", "auction_time", "source", name="uk_auction_symbol_date_time_source"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(16), index=True, nullable=False)
+    trade_date: Mapped[date] = mapped_column(Date, index=True, nullable=False)
+    auction_time: Mapped[datetime] = mapped_column(DateTime, index=True, nullable=False)
+    phase: Mapped[str] = mapped_column(String(32), index=True, nullable=False, default="call_auction_0920_0925")
+    prev_close: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    indicative_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    matched_volume: Mapped[int | None] = mapped_column(nullable=True)
+    matched_amount: Mapped[Decimal | None] = mapped_column(Numeric(24, 4), nullable=True)
+    unmatched_buy_volume: Mapped[int | None] = mapped_column(nullable=True)
+    unmatched_sell_volume: Mapped[int | None] = mapped_column(nullable=True)
+    bid_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    bid_volume: Mapped[int | None] = mapped_column(nullable=True)
+    ask_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    ask_volume: Mapped[int | None] = mapped_column(nullable=True)
+    order_book: Mapped[dict | list | None] = mapped_column(JSON, nullable=True)
+    withdrawal_buy_volume: Mapped[int | None] = mapped_column(nullable=True)
+    withdrawal_sell_volume: Mapped[int | None] = mapped_column(nullable=True)
+    withdrawal_buy_amount: Mapped[Decimal | None] = mapped_column(Numeric(24, 4), nullable=True)
+    withdrawal_sell_amount: Mapped[Decimal | None] = mapped_column(Numeric(24, 4), nullable=True)
+    seal_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    seal_volume: Mapped[int | None] = mapped_column(nullable=True)
+    seal_amount: Mapped[Decimal | None] = mapped_column(Numeric(24, 4), nullable=True)
+    seal_side: Mapped[str | None] = mapped_column(String(8), nullable=True)
     source: Mapped[str] = mapped_column(String(32), index=True, nullable=False)
 
 

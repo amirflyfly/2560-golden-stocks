@@ -5,11 +5,16 @@ from __future__ import annotations
 import csv
 import io
 import json
-from datetime import datetime
+from datetime import date, datetime
+from typing import Any
 
+from backend.application.external_push import ExternalPushService
 from backend.application.pagination import PaginationParams
 from backend.core.errors import AppError, NotFoundError
-from backend.repositories import picks_repo
+from backend.repositories import paper_trading_repo, picks_repo, settings_repo
+
+
+external_push_service = ExternalPushService()
 
 
 class ReportApiService:
@@ -245,6 +250,78 @@ class ReportApiService:
             "body": output.getvalue(),
         }
 
+    def daily_review(
+        self,
+        tenant_id: int,
+        trade_date: str | None = None,
+        *,
+        account_id: int | None = None,
+        push: bool = False,
+        channels: list[str] | None = None,
+        user_id: int | None = None,
+        source: str = "api",
+    ) -> dict:
+        normalized_date = self._normalize_trade_date(trade_date)
+        paper_summary = paper_trading_repo.summary(tenant_id, account_id)
+        orders = self._filter_items_by_date(
+            paper_trading_repo.list_orders(tenant_id, account_id, limit=300),
+            normalized_date,
+            "created_at",
+            "updated_at",
+        )
+        fills = self._filter_items_by_date(
+            paper_trading_repo.list_fills(tenant_id, account_id, limit=300),
+            normalized_date,
+            "filled_at",
+            "created_at",
+        )
+        positions = paper_trading_repo.list_positions(tenant_id, account_id, active_only=True)
+        report_summary = self.summary(tenant_id, "week")
+        paper_payload = self._daily_paper_payload(paper_summary, orders, fills, positions)
+        attribution = report_summary.get("attribution") or {}
+        message = self._daily_review_message(
+            trade_date=normalized_date,
+            paper=paper_payload,
+            report_summary=report_summary.get("summary") or {},
+            attribution=attribution,
+        )
+        notification = {
+            "title": f"{normalized_date} 每日交易复盘",
+            "body": message,
+            "rule_id": "daily-review",
+            "rule_name": "每日交易复盘",
+            "scope": "reports.daily_review",
+            "source": source,
+            "entity": {"type": "daily_review", "tenant_id": tenant_id, "trade_date": normalized_date},
+            "match": {"metric": "daily_review", "trade_date": normalized_date},
+        }
+        in_app_notification = self._persist_daily_review_notification(
+            tenant_id,
+            user_id,
+            notification,
+            enabled=bool(push or user_id),
+        )
+        push_result = self._dispatch_daily_review(
+            tenant_id,
+            user_id,
+            notification,
+            enabled=push,
+            channels=channels,
+        )
+        return {
+            "schema_version": "daily-review/v1",
+            "tenant_id": int(tenant_id or 0),
+            "trade_date": normalized_date,
+            "account_id": account_id,
+            "source": source,
+            "paper_trading": paper_payload,
+            "report_summary": report_summary,
+            "attribution": attribution,
+            "message": message,
+            "notification": in_app_notification,
+            "push": push_result,
+        }
+
     def _find_or_create_report_pick(self, tenant_id: int, symbol: str, title: str) -> dict:
         existing = picks_repo.list_picks("WHERE code=?", [symbol], limit=1, tenant_id=tenant_id)
         if existing:
@@ -275,6 +352,186 @@ class ReportApiService:
         if not pick:
             raise AppError("failed to create report pick")
         return pick
+
+    def _normalize_trade_date(self, value: str | None) -> str:
+        if not value:
+            return date.today().isoformat()
+        try:
+            return date.fromisoformat(str(value)[:10]).isoformat()
+        except (TypeError, ValueError) as exc:
+            raise AppError("trade_date must be YYYY-MM-DD") from exc
+
+    def _filter_items_by_date(self, items: list[dict], trade_date: str, *date_fields: str) -> list[dict]:
+        filtered = []
+        for item in items:
+            if any(str(item.get(field) or "")[:10] == trade_date for field in date_fields):
+                filtered.append(item)
+        return filtered
+
+    def _daily_paper_payload(self, summary: dict, orders: list[dict], fills: list[dict], positions: list[dict]) -> dict:
+        buy_orders = [item for item in orders if str(item.get("side") or "").upper() == "BUY"]
+        sell_orders = [item for item in orders if str(item.get("side") or "").upper() == "SELL"]
+        symbols = sorted({str(item.get("symbol") or "").strip() for item in [*orders, *fills] if str(item.get("symbol") or "").strip()})
+        top_positions = sorted(
+            positions,
+            key=lambda item: float(item.get("market_value") or 0),
+            reverse=True,
+        )[:10]
+        return {
+            "summary": summary,
+            "orders_count": len(orders),
+            "fills_count": len(fills),
+            "buy_orders": len(buy_orders),
+            "sell_orders": len(sell_orders),
+            "traded_symbols": symbols,
+            "active_positions": len(positions),
+            "top_positions": [
+                {
+                    "symbol": item.get("symbol"),
+                    "quantity": item.get("quantity"),
+                    "market_value": item.get("market_value"),
+                    "unrealized_pnl": item.get("unrealized_pnl"),
+                    "realized_pnl": item.get("realized_pnl"),
+                }
+                for item in top_positions
+            ],
+            "orders": orders[:50],
+            "fills": fills[:50],
+        }
+
+    def _daily_review_message(self, *, trade_date: str, paper: dict, report_summary: dict, attribution: dict) -> str:
+        account = paper.get("summary") or {}
+        highlights = attribution.get("highlights") or {}
+        positive = self._format_attribution_items(highlights.get("top_positive_contributors") or [])
+        negative = self._format_attribution_items(highlights.get("top_negative_contributors") or [])
+        symbols = ", ".join(paper.get("traded_symbols") or []) or "无"
+        return "\n".join(
+            [
+                f"## {trade_date} 每日交易复盘",
+                "",
+                "### 交易账户",
+                f"- 权益: {self._money(account.get('equity'))}",
+                f"- 现金: {self._money(account.get('cash'))}",
+                f"- 市值: {self._money(account.get('market_value'))}",
+                f"- 总收益率: {self._ratio_pct(account.get('total_return_pct'))}",
+                "",
+                "### 当日交易",
+                f"- 委托: {paper.get('orders_count', 0)} 笔，成交: {paper.get('fills_count', 0)} 笔",
+                f"- 买入: {paper.get('buy_orders', 0)} 笔，卖出: {paper.get('sell_orders', 0)} 笔",
+                f"- 交易标的: {symbols}",
+                f"- 当前持仓: {paper.get('active_positions', 0)} 只",
+                "",
+                "### 复盘质量",
+                f"- 样本: {report_summary.get('total_picks', 0)} 条",
+                f"- 已复盘率: {self._ratio_pct(report_summary.get('review_rate'))}",
+                f"- 胜率: {self._ratio_pct(report_summary.get('win_rate'))}",
+                f"- 平均收益: {self._return_pct(report_summary.get('average_return_pct'))}",
+                f"- 高风险占比: {self._ratio_pct(report_summary.get('high_risk_rate'))}",
+                "",
+                "### 归因",
+                f"- 正贡献: {positive}",
+                f"- 负贡献: {negative}",
+            ]
+        )
+
+    def _format_attribution_items(self, items: list[dict]) -> str:
+        if not items:
+            return "无"
+        return "；".join(
+            f"{item.get('label') or item.get('key')}: {self._return_pct(item.get('total_return_pct'))}"
+            for item in items[:3]
+        )
+
+    def _persist_daily_review_notification(self, tenant_id: int, user_id: int | None, notification: dict, *, enabled: bool) -> dict:
+        if not enabled or user_id is None:
+            return {"enabled": False, "status": "skipped", "reason": "no user notification target"}
+        item = settings_repo.upsert_notification(
+            tenant_id,
+            user_id,
+            {
+                **notification,
+                "type": "daily_review",
+                "channel": "in_app",
+                "severity": "info",
+                "dedupe_key": f"daily-review:{tenant_id}:{user_id}:{notification['entity']['trade_date']}",
+            },
+        )
+        return {"enabled": True, "status": "created", "item": item}
+
+    def _dispatch_daily_review(
+        self,
+        tenant_id: int,
+        user_id: int | None,
+        notification: dict,
+        *,
+        enabled: bool,
+        channels: list[str] | None,
+    ) -> dict:
+        if not enabled:
+            return {"enabled": False, "status": "skipped", "reason": "push disabled", "deliveries": []}
+        configs = settings_repo.list_external_push_channels(tenant_id, user_id, include_secrets=True)
+        selected = {str(channel or "").strip().lower() for channel in (channels or []) if str(channel or "").strip()}
+        candidates = [config for config in configs if config.get("enabled", True)]
+        if selected:
+            candidates = [config for config in candidates if self._matches_push_channel(config, selected)]
+        if not candidates:
+            return {
+                "enabled": True,
+                "status": "skipped",
+                "reason": "no enabled external push channels matched",
+                "channels": sorted(selected),
+                "deliveries": [],
+            }
+        deliveries = [
+            external_push_service.enqueue_dispatch(
+                tenant_id,
+                user_id,
+                config,
+                notification,
+                delivery_key=f"daily-review:{tenant_id}:{user_id or 0}:{notification['entity']['trade_date']}:{config.get('id') or ''}",
+            )
+            for config in candidates
+        ]
+        ok_count = sum(1 for item in deliveries if item.get("ok"))
+        return {
+            "enabled": True,
+            "status": "queued" if ok_count == len(deliveries) else "partial" if ok_count else "failed",
+            "channels": sorted(selected) if selected else ["external"],
+            "deliveries": deliveries,
+            "queued": ok_count,
+            "sent": 0,
+            "failed": len(deliveries) - ok_count,
+        }
+
+    def _matches_push_channel(self, config: dict, selected: set[str]) -> bool:
+        channel_id = str(config.get("id") or "").strip().lower()
+        channel_type = str(config.get("type") or "").strip().lower().replace("_", "-")
+        return (
+            "all" in selected
+            or "external" in selected
+            or channel_id in selected
+            or channel_type in selected
+            or f"external:{channel_id}" in selected
+            or f"{channel_type}:{channel_id}" in selected
+        )
+
+    def _money(self, value: Any) -> str:
+        try:
+            return f"{float(value or 0):,.2f}"
+        except (TypeError, ValueError):
+            return "0.00"
+
+    def _ratio_pct(self, value: Any) -> str:
+        try:
+            return f"{float(value or 0) * 100:.2f}%"
+        except (TypeError, ValueError):
+            return "0.00%"
+
+    def _return_pct(self, value: Any) -> str:
+        try:
+            return f"{float(value or 0):.2f}%"
+        except (TypeError, ValueError):
+            return "0.00%"
 
     def _report_payload(self, report: dict, tenant_id: int) -> dict:
         snapshot = self._decode_snapshot(report.get("data_snapshot"))

@@ -1552,6 +1552,13 @@ button {
   white-space: nowrap;
 }
 
+.daily-review-message {
+  margin-top: 14px;
+  max-height: 360px;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
 .backtest-form {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));

@@ -40,13 +40,7 @@ class SimpleTable(list):
 
 
 def fallback_stock_table():
-    rows = [
-        {'代码': '600000', '名称': '浦发银行'},
-        {'代码': '600519', '名称': '贵州茅台'},
-        {'代码': '000001', '名称': '平安银行'},
-        {'代码': '000002', '名称': '万科A'},
-        {'代码': '002594', '名称': '比亚迪'},
-    ]
+    rows = []
     if pd is not None:
         return pd.DataFrame(rows)
     return SimpleTable(rows)
@@ -292,56 +286,6 @@ class AkShareDataSource(StockDataSource):
             return trade_dates
 
 
-class MockDataSource(StockDataSource):
-    def __init__(self):
-        super().__init__()
-        self.name = "Mock"
-
-    def get_stock_list(self):
-        return fallback_stock_table()
-
-    def get_stock_hist(self, symbol: str, start_date: str, end_date: str, adjust: str = "qfq", interval: str = "1d"):
-        end = datetime.strptime(end_date, '%Y-%m-%d')
-        start = datetime.strptime(start_date, '%Y-%m-%d')
-        dates = pd.date_range(start=start, end=end)
-        data = []
-        base_price = 15.0
-        base_volume = 800000
-
-        for i, date in enumerate(dates):
-            price_increase = 0.003 * (1 + i / len(dates))
-            base_price *= (1 + price_increase)
-            base_price = min(29.9, base_price)
-            volume_increase = 0.005 * (1 + i / len(dates))
-            base_volume *= (1 + volume_increase)
-            base_volume = max(1000000, base_volume)
-            open_price = base_price * 0.995
-            high_price = base_price * 1.02
-            low_price = base_price * 0.98
-            close_price = base_price
-            data.append({
-                '日期': date.strftime('%Y-%m-%d'),
-                '开盘': open_price,
-                '收盘': close_price,
-                '最高': high_price,
-                '最低': low_price,
-                '成交量': base_volume
-            })
-
-        return pd.DataFrame(data)
-
-    def get_trading_dates(self, start_date: str, end_date: str) -> List[str]:
-        start = datetime.strptime(start_date, '%Y-%m-%d')
-        end = datetime.strptime(end_date, '%Y-%m-%d')
-        trade_dates = []
-        current = start
-        while current <= end:
-            if current.weekday() < 5:
-                trade_dates.append(current.strftime('%Y-%m-%d'))
-            current += timedelta(days=1)
-        return trade_dates
-
-
 class StockDataService:
     def __init__(self, cache_dir: str = "data/cache"):
         self.cache_dir = cache_dir
@@ -349,10 +293,15 @@ class StockDataService:
         self.data_sources = {
             "local": LocalMarketDataSource(),
             "akshare": AkShareDataSource(),
-            "mock": MockDataSource()
         }
         self.default_source = "local"
-        self.external_fallback_sources = ["akshare", "mock"]
+        self.external_fallback_sources = ["akshare"]
+
+    def _data_source_or_raise(self, source: str) -> StockDataSource:
+        data_source = self.data_sources.get(source)
+        if data_source is None:
+            raise ValueError(f"unsupported stock data source: {source}")
+        return data_source
 
     def get_stock_list(self, source: str = None):
         if source is None:
@@ -361,7 +310,7 @@ class StockDataService:
                 return local_list
             if os.getenv("MARKET_DATA_LOCAL_ONLY", "").strip() == "1":
                 return local_list
-            source = "mock" if os.getenv("PYTEST_CURRENT_TEST") else "akshare"
+            source = "akshare"
         source = source or self.default_source
         cache_key = f"stock_list_{source}"
         cache_file = os.path.join(self.cache_dir, f"{cache_key}.pkl")
@@ -375,7 +324,7 @@ class StockDataService:
                 except Exception:
                     pass
 
-        data_source = self.data_sources.get(source, self.data_sources[self.default_source])
+        data_source = self._data_source_or_raise(source)
         stock_list = data_source.get_stock_list()
 
         try:
@@ -423,8 +372,7 @@ class StockDataService:
                 return local_df
             if os.getenv("MARKET_DATA_LOCAL_ONLY", "").strip() == "1":
                 return local_df
-            fallback_sources = ["mock"] if os.getenv("PYTEST_CURRENT_TEST") else self.external_fallback_sources
-            for fallback_source in fallback_sources:
+            for fallback_source in self.external_fallback_sources:
                 df = self.get_stock_hist(symbol, start_date, end_date, adjust=adjust, source=fallback_source, interval=interval)
                 if self._is_cache_usable(df, fallback_source):
                     self._persist_hist_to_local(symbol, df, adjust=adjust, source=fallback_source, interval=interval)
@@ -446,7 +394,7 @@ class StockDataService:
                 except Exception:
                     pass
 
-        data_source = self.data_sources.get(source, self.data_sources[self.default_source])
+        data_source = self._data_source_or_raise(source)
         df = data_source.get_stock_hist(symbol, start_date, end_date, adjust, interval=interval)
         df = self._normalize_data(df)
 
@@ -466,7 +414,7 @@ class StockDataService:
                 return local_dates
             if os.getenv("MARKET_DATA_LOCAL_ONLY", "").strip() == "1":
                 return local_dates
-            source = "mock" if os.getenv("PYTEST_CURRENT_TEST") else "akshare"
+            source = "akshare"
         source = source or self.default_source
         cache_key = f"trading_dates_{start_date}_{end_date}_{source}"
         cache_file = os.path.join(self.cache_dir, f"{cache_key}.pkl")
@@ -480,7 +428,7 @@ class StockDataService:
                 except Exception:
                     pass
 
-        data_source = self.data_sources.get(source, self.data_sources[self.default_source])
+        data_source = self._data_source_or_raise(source)
         dates = data_source.get_trading_dates(start_date, end_date)
 
         try:

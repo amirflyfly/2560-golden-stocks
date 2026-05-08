@@ -181,7 +181,6 @@ def _actual_env_checks(root: Path) -> list[dict[str, Any]]:
         for item in env.get("MARKET_DATA_FALLBACKS", "").split(",")
         if item.strip()
     }
-    allow_mock_market_data = env.get("ALLOW_MOCK_MARKET_DATA", "0").strip() == "1"
     cache_backend = env.get("CACHE_BACKEND", "redis").strip().lower()
     task_queue_backend = env.get("TASK_QUEUE_BACKEND", "redis").strip().lower()
     task_execution_mode = env.get("TASK_EXECUTION_MODE", "worker").strip().lower()
@@ -193,8 +192,8 @@ def _actual_env_checks(root: Path) -> list[dict[str, Any]]:
         _check("env-file:app-env-production", env.get("APP_ENV", "").strip().lower() in {"prod", "production"}, ".env APP_ENV is production"),
         _check("env-file:init-sqlite-disabled", env.get("INIT_SQLITE_SCHEMA", "").strip().lower() not in {"1", "true", "yes"}, "INIT_SQLITE_SCHEMA is not enabled"),
         _check("env-file:database-url-not-sqlite", not database_url or not parsed.scheme.startswith("sqlite"), "DATABASE_URL is not sqlite"),
-        _check("env-file:market-data-provider-not-mock", allow_mock_market_data or market_data_provider != "mock", "MARKET_DATA_PROVIDER is not mock"),
-        _check("env-file:market-data-fallbacks-not-mock", allow_mock_market_data or "mock" not in market_data_fallbacks, "MARKET_DATA_FALLBACKS does not include mock"),
+        _check("env-file:market-data-provider-not-mock", market_data_provider != "mock", "MARKET_DATA_PROVIDER is not mock"),
+        _check("env-file:market-data-fallbacks-not-mock", "mock" not in market_data_fallbacks, "MARKET_DATA_FALLBACKS does not include mock"),
         _check("env-file:cache-backend-redis", cache_backend == "redis", "CACHE_BACKEND is redis"),
         _check("env-file:task-queue-backend-redis", task_queue_backend == "redis", "TASK_QUEUE_BACKEND is redis"),
         _check("env-file:task-execution-worker", task_execution_mode == "worker", "TASK_EXECUTION_MODE is worker"),
