@@ -1,0 +1,71 @@
+{
+  "schema_version": "production-evidence/v1",
+  "environment": "production",
+  "backup": {
+    "artifact": "mysql-dump-YYYYMMDDHHMM.sql.gz",
+    "created_at": "2026-05-04T00:00:00Z",
+    "sha256": "",
+    "size_bytes": 0,
+    "restore_verified": false,
+    "restore_target": "restore_check_prod_YYYYMMDD",
+    "restore_checked_at": ""
+  },
+  "migration": {
+    "alembic_revision": "0022_stock_daily_bar_timestamps",
+    "schema_validation_ok": false,
+    "reconciliation_ok": false,
+    "idempotent_rerun_ok": false,
+    "rollback_drill_ok": false
+  },
+  "release": {
+    "deploy_preflight_ok": false,
+    "repo_hygiene_ok": false,
+    "rollback_plan_reviewed": false,
+    "release_notes_reviewed": false
+  },
+  "security": {
+    "secrets_rotated": false,
+    "admin_password_rotated": false,
+    "public_ports_reviewed": false,
+    "csrf_headers_verified": false,
+    "live_broker_policy_disabled": false
+  },
+  "regression": {
+    "backend_tests_passed": false,
+    "frontend_build_passed": false,
+    "smoke_tests_passed": false,
+    "tested_at": "",
+    "commands": []
+  },
+  "soak": {
+    "started_at": "2026-05-04T00:00:00Z",
+    "ended_at": "2026-05-04T02:00:00Z",
+    "readiness_samples": [
+      {
+        "at": "2026-05-04T00:00:00Z",
+        "ready": true,
+        "database_dialect": "mysql",
+        "cache_backend": "redis",
+        "task_queue_backend": "redis",
+        "task_execution_mode": "worker",
+        "repository_backends": {
+          "PICKS_REPOSITORY_BACKEND": "mysql",
+          "AUTH_REPOSITORY_BACKEND": "mysql",
+          "AUDIT_REPOSITORY_BACKEND": "mysql",
+          "SETTINGS_REPOSITORY_BACKEND": "mysql",
+          "LOGS_REPOSITORY_BACKEND": "mysql",
+          "STRATEGY_POOL_REPOSITORY_BACKEND": "mysql",
+          "STRATEGY_REPOSITORY_BACKEND": "mysql",
+          "TRADING_REPOSITORY_BACKEND": "mysql"
+        },
+        "tasks_stale": 0
+      }
+    ],
+    "errors": []
+  },
+  "sqlite_retirement": {
+    "delete_sqlite_write_path": false,
+    "delete_legacy_repo_branches": false,
+    "delete_legacy_payload_json_queries": false
+  }
+}
