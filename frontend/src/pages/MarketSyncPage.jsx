@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api } from '../api/client';
 import { canAdmin } from '../auth/permissions';
 
@@ -61,14 +61,38 @@ function taskSymbolsText(task) {
   return symbols || '-';
 }
 
+function isTaskActive(task) {
+  return task?.status === 'running' || task?.status === 'pending';
+}
+
+function isSystemTask(task) {
+  const payload = task?.payload || {};
+  const source = String(payload.source || '').toLowerCase();
+  return Boolean(payload.scheduled_bucket) || source.includes('worker') || source.includes('scheduler');
+}
+
+function taskSourceLabel(task) {
+  return isSystemTask(task) ? '系统定时' : '人工发起';
+}
+
+function taskTriggerDetail(task) {
+  const payload = task?.payload || {};
+  if (isSystemTask(task)) {
+    return payload.scheduled_bucket ? `调度桶 ${payload.scheduled_bucket}` : payload.source || '系统调度';
+  }
+  return taskSymbolsText(task);
+}
+
 function eventLine(task, event) {
   const status = event?.status || task?.status || '-';
   const message = event?.message || '';
   const at = event?.at || task?.updated_at || task?.created_at || '';
-  return `[${at}] ${task?.id?.slice(0, 8) || '-'} ${task?.name || '-'} ${status}: ${message}`;
+  const detail = event?.detail?.error ? ` | ${event.detail.error}` : '';
+  return `[${at}] ${status} ${message}${detail}`;
 }
 
 export function MarketSyncPage({ authz }) {
+  const logRef = useRef(null);
   const [form, setForm] = useState({ symbols: '000001,600519', start_date: '', end_date: '', adjust: 'qfq', interval: '1d', security_type: 'stock', max_symbols: '', batch_size: '' });
   const [state, setState] = useState({
     loading: true,
@@ -91,15 +115,14 @@ export function MarketSyncPage({ authz }) {
   });
   const mayAdmin = canAdmin(authz);
   const disabledReason = authz?.loading ? '正在确认当前角色权限' : '当前操作需要 admin 角色。';
+  const systemTasks = state.tasks.filter(isSystemTask);
+  const manualTasks = state.tasks.filter((task) => !isSystemTask(task));
   const failedTasks = state.tasks.filter((task) => task.status === 'failed');
-  const runningTasks = state.tasks.filter((task) => task.status === 'running' || task.status === 'pending');
-  const latestTask = state.tasks[0] || null;
+  const runningTasks = state.tasks.filter(isTaskActive);
+  const systemRunningTasks = systemTasks.filter(isTaskActive);
+  const manualRunningTasks = manualTasks.filter(isTaskActive);
+  const latestTask = manualTasks[0] || systemTasks[0] || state.tasks[0] || null;
   const latestTaskProgress = taskProgress(latestTask);
-  const taskEventLines = state.tasks
-    .slice(0, 6)
-    .flatMap((task) => (task.events || []).slice(-8).map((event) => eventLine(task, event)))
-    .slice(-30)
-    .reverse();
   const coverageItems = state.coverage?.items || [];
   const coverageSummary = state.coverage?.summary || {};
   const securityTypeCounts = coverageSummary.security_type_counts || {};
@@ -126,6 +149,9 @@ export function MarketSyncPage({ authz }) {
   const actualProvider = marketHealth.actual_provider || marketHealth.provider || '-';
   const dataQuality = marketHealth.data_quality || (marketOk ? 'primary' : 'unknown');
   const marketWarnings = marketHealth.errors || [];
+  const latestTaskEvents = latestTask?.events || [];
+  const taskEventLines = latestTaskEvents.map((event) => eventLine(latestTask, event));
+  const latestErrorDetail = latestTask?.error || latestTask?.result?.errors?.[0]?.message || '';
 
   function load() {
     setState((prev) => ({ ...prev, loading: true, error: '' }));
@@ -184,6 +210,11 @@ export function MarketSyncPage({ authz }) {
     const timer = window.setInterval(() => load(), 3000);
     return () => window.clearInterval(timer);
   }, [runningTasks.length]);
+
+  useEffect(() => {
+    if (!logRef.current) return;
+    logRef.current.scrollTop = logRef.current.scrollHeight;
+  }, [taskEventLines.length, latestTask?.heartbeat_at, latestTask?.status]);
 
   function submit(event) {
     event.preventDefault();
@@ -248,6 +279,36 @@ export function MarketSyncPage({ authz }) {
     api.cancelTask(taskId).then(load).catch((error) => setState((prev) => ({ ...prev, error: error.message })));
   }
 
+  function renderTaskTable(tasks, emptyText, sourceLocked = false) {
+    return (
+      <div className="table task-table market-sync-task-list">
+        <div className="table-row table-head"><span>来源/触发</span><span>任务</span><span>状态</span><span>进度</span><span>时间</span><span>操作</span></div>
+        {tasks.map((task) => {
+          const progress = taskProgress(task);
+          const systemTask = isSystemTask(task);
+          return (
+            <div className="table-row" key={task.id}>
+              <span>
+                <span className={`task-source-pill ${systemTask ? 'system' : 'manual'}`}>{taskSourceLabel(task)}</span>
+                <small className="muted">{taskTriggerDetail(task)}</small>
+              </span>
+              <span>{task.id.slice(0, 8)} / {task.name}</span>
+              <span><span className={task.status === 'failed' ? 'status-badge danger' : task.status === 'completed' ? 'status-badge success' : task.status === 'cancelled' ? 'status-badge warning' : 'status-badge info'}>{task.status}</span></span>
+              <span>{progress.percent ?? '-'}%</span>
+              <span>{task.created_at}</span>
+              <span>
+                {isTaskActive(task) && !systemTask
+                  ? <button type="button" onClick={() => cancel(task.id)} disabled={!mayAdmin} title={disabledReason}>标记取消</button>
+                  : isTaskActive(task) && sourceLocked ? '由系统调度' : task.error_summary || '-'}
+              </span>
+            </div>
+          );
+        })}
+        {tasks.length ? null : <div className="empty">{emptyText}</div>}
+      </div>
+    );
+  }
+
   return (
     <main className="page" data-testid="market-sync-page">
       <div className="page-header">
@@ -297,8 +358,9 @@ export function MarketSyncPage({ authz }) {
       </section>
 
       <section className="grid section-gap">
-        <article className="card"><h2>同步任务</h2><p>{state.tasks.length}</p></article>
-        <article className="card"><h2>运行/等待</h2><p>{runningTasks.length}</p></article>
+        <article className="card"><h2>系统定时任务</h2><p>{systemTasks.length}</p></article>
+        <article className="card"><h2>人工发起任务</h2><p>{manualTasks.length}</p></article>
+        <article className="card"><h2>运行/等待</h2><p>{runningTasks.length}</p><small className="muted">系统 {systemRunningTasks.length} / 人工 {manualRunningTasks.length}</small></article>
         <article className={failedTasks.length ? 'card danger-card' : 'card'}><h2>失败任务</h2><p>{failedTasks.length}</p></article>
       </section>
 
@@ -480,54 +542,59 @@ export function MarketSyncPage({ authz }) {
 
       <section className="card section-gap" data-testid="market-sync-debug-log">
         <div className="section-title-row">
-          <h2>Sync Debug Log</h2>
+          <h2>同步实时日志</h2>
           <span className={`status-badge ${latestTask?.status === 'failed' ? 'danger' : latestTask?.status === 'completed' ? 'success' : latestTask ? 'info' : 'warning'}`}>
             {latestTask ? latestTask.status : 'no task'}
           </span>
         </div>
         <div className="grid">
           <article className="panel-card">
-            <h3>Latest Task</h3>
+            <h3>当前任务</h3>
             <p>{latestTask ? `${latestTask.id.slice(0, 8)} / ${latestTask.name}` : '-'}</p>
-            <small className="muted">symbols: {taskSymbolsText(latestTask)}</small>
+            <small className="muted">{latestTask ? `${taskSourceLabel(latestTask)}: ${taskTriggerDetail(latestTask)}` : '-'}</small>
           </article>
           <article className="panel-card">
-            <h3>Progress</h3>
+            <h3>进度</h3>
             <p>{latestTaskProgress.percent ?? '-'}%</p>
             <small className="muted">{latestTaskProgress.current ?? '-'} / {latestTaskProgress.total ?? '-'}</small>
           </article>
           <article className="panel-card">
-            <h3>Heartbeat</h3>
+            <h3>最近心跳</h3>
             <p>{latestTask?.heartbeat_at || '-'}</p>
             <small className="muted">duration: {latestTask?.duration_seconds ?? '-'}s</small>
           </article>
         </div>
-        <pre className="code-block task-debug-log" data-testid="market-sync-debug-log-lines">
-          {taskEventLines.length ? taskEventLines.join('\n') : 'No task events yet. Create a sync task to see live progress here.'}
+        {latestErrorDetail ? <div className="alert warning">失败原因：{latestErrorDetail}</div> : null}
+        <pre
+          ref={logRef}
+          className="code-block task-debug-log"
+          data-testid="market-sync-debug-log-lines"
+          aria-live="polite"
+        >
+          {taskEventLines.length ? taskEventLines.join('\n') : '暂无同步日志。创建同步任务后，这里会实时滚动显示每只股票的开始、成功或失败原因。'}
         </pre>
       </section>
 
-      <section className="card">
-        <h2>同步任务</h2>
-        <div className="table task-table" data-testid="market-sync-task-table">
-          <div className="table-row table-head"><span>任务</span><span>状态</span><span>进度</span><span>时间</span><span>操作</span></div>
-          {state.tasks.map((task) => {
-            const progress = taskProgress(task);
-            return (
-              <div className="table-row" key={task.id}>
-                <span>{task.id.slice(0, 8)} / {task.name}</span>
-                <span><span className={task.status === 'failed' ? 'status-badge danger' : task.status === 'completed' ? 'status-badge success' : task.status === 'cancelled' ? 'status-badge warning' : 'status-badge info'}>{task.status}</span></span>
-                <span>{progress.percent ?? '-'}%</span>
-                <span>{task.created_at}</span>
-                <span>
-                  {['pending', 'running'].includes(task.status)
-                    ? <button type="button" onClick={() => cancel(task.id)} disabled={!mayAdmin} title={disabledReason}>标记取消</button>
-                    : task.error_summary || '-'}
-                </span>
-              </div>
-            );
-          })}
-          {state.tasks.length ? null : <div className="empty">暂无同步任务</div>}
+      <section className="card section-gap" data-testid="market-sync-task-table">
+        <div className="section-title-row">
+          <h2>同步任务</h2>
+          <span className="status-badge info">系统 {systemTasks.length} / 人工 {manualTasks.length}</span>
+        </div>
+        <div className="task-split-grid">
+          <div className="task-group-panel" data-testid="market-sync-system-task-table">
+            <div className="section-title-row compact-title-row">
+              <h3>系统定时任务</h3>
+              <span className="status-badge info">{systemRunningTasks.length} 运行/等待</span>
+            </div>
+            {renderTaskTable(systemTasks, '暂无系统定时任务', true)}
+          </div>
+          <div className="task-group-panel" data-testid="market-sync-manual-task-table">
+            <div className="section-title-row compact-title-row">
+              <h3>人工发起任务</h3>
+              <span className="status-badge info">{manualRunningTasks.length} 运行/等待</span>
+            </div>
+            {renderTaskTable(manualTasks, '暂无人工发起任务')}
+          </div>
         </div>
       </section>
     </main>

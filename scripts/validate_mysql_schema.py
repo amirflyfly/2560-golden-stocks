@@ -50,6 +50,7 @@ EXPECTED_TABLES = {
     "scan_tasks",
     "scan_results",
     "picks",
+    "signal_review_links",
 }
 
 EXPECTED_INDEXES = {
@@ -76,6 +77,16 @@ EXPECTED_INDEXES = {
         "ix_scan_results_trade_date",
     },
     "picks": {"ix_picks_tenant_id", "ix_picks_symbol", "ix_picks_trade_date", "ix_picks_strategy_id"},
+    "signal_review_links": {
+        "ix_signal_review_links_tenant_id",
+        "ix_signal_review_links_trade_signal_id",
+        "ix_signal_review_links_pick_id",
+        "ix_signal_review_links_buy_order_id",
+        "ix_signal_review_links_sell_order_id",
+        "ix_signal_review_links_buy_fill_id",
+        "ix_signal_review_links_sell_fill_id",
+        "ix_signal_review_links_status",
+    },
     "stocks": {"ix_stocks_exchange", "ix_stocks_name", "ix_stocks_security_type", "ix_stocks_board_type"},
     "stock_daily_bars": {"ix_stock_daily_bars_symbol", "ix_stock_daily_bars_trade_date"},
     "stock_auction_snapshots": {
@@ -374,6 +385,24 @@ EXPECTED_COLUMNS = {
         "market_data_source",
         "fallback_used",
         "legacy_payload_json",
+    },
+    "signal_review_links": {
+        "id",
+        "tenant_id",
+        "source_signal_hash",
+        "trade_signal_id",
+        "pick_id",
+        "buy_order_id",
+        "sell_order_id",
+        "buy_fill_id",
+        "sell_fill_id",
+        "status",
+        "opened_at",
+        "closed_at",
+        "realized_return_pct",
+        "metadata_json",
+        "created_at",
+        "updated_at",
     }
 }
 
@@ -387,9 +416,10 @@ EXPECTED_UNIQUE_CONSTRAINTS = {
     "live_broker_fills": {"uk_live_broker_fills_key"},
     "live_broker_reconciliations": {"uk_live_broker_reconciliations_idempotency"},
     "external_push_deliveries": {"uk_external_push_deliveries_key"},
+    "signal_review_links": {"uk_signal_review_links_source_hash"},
 }
 
-EXPECTED_ALEMBIC_REVISION = "0022_stock_daily_bar_timestamps"
+EXPECTED_ALEMBIC_REVISION = "0023_signal_review_links"
 EXPECTED_TENANT_CODE = "default"
 EXPECTED_STRATEGY_CODES = {"2560", "first_limit_up", "LIMIT_UP_RETURN", "CONVERTIBLE_BOND_LOW_PREMIUM"}
 

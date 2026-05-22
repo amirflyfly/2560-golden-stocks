@@ -30,4 +30,6 @@ test('admin can trigger market sync and snapshot jobs from the data center page'
   expect((await snapshotResponse).status()).toBe(202);
 
   await expect(page.getByTestId('market-sync-task-table')).toBeVisible();
+  await expect(page.getByTestId('market-sync-system-task-table')).toBeVisible();
+  await expect(page.getByTestId('market-sync-manual-task-table')).toBeVisible();
 });

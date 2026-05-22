@@ -357,7 +357,7 @@ def test_mysql_schema_validator_requires_picks_v1_contract():
         EXPECTED_UNIQUE_CONSTRAINTS,
     )
 
-    assert EXPECTED_ALEMBIC_REVISION == "0022_stock_daily_bar_timestamps"
+    assert EXPECTED_ALEMBIC_REVISION == "0023_signal_review_links"
     assert {"points", "last_checkin"} <= EXPECTED_COLUMNS["users"]
     assert V1_PICK_TARGET_COLUMNS <= EXPECTED_COLUMNS["picks"]
     assert "tenant_id" in EXPECTED_COLUMNS["picks"]
@@ -376,8 +376,10 @@ def test_mysql_schema_validator_requires_picks_v1_contract():
     assert {"fill_key", "broker_order_id", "quantity", "price", "filled_at"} <= EXPECTED_COLUMNS["live_broker_fills"]
     assert {"idempotency_key", "differences_count", "request_json", "result_json"} <= EXPECTED_COLUMNS["live_broker_reconciliations"]
     assert {"delivery_key", "status", "task_id", "retry_count", "last_error", "notification_payload"} <= EXPECTED_COLUMNS["external_push_deliveries"]
+    assert {"source_signal_hash", "trade_signal_id", "pick_id", "buy_order_id", "buy_fill_id", "status"} <= EXPECTED_COLUMNS["signal_review_links"]
     assert "uk_picks_tenant_date_symbol_source" in EXPECTED_UNIQUE_CONSTRAINTS["picks"]
     assert "uk_strategy_pools_strategy_code" in EXPECTED_UNIQUE_CONSTRAINTS["strategy_pools"]
+    assert "uk_signal_review_links_source_hash" in EXPECTED_UNIQUE_CONSTRAINTS["signal_review_links"]
     assert "uk_research_reports_pick_analysis" in EXPECTED_UNIQUE_CONSTRAINTS["research_reports"]
     assert "uk_limit_rule_calendar_profile_start" in EXPECTED_UNIQUE_CONSTRAINTS["limit_rule_calendar"]
     assert "uk_auction_symbol_date_time_source" in EXPECTED_UNIQUE_CONSTRAINTS["stock_auction_snapshots"]

@@ -11,13 +11,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 DEFAULT_EVIDENCE_PATH = PROJECT_ROOT / "docs" / "product" / "PRODUCTION_EVIDENCE.example.json"
-EXPECTED_ALEMBIC_REVISION = "0022_stock_daily_bar_timestamps"
+EXPECTED_ALEMBIC_REVISION = "0023_signal_review_links"
 MIN_SOAK_MINUTES = 120
 REPOSITORY_BACKEND_KEYS = (
     "PICKS_REPOSITORY_BACKEND",
@@ -108,6 +111,8 @@ def evidence_template() -> dict[str, Any]:
                     "task_execution_mode": "worker",
                     "repository_backends": {key: "mysql" for key in REPOSITORY_BACKEND_KEYS},
                     "tasks_stale": 0,
+                    "signal_review_complete_rate": 1,
+                    "signal_review_incomplete": 0,
                 }
             ],
             "errors": [],
@@ -118,6 +123,51 @@ def evidence_template() -> dict[str, Any]:
             "delete_legacy_payload_json_queries": False,
         },
     }
+
+
+def readiness_sample(readiness: dict[str, Any], *, sampled_at: str | None = None) -> dict[str, Any]:
+    database = readiness.get("database") or {}
+    cache = readiness.get("cache") or {}
+    task_queue = readiness.get("task_queue") or {}
+    tasks = readiness.get("tasks") or {}
+    signal_review = readiness.get("signal_review") or {}
+    return {
+        "at": sampled_at or datetime.now().isoformat(timespec="seconds"),
+        "ready": bool(readiness.get("ready")),
+        "database_dialect": database.get("dialect") or database.get("backend") or "",
+        "cache_backend": cache.get("backend") or "",
+        "task_queue_backend": task_queue.get("backend") or "",
+        "task_execution_mode": task_queue.get("execution_mode") or "",
+        "repository_backends": readiness.get("repository_backends") or database.get("repository_backends") or {},
+        "tasks_stale": int(tasks.get("stale") or 0),
+        "signal_review_complete_rate": signal_review.get("complete_rate", 0),
+        "signal_review_incomplete": int(signal_review.get("incomplete") or 0),
+    }
+
+
+def collect_readiness_sample() -> dict[str, Any]:
+    from backend.application.monitoring_service import MonitoringService
+
+    return readiness_sample(MonitoringService().readiness())
+
+
+def runtime_evidence_bundle(readiness: dict[str, Any] | None = None, *, collected_at: str | None = None) -> dict[str, Any]:
+    """Build a production evidence draft with live readiness evidence prefilled."""
+
+    collected_at = collected_at or datetime.now().isoformat(timespec="seconds")
+    sample = readiness_sample(readiness or {}, sampled_at=collected_at) if readiness is not None else collect_readiness_sample()
+    evidence = evidence_template()
+    evidence["release"]["runtime_readiness_exported"] = True
+    evidence["regression"]["tested_at"] = collected_at
+    evidence["soak"].update(
+        {
+            "started_at": sample["at"],
+            "ended_at": sample["at"],
+            "readiness_samples": [sample],
+            "errors": [] if sample.get("ready") else ["runtime readiness sample is not ready"],
+        }
+    )
+    return evidence
 
 
 def _backup_checks(evidence: dict[str, Any]) -> list[dict[str, Any]]:
@@ -194,6 +244,8 @@ def _sample_ok(sample: dict[str, Any]) -> bool:
         and sample.get("task_execution_mode") == "worker"
         and all(backends.get(key) == "mysql" for key in REPOSITORY_BACKEND_KEYS)
         and int(sample.get("tasks_stale") or 0) == 0
+        and float(sample.get("signal_review_complete_rate") if sample.get("signal_review_complete_rate") is not None else 0) >= 1
+        and int(sample.get("signal_review_incomplete") or 0) == 0
     )
 
 
@@ -266,12 +318,29 @@ def main() -> int:
     parser.add_argument("--evidence", type=Path, default=DEFAULT_EVIDENCE_PATH, help="Path to production evidence JSON.")
     parser.add_argument("--min-soak-minutes", type=int, default=MIN_SOAK_MINUTES)
     parser.add_argument("--write-template", type=Path, help="Write an evidence JSON template and exit.")
+    parser.add_argument("--write-readiness-sample", type=Path, help="Write a current readiness sample JSON and exit.")
+    parser.add_argument("--write-runtime-bundle", type=Path, help="Write an evidence draft with the current readiness sample embedded and exit.")
     args = parser.parse_args()
 
     if args.write_template:
         args.write_template.parent.mkdir(parents=True, exist_ok=True)
         args.write_template.write_text(json.dumps(evidence_template(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         print(json.dumps({"ok": True, "written": str(args.write_template)}, ensure_ascii=False))
+        return 0
+
+    if args.write_readiness_sample:
+        sample = collect_readiness_sample()
+        args.write_readiness_sample.parent.mkdir(parents=True, exist_ok=True)
+        args.write_readiness_sample.write_text(json.dumps(sample, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        print(json.dumps({"ok": True, "written": str(args.write_readiness_sample), "ready": sample.get("ready")}, ensure_ascii=False))
+        return 0
+
+    if args.write_runtime_bundle:
+        evidence = runtime_evidence_bundle()
+        args.write_runtime_bundle.parent.mkdir(parents=True, exist_ok=True)
+        args.write_runtime_bundle.write_text(json.dumps(evidence, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        sample = (evidence.get("soak") or {}).get("readiness_samples", [{}])[0]
+        print(json.dumps({"ok": True, "written": str(args.write_runtime_bundle), "ready": sample.get("ready")}, ensure_ascii=False))
         return 0
 
     result = validate_evidence(load_evidence(args.evidence), min_soak_minutes=args.min_soak_minutes)

@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import io
+import json
+import zipfile
+
 import pytest
 
 
@@ -28,6 +32,26 @@ def test_legacy_sqlite_backup_service_is_disabled_in_production(monkeypatch):
     assert backup_service.list_backups() == []
     assert backup_service.cached_validate_backup("anything.zip") == (False, "DISABLED")
     assert backup_service.backup_stats()["disabled"] is True
+
+
+def test_backup_validation_rejects_unsafe_zip_member_paths():
+    from backend.services import backup_service
+
+    db_bytes = b"not-a-real-db-for-validation"
+    meta = {
+        "files": ["data/picks.db"],
+        "picks_db": {"size": len(db_bytes), "sha256": backup_service._sha256_bytes(db_bytes)},
+    }
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as archive:
+        archive.writestr("data/picks.db", db_bytes)
+        archive.writestr("meta.json", json.dumps(meta))
+        archive.writestr("../evil.txt", "outside")
+
+    ok, message = backup_service.validate_backup_zip_bytes(buf.getvalue())
+
+    assert ok is False
+    assert "不安全路径" in message
 
 
 def test_legacy_backup_pages_render_disabled_state_in_production(monkeypatch):

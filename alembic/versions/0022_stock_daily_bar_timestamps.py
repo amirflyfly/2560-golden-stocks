@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy import inspect
 
 
 revision = "0022_stock_daily_bar_timestamps"
@@ -18,14 +19,17 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "stock_daily_bars",
-        sa.Column("created_at", sa.DateTime(), nullable=False, server_default=sa.func.now()),
-    )
-    op.add_column(
-        "stock_daily_bars",
-        sa.Column("updated_at", sa.DateTime(), nullable=False, server_default=sa.func.now()),
-    )
+    existing_columns = {column["name"] for column in inspect(op.get_bind()).get_columns("stock_daily_bars")}
+    if "created_at" not in existing_columns:
+        op.add_column(
+            "stock_daily_bars",
+            sa.Column("created_at", sa.DateTime(), nullable=False, server_default=sa.func.now()),
+        )
+    if "updated_at" not in existing_columns:
+        op.add_column(
+            "stock_daily_bars",
+            sa.Column("updated_at", sa.DateTime(), nullable=False, server_default=sa.func.now()),
+        )
 
 
 def downgrade() -> None:

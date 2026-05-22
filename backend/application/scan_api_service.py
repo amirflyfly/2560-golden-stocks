@@ -6,11 +6,13 @@ from datetime import date
 from contextlib import contextmanager
 from typing import Any
 
+from backend.application.data_quality_gate_service import DataQualityGateService
 from backend.application.pagination import PaginationParams
 from backend.infrastructure.market_data.factory import create_fallback_market_data_provider
 from backend.infrastructure.market_data.provider import MarketDataProvider
 from backend.infrastructure.market_data.utils import infer_security_type, normalize_bar_interval
-from backend.infrastructure.tasks.queue import enqueue_task, get_task, list_tasks
+from backend.infrastructure.tasks.queue import current_task_id, enqueue_task, get_task, list_tasks
+from backend.repositories import scan_repo
 from backend.strategies import registry
 
 
@@ -19,6 +21,7 @@ class ScanApiService:
 
     def __init__(self, market_data_provider: MarketDataProvider | None = None):
         self.market_data_provider = market_data_provider or create_fallback_market_data_provider()
+        self.quality_gate = DataQualityGateService()
 
     def _canonical_strategy_code(self, strategy_code: str | None) -> str:
         aliases = {
@@ -51,15 +54,22 @@ class ScanApiService:
 
     def _market_data_usage(self, provider_name: str) -> dict:
         if hasattr(self.market_data_provider, "usage_metadata"):
-            return self.market_data_provider.usage_metadata()
-        return {
+            usage = self.market_data_provider.usage_metadata()
+            self.quality_gate.reject_mock(usage, context="scan market data")
+            return usage
+        usage = {
             "primary_provider": provider_name,
             "actual_provider": provider_name,
             "provider_chain": [provider_name],
             "fallback_used": False,
-            "data_quality": "mock" if provider_name == "mock" else "primary",
+            "data_quality": "primary",
             "errors": [],
         }
+        self.quality_gate.reject_mock(usage, context="scan market data")
+        return usage
+
+    def _quality_gate(self, action: str, payload: dict | None = None) -> dict:
+        return self.quality_gate.decision(action, payload or {}, enforce=False, allow_degraded=True)
 
     def _normalize_security_type(self, value: Any = None) -> str:
         text = str(value or "").strip().lower()
@@ -178,7 +188,11 @@ class ScanApiService:
         volume_phase = self._first_present(item.get("volume_phase"), phase_section.get("volume_phase"))
         signal_strength = self._first_present(item.get("signal_strength"), data_section.get("signal_strength"))
         price_to_ma25 = self._first_present(item.get("price_to_ma25"), indicators_section.get("price_to_ma25"))
+        operation_score = self._first_present(item.get("operation_score"), data_section.get("operation_score"))
+        sentiment_cycle = self._first_present(item.get("sentiment_cycle"), phase_section.get("sentiment_cycle"), data_section.get("sentiment_cycle"))
+        operation_action = self._first_present(item.get("operation_action"), data_section.get("operation_action"))
         risk_level = self._risk_level(risk_score, bool(usage.get("fallback_used")), usage.get("data_quality"))
+        quality_gate = self._quality_gate("scan_result", {**usage, **item})
 
         primary_reason = item.get("recommend_reason") or item.get("prediction_reason") or note
         if primary_reason:
@@ -224,6 +238,9 @@ class ScanApiService:
             "signal_subtype": signal_subtype,
             "signal_strength": signal_strength,
             "price_to_ma25": price_to_ma25,
+            "operation_score": operation_score,
+            "sentiment_cycle": sentiment_cycle,
+            "operation_action": operation_action,
             "price_change_5d": item.get("price_change_5d"),
             "price_change_20d": item.get("price_change_20d"),
             "turnover": item.get("turnover"),
@@ -274,6 +291,13 @@ class ScanApiService:
                     "data_quality": usage.get("data_quality"),
                     "fallback_used": usage.get("fallback_used"),
                 },
+                "quality_gate": quality_gate,
+                "operation": {
+                    "operation_score": operation_score,
+                    "sentiment_cycle": sentiment_cycle,
+                    "operation_action": operation_action,
+                    "data_basis": "strategy payload passthrough when provided; no per-result K-line recomputation",
+                },
             },
             "risk_level": risk_level,
             "risk_tags": risk_tags,
@@ -287,6 +311,7 @@ class ScanApiService:
             "market_data_source": usage["actual_provider"],
             "data_quality": usage["data_quality"],
             "fallback_used": usage["fallback_used"],
+            "quality_gate": quality_gate,
         }
 
     def _build_task_explanation(self, *, strategy_code: str, usage: dict, stock_sample: list | None, status: str, strategy_runner: str = "market_sample", params: dict | None = None) -> dict:
@@ -297,6 +322,7 @@ class ScanApiService:
         risk_tags = ["等待执行"] if queued else []
         if usage.get("data_quality") == "mock":
             risk_tags.append("mock 数据")
+        quality_gate = self._quality_gate("scan_task", usage)
         return {
             "schema_version": "scan-task-explanation/v2",
             "score": score,
@@ -326,6 +352,7 @@ class ScanApiService:
                     "data_quality": usage.get("data_quality"),
                     "fallback_used": usage.get("fallback_used"),
                 },
+                "quality_gate": quality_gate,
             },
             "risk_level": "high" if usage.get("data_quality") == "mock" else ("medium" if usage.get("fallback_used") else "low"),
             "risk_tags": risk_tags,
@@ -334,6 +361,7 @@ class ScanApiService:
             "market_data_source": usage["actual_provider"],
             "data_quality": usage["data_quality"],
             "fallback_used": usage["fallback_used"],
+            "quality_gate": quality_gate,
         }
 
     def _annotate_market_data_item(self, item: dict, usage: dict, strategy_code: str = "all", params: dict | None = None) -> dict:
@@ -349,8 +377,12 @@ class ScanApiService:
                 "market_data_source": usage["actual_provider"],
                 "data_quality": usage["data_quality"],
                 "fallback_used": usage["fallback_used"],
+                "strategy_runner": "market_sample",
+                "executable_signal": False,
+                "execution_block_reason": "market_sample_not_executable",
             }
         )
+        item["quality_gate"] = self._quality_gate("scan_result", {**usage, **item})
         item["explanation"] = self._build_explanation(item, usage, strategy_code)
         return item
 
@@ -362,6 +394,10 @@ class ScanApiService:
         phase_section = self._dict_value(item.get("phase"))
         risk_section = self._dict_value(item.get("risk"))
         data_section = self._dict_value(item.get("data"))
+        signal_type = self._first_present(item.get("signal_type"), data_section.get("signal_type"), "BUY")
+        executable_signal = self._first_present(item.get("executable_signal"), data_section.get("executable_signal"))
+        if executable_signal is None:
+            executable_signal = str(signal_type or "").strip().upper() == "BUY"
         normalized = {
             "symbol": item.get("symbol") or item.get("code") or item.get("stock_code") or "",
             "code": item.get("code") or item.get("symbol") or item.get("stock_code") or "",
@@ -371,6 +407,7 @@ class ScanApiService:
             "last_price": item.get("last_price") or item.get("price") or item.get("pick_price"),
             "pick_price": item.get("pick_price") or item.get("last_price") or item.get("price"),
             "signal": item.get("signal") or item.get("reason_tag") or "",
+            "signal_type": signal_type,
             "reason_tag": item.get("reason_tag") or item.get("signal") or "",
             "signal_subtype": self._first_present(item.get("signal_subtype"), phase_section.get("signal_subtype"), data_section.get("signal_subtype")),
             "note": item.get("note") or "",
@@ -387,6 +424,9 @@ class ScanApiService:
             "volume_phase": self._first_present(item.get("volume_phase"), phase_section.get("volume_phase")),
             "signal_strength": self._first_present(item.get("signal_strength"), data_section.get("signal_strength")),
             "price_to_ma25": self._first_present(item.get("price_to_ma25"), indicators_section.get("price_to_ma25")),
+            "operation_score": self._first_present(item.get("operation_score"), data_section.get("operation_score")),
+            "sentiment_cycle": self._first_present(item.get("sentiment_cycle"), phase_section.get("sentiment_cycle"), data_section.get("sentiment_cycle")),
+            "operation_action": self._first_present(item.get("operation_action"), data_section.get("operation_action")),
             "price_change_5d": item.get("price_change_5d"),
             "price_change_20d": item.get("price_change_20d"),
             "turnover": item.get("turnover"),
@@ -401,6 +441,7 @@ class ScanApiService:
             "risk": item.get("risk"),
             "data": item.get("data"),
             "strategy_runner": "registry",
+            "executable_signal": executable_signal,
             "security_type": security_type,
             "bar_interval": bar_interval,
             "interval": bar_interval,
@@ -411,9 +452,10 @@ class ScanApiService:
                 "market_data_source": usage["actual_provider"],
                 "data_quality": usage["data_quality"],
                 "fallback_used": usage["fallback_used"],
-                "explanation": self._build_explanation(normalized, usage, strategy_code),
+                "quality_gate": self._quality_gate("scan_result", {**usage, **normalized}),
             }
         )
+        normalized["explanation"] = self._build_explanation(normalized, usage, strategy_code)
         return normalized
 
     def _run_registered_strategy(self, strategy_code: str, params: dict, usage: dict) -> list[dict]:
@@ -491,7 +533,7 @@ class ScanApiService:
             strategy_runner = "market_sample" if allow_market_sample_fallback else "registry"
             errors.append(f"strategy {strategy_code}: {exc}")
             annotated_sample = self._market_sample_results(usage, strategy_code, params.get("sample_size", 5), params) if provider_health.ok and allow_market_sample_fallback else []
-        return {
+        result = {
             "tenant_id": tenant_id,
             "strategy_code": self._public_strategy_code(strategy_code),
             "params": params,
@@ -509,6 +551,7 @@ class ScanApiService:
                 "security_type": params.get("security_type") or "",
                 "bar_interval": params.get("bar_interval") or params.get("interval") or "1d",
                 "adjust": params.get("adjust") or "",
+                "quality_gate": self._quality_gate("scan_task", {**usage, "errors": errors}),
             },
             "matched_count": len(annotated_sample),
             "explanation": self._build_task_explanation(
@@ -520,6 +563,17 @@ class ScanApiService:
                 params=params,
             ),
         }
+        task_id = current_task_id()
+        if task_id:
+            scan_repo.persist_scan_result(
+                tenant_id,
+                task_no=task_id,
+                strategy_code=self._public_strategy_code(strategy_code),
+                params=params,
+                status="completed",
+                result=result,
+            )
+        return result
 
     def create_scan(self, tenant_id: int, strategy_code: str | None = None, params: dict | None = None) -> dict:
         params = self._normalize_scan_params(params)
@@ -564,17 +618,38 @@ class ScanApiService:
                 "security_type": params.get("security_type") or "",
                 "bar_interval": params.get("bar_interval") or params.get("interval") or "1d",
                 "adjust": params.get("adjust") or "",
+                "quality_gate": self._quality_gate("scan_task", usage),
             },
             "explanation": task_explanation,
             "created_at": task["created_at"],
         }
 
     def list_scans(self, tenant_id: int, pagination: PaginationParams) -> dict:
-        scan_tasks = [
+        queue_tasks = [
             item
             for item in list_tasks(limit=200, name="scan.run")
             if item.get("tenant_id") == tenant_id
         ]
+        persistent_tasks = scan_repo.list_persistent_scans(tenant_id, limit=200)
+        seen = {item.get("id") for item in queue_tasks}
+        scan_tasks = [*queue_tasks]
+        for item in persistent_tasks:
+            task_no = item.get("task_no")
+            if task_no in seen:
+                continue
+            scan_tasks.append(
+                {
+                    "id": task_no,
+                    "task_id": task_no,
+                    "tenant_id": tenant_id,
+                    "status": item.get("status"),
+                    "payload": {"params": item.get("params") or {}},
+                    "created_at": item.get("created_at"),
+                    "started_at": item.get("started_at"),
+                    "finished_at": item.get("finished_at"),
+                    "persistent": True,
+                }
+            )
         start = pagination.offset
         end = start + pagination.page_size
         return {
@@ -587,11 +662,13 @@ class ScanApiService:
 
     def get_scan_results(self, tenant_id: int, scan_id: str, pagination: PaginationParams) -> dict | None:
         task = get_task(scan_id) or {}
-        if not task or task.get("tenant_id") != tenant_id:
+        persisted = scan_repo.get_scan_bundle(tenant_id, scan_id)
+        if (not task or task.get("tenant_id") != tenant_id) and not persisted:
             return None
         result = task.get("result") or {}
         market_data = result.get("market_data") or task.get("payload", {}).get("market_data", {})
-        items = market_data.get("sample_symbols", [])
+        persisted_items = [(item.get("signals") or {}) for item in (persisted or {}).get("items", [])]
+        items = market_data.get("sample_symbols", []) or persisted_items
         usage = {
             "primary_provider": market_data.get("primary_provider") or market_data.get("provider") or "unknown",
             "actual_provider": market_data.get("actual_provider") or market_data.get("provider") or "unknown",
@@ -601,14 +678,15 @@ class ScanApiService:
             "errors": market_data.get("errors") or [],
         }
         strategy_code = result.get("strategy_code") or task.get("payload", {}).get("strategy_code_internal") or task.get("payload", {}).get("strategy_code") or "all"
-        params = self._normalize_scan_params(result.get("params") or task.get("payload", {}).get("params") or {})
+        params = self._normalize_scan_params(result.get("params") or task.get("payload", {}).get("params") or (persisted or {}).get("task", {}).get("params") or {})
         annotated_items = [item if item.get("explanation") else self._annotate_market_data_item(dict(item), usage, strategy_code, params) for item in items]
+        persisted_runner = next((str(item.get("strategy_runner") or "") for item in annotated_items if item.get("strategy_runner")), "")
         explanation = result.get("explanation") or task.get("payload", {}).get("explanation") or self._build_task_explanation(
             strategy_code=strategy_code,
             usage=usage,
             stock_sample=annotated_items,
             status="queued" if task.get("status") in {"pending", "running"} else "completed",
-            strategy_runner=result.get("strategy_runner") or "market_sample",
+            strategy_runner=result.get("strategy_runner") or persisted_runner or "market_sample",
             params=params,
         )
         return {
@@ -618,9 +696,10 @@ class ScanApiService:
             "page_size": pagination.page_size,
             "tenant_id": tenant_id,
             "scan_id": scan_id,
-            "status": task.get("status", "missing"),
-            "strategy_runner": result.get("strategy_runner") or explanation.get("indicators", {}).get("strategy_runner") or "market_sample",
+            "status": task.get("status") or (persisted or {}).get("task", {}).get("status") or "missing",
+            "strategy_runner": result.get("strategy_runner") or persisted_runner or explanation.get("indicators", {}).get("strategy_runner") or "market_sample",
             "market_data": {key: value for key, value in market_data.items() if key != "sample_symbols"},
             "explanation": explanation,
-            "task": task,
+            "task": task or {"id": scan_id, "task_id": scan_id, "persistent": bool(persisted), **((persisted or {}).get("task") or {})},
+            "persistent": bool(persisted),
         }

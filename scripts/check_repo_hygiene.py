@@ -14,6 +14,7 @@ from typing import Iterable
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+LEGACY_PROJECT_PREFIXES = {"2560_strategy"}
 
 FORBIDDEN_PARTS = {
     "__pycache__",
@@ -100,9 +101,12 @@ def _normalize(path: str, root: Path) -> str:
 
     value = path.replace("\\", "/")
     root_name = root.name.rstrip("/")
-    prefix = f"{root_name}/"
-    if value.startswith(prefix):
-        value = value[len(prefix) :]
+    prefixes = {root_name, *LEGACY_PROJECT_PREFIXES}
+    for prefix_name in prefixes:
+        prefix = f"{prefix_name}/"
+        if value.startswith(prefix):
+            value = value[len(prefix) :]
+            break
     return _strip_current_dir_prefix(value)
 
 

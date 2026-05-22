@@ -48,6 +48,11 @@ function healthLabel(ok) {
   return '未知';
 }
 
+function percentLabel(value) {
+  const numeric = Number(value ?? 0);
+  return `${(numeric * 100).toFixed(1)}%`;
+}
+
 function cacheBackendLabel(value) {
   const labels = {
     memory: '内存',
@@ -105,8 +110,169 @@ function launchGateItems(launchCheck) {
   return Object.entries(launchCheck?.gates || {}).map(([name, gate]) => ({ name, ...gate }));
 }
 
+function isSystemStrategyTask(task) {
+  const payload = task?.payload || {};
+  const params = payload.params || {};
+  const source = String(params.source || payload.source || '').toLowerCase();
+  return Boolean(params.scheduled_bucket || payload.scheduled_bucket) || source.includes('worker') || source.includes('scheduler');
+}
+
+function strategyCode(task) {
+  return task?.payload?.strategy_code || task?.result?.strategy?.code || '-';
+}
+
+function productionStatusLabel(value) {
+  const labels = {
+    completed: '已完成',
+    metadata_only: '仅元数据',
+    blocked_no_snapshot: '缺实时快照',
+    blocked_no_history: '缺K线历史',
+    blocked_mock_fallback_source: '数据源阻断',
+    blocked_low_coverage: '覆盖不足',
+    blocked_no_qfq_history: '缺前复权',
+    blocked_no_raw_history: '缺不复权',
+    blocked_no_limit_rules: '缺涨跌停规则',
+    blocked_oos_backtest_required: '需样本外验证',
+  };
+  return labels[String(value || '').toLowerCase()] || value || '-';
+}
+
+function taskResult(task) {
+  return task?.result && typeof task.result === 'object' ? task.result : {};
+}
+
+function paperResult(task) {
+  const result = taskResult(task);
+  return result.paper_trading && typeof result.paper_trading === 'object' ? result.paper_trading : {};
+}
+
+function itemCount(value) {
+  return Array.isArray(value) ? value.length : 0;
+}
+
+function coverageText(task) {
+  const result = taskResult(task);
+  const coverage = result.local_coverage || result.production_contract?.local_coverage || {};
+  const synced = coverage.synced_symbols;
+  const target = coverage.target_security_count || coverage.security_count;
+  const ratio = coverage.coverage_ratio ?? coverage.local_coverage_ratio;
+  if (synced == null && target == null) return '-';
+  const base = target ? `${synced ?? 0}/${target}` : String(synced ?? '-');
+  return ratio == null ? base : `${base} (${percentLabel(ratio)})`;
+}
+
+function dataFreshnessText(task) {
+  const result = taskResult(task);
+  const coverage = result.local_coverage || result.production_contract?.local_coverage || {};
+  const snapshot = result.local_snapshot_summary || result.production_contract?.local_snapshot_summary || {};
+  const latestBar = coverage.last_trade_date || '-';
+  const latestSnapshot = snapshot.latest_trade_time || '-';
+  return `K线 ${latestBar} / 快照 ${latestSnapshot}`;
+}
+
+function freshnessRoot(task) {
+  const result = taskResult(task);
+  return result.freshness || result.data_freshness || result.production_contract?.freshness || result.production_contract?.data_freshness || null;
+}
+
+function freshnessEntry(root, keys) {
+  if (!root || typeof root !== 'object') return null;
+  for (const key of keys) {
+    if (root[key] && typeof root[key] === 'object') return root[key];
+  }
+  return null;
+}
+
+function normalizedFreshnessStatus(entry) {
+  if (!entry) return '';
+  if (entry.is_fresh === true || entry.fresh === true || entry.timely === true) return 'realtime';
+  if (entry.is_fresh === false || entry.fresh === false || entry.timely === false || entry.is_stale === true || entry.stale === true) return 'delayed';
+  const raw = String(entry.status || entry.state || entry.label || entry.freshness_status || '').toLowerCase();
+  if (['fresh', 'realtime', 'real_time', 'timely', 'current', 'ok', 'ready'].includes(raw)) return 'realtime';
+  if (['stale', 'delayed', 'delay', 'old', 'expired', 'outdated', 'late'].includes(raw)) return 'delayed';
+  if (['missing', 'none', 'empty', 'unavailable', 'no_data'].includes(raw)) return 'none';
+  return '';
+}
+
+function flatFreshnessEntry(root, type) {
+  if (!root || typeof root !== 'object') return null;
+  if (type === 'snapshot' && (root.latest_snapshot_time || root.snapshot_age_seconds != null)) {
+    const age = root.snapshot_age_seconds;
+    const maxAge = root.snapshot_max_age_seconds;
+    const status = !root.latest_snapshot_time
+      ? 'missing'
+      : (age != null && maxAge != null ? (Number(age) <= Number(maxAge) ? 'fresh' : 'stale') : 'ready');
+    return {
+      status,
+      latest_snapshot_time: root.latest_snapshot_time,
+      age_seconds: age,
+      max_age_seconds: maxAge,
+    };
+  }
+  if (type === 'kline' && (root.latest_trade_date || root.daily_bar_lag_days != null)) {
+    const lag = root.daily_bar_lag_days;
+    const maxLag = root.daily_bar_max_lag_days;
+    const status = !root.latest_trade_date
+      ? 'missing'
+      : (lag != null && maxLag != null ? (Number(lag) <= Number(maxLag) ? 'fresh' : 'stale') : 'ready');
+    return {
+      status,
+      latest_trade_date: root.latest_trade_date,
+      lag_days: lag,
+      max_lag_days: maxLag,
+    };
+  }
+  return null;
+}
+
+function freshnessTime(entry) {
+  if (!entry) return '-';
+  return entry.latest_trade_time || entry.latest_snapshot_time || entry.last_trade_time || entry.trade_time || entry.latest_bar_time || entry.last_trade_date || entry.trade_date || entry.updated_at || entry.as_of || '-';
+}
+
+function freshnessDisplay(task, type) {
+  const root = freshnessRoot(task);
+  const nestedEntry = type === 'snapshot'
+    ? freshnessEntry(root, ['snapshot', 'snapshots', 'quote_snapshot', 'market_snapshot'])
+    : freshnessEntry(root, ['kline', 'bar', 'bars', 'history', 'coverage']);
+  const entry = nestedEntry || flatFreshnessEntry(root, type);
+  if (!entry) return null;
+  const status = normalizedFreshnessStatus(entry);
+  if (status === 'realtime') return { label: type === 'snapshot' ? '实时' : '及时', tone: 'success', time: freshnessTime(entry) };
+  if (status === 'delayed') return { label: '延迟', tone: 'warning', time: freshnessTime(entry) };
+  if (status === 'none') return { label: '暂无', tone: 'warning', time: freshnessTime(entry) };
+  return { label: '已更新', tone: 'info', time: freshnessTime(entry) };
+}
+
+function dataFreshnessNode(task) {
+  const snapshot = freshnessDisplay(task, 'snapshot');
+  const kline = freshnessDisplay(task, 'kline');
+  if (!snapshot && !kline) return <span className="small-text">{dataFreshnessText(task)}<br />覆盖 {coverageText(task)}</span>;
+  return (
+    <span className="freshness-stack">
+      {snapshot ? <span>快照 <StatusBadge tone={snapshot.tone}>{snapshot.label}</StatusBadge><small>{snapshot.time}</small></span> : null}
+      {kline ? <span>K线 <StatusBadge tone={kline.tone}>{kline.label}</StatusBadge><small>{kline.time}</small></span> : null}
+      <small>覆盖 {coverageText(task)}</small>
+    </span>
+  );
+}
+
+function executionNote(task) {
+  const result = taskResult(task);
+  const paper = paperResult(task);
+  const warnings = result.warnings || [];
+  const blocked = paper.blocked || [];
+  const skipped = paper.skipped || [];
+  const firstBlocked = blocked[0];
+  const firstSkipped = skipped[0];
+  if (firstBlocked) return `阻断 ${firstBlocked.symbol || '-'}: ${firstBlocked.reason || '-'}`;
+  if (firstSkipped) return `跳过 ${firstSkipped.symbol || '-'}: ${firstSkipped.reason || '-'}`;
+  if (warnings.length) return warnings[0];
+  return '-';
+}
+
 export function MonitoringPage() {
-  const [state, setState] = useState({ loading: true, error: '', overview: null, metrics: null, logs: null, tasks: null, launchCheck: null, launchCheckError: '' });
+  const [state, setState] = useState({ loading: true, error: '', overview: null, metrics: null, logs: null, tasks: null, strategyTasks: null, launchCheck: null, launchCheckError: '' });
   const [taskPage, setTaskPage] = useState(1);
   const [taskStatus, setTaskStatus] = useState('');
   const [taskSort, setTaskSort] = useState('created_at:desc');
@@ -120,11 +286,12 @@ export function MonitoringPage() {
       api.monitoringMetrics(),
       api.monitoringLogs({ limit: 80 }),
       api.tasks({ page, page_size: 10, sort, order, ...(status ? { status } : {}) }),
+      api.tasks({ page: 1, page_size: 8, name: 'strategy.production_run', sort: 'created_at', order: 'desc' }),
       api.adminLaunchCheck()
         .then((data) => ({ data, error: '' }))
         .catch((error) => ({ data: null, error: error.message || '上线检查不可用/权限不足' })),
     ])
-      .then(([overview, metrics, logs, tasks, launchCheckResult]) => setState({ loading: false, error: '', overview, metrics, logs, tasks, launchCheck: launchCheckResult.data, launchCheckError: launchCheckResult.error }))
+      .then(([overview, metrics, logs, tasks, strategyTasks, launchCheckResult]) => setState({ loading: false, error: '', overview, metrics, logs, tasks, strategyTasks, launchCheck: launchCheckResult.data, launchCheckError: launchCheckResult.error }))
       .catch((error) => setState((prev) => ({ ...prev, loading: false, error: error.message })));
   }
 
@@ -161,7 +328,7 @@ export function MonitoringPage() {
     navigator.clipboard?.writeText(JSON.stringify(payload, null, 2));
   }
 
-  const { overview, metrics, logs, tasks, launchCheck } = state;
+  const { overview, metrics, logs, tasks, strategyTasks, launchCheck } = state;
   const healthItems = [
     { label: 'MySQL', ok: overview?.database?.ok, detail: overview?.database?.message || 'ok' },
     { label: 'Redis', ok: overview?.cache?.ok, detail: overview?.cache?.backend || overview?.cache?.message || '-' },
@@ -170,12 +337,25 @@ export function MonitoringPage() {
   const unhealthyItems = healthItems.filter((item) => item.ok === false);
   const taskStatusCounts = overview?.tasks?.by_status || {};
   const failureCounts = overview?.tasks?.by_failure_category || {};
+  const signalReview = overview?.signal_review || {};
   const failedTasks = taskStatusCounts.failed || 0;
   const staleTasks = taskStatusCounts.stale || 0;
+  const signalReviewDegraded = signalReview.status === 'degraded' || (metrics?.signal_review_incomplete || 0) > 0;
   const runningTasks = (taskStatusCounts.running || 0) + (taskStatusCounts.pending || 0) + (taskStatusCounts.retrying || 0);
   const limitUpReturnAlerts = limitUpReturnTransitionAlerts(tasks, logs);
   const launchGates = launchGateItems(launchCheck);
   const pageCount = Math.max(1, Math.ceil((tasks?.total || 0) / (tasks?.page_size || 10)));
+  const productionTasks = strategyTasks?.items || [];
+  const autoProductionTasks = productionTasks.filter(isSystemStrategyTask);
+  const latestProductionTask = productionTasks[0] || null;
+  const latestProductionResult = taskResult(latestProductionTask);
+  const latestPaper = paperResult(latestProductionTask);
+  const latestScan = latestProductionResult.scan || {};
+  const latestProductionWarnings = latestProductionResult.warnings || [];
+  const latestProductionBlocked = itemCount(latestPaper.blocked);
+  const latestProductionOrders = itemCount(latestPaper.orders);
+  const latestSnapshotFreshness = freshnessDisplay(latestProductionTask, 'snapshot');
+  const latestKlineFreshness = freshnessDisplay(latestProductionTask, 'kline');
   const filteredLogs = useMemo(() => {
     const keyword = logKeyword.trim().toLowerCase();
     const lines = logs?.items || [];
@@ -192,14 +372,16 @@ export function MonitoringPage() {
       />
 
       {state.error ? <div className="alert" data-testid="monitoring-error">{state.error}</div> : null}
-      {unhealthyItems.length || failedTasks || staleTasks ? (
+      {unhealthyItems.length || failedTasks || staleTasks || signalReviewDegraded ? (
         <div className="alert observability-alert">
           <strong>需要关注：</strong>
           {unhealthyItems.map((item) => `${item.label} 异常`).join('，')}
-          {unhealthyItems.length && (failedTasks || staleTasks) ? '; ' : ''}
+          {unhealthyItems.length && (failedTasks || staleTasks || signalReviewDegraded) ? '; ' : ''}
           {failedTasks ? `失败任务 ${failedTasks}` : ''}
           {failedTasks && staleTasks ? '; ' : ''}
           {staleTasks ? `过期任务 ${staleTasks}` : ''}
+          {(failedTasks || staleTasks) && signalReviewDegraded ? '; ' : ''}
+          {signalReviewDegraded ? `信号复盘链路未闭合 ${metrics?.signal_review_incomplete ?? signalReview.incomplete ?? 0}` : ''}
         </div>
       ) : null}
       {state.loading ? <div className="card loading-card">正在加载生产状态...</div> : null}
@@ -215,6 +397,7 @@ export function MonitoringPage() {
         <MetricCard label="MySQL" value={healthLabel(overview?.database?.ok)} danger={overview?.database?.ok === false} />
         <MetricCard label="Redis" value={overview?.cache?.ok ? cacheBackendLabel(overview.cache.backend) : '异常'} danger={overview?.cache?.ok === false} />
         <MetricCard label="行情源" value={overview?.market_data?.provider || '-'} />
+        <MetricCard label="闭环完整率" value={percentLabel(metrics?.signal_review_complete_rate ?? signalReview.complete_rate ?? 1)} danger={signalReviewDegraded} />
       </section>
 
       <section className="grid section-gap">
@@ -234,6 +417,17 @@ export function MonitoringPage() {
         ))}
       </section>
 
+      <section className="grid section-gap" data-testid="strategy-automation-summary">
+        <MetricCard label="自动策略任务" value={autoProductionTasks.length} hint={`最近保留 ${productionTasks.length} 条生产运行`} />
+        <MetricCard label="最近运行状态" value={latestProductionTask ? statusLabel(latestProductionTask.status) : '-'} danger={latestProductionTask?.status === 'failed'} />
+        <MetricCard label="最近命中标的" value={latestScan.matched_count ?? '-'} hint={`策略 ${strategyCode(latestProductionTask)}`} />
+        <MetricCard label="模拟盘新订单" value={latestProductionOrders} danger={latestProductionBlocked > 0 && latestProductionOrders === 0} />
+        <MetricCard label="阻断/跳过" value={`${latestProductionBlocked}/${itemCount(latestPaper.skipped)}`} hint="阻断 / 跳过" danger={latestProductionBlocked > 0} />
+        <MetricCard label="策略数据覆盖" value={coverageText(latestProductionTask)} danger={Number(latestProductionResult.local_coverage?.coverage_ratio || 0) > 0 && Number(latestProductionResult.local_coverage?.coverage_ratio || 0) < 0.8} />
+        <MetricCard label="快照时效" value={latestSnapshotFreshness?.label || '-'} hint={latestSnapshotFreshness?.time || '等待时效数据'} danger={latestSnapshotFreshness?.tone === 'warning'} />
+        <MetricCard label="K线时效" value={latestKlineFreshness?.label || '-'} hint={latestKlineFreshness?.time || '等待时效数据'} danger={latestKlineFreshness?.tone === 'warning'} />
+      </section>
+
       <SectionCard
         title="上线检查"
         subtitle={state.launchCheckError || (launchCheck ? `状态：${launchCheck.status || (launchCheck.ready ? 'ready' : 'not ready')}` : '读取中')}
@@ -251,6 +445,35 @@ export function MonitoringPage() {
             ))}
           </div>
         ) : <div className="empty">{state.launchCheckError || '上线检查暂不可用。'}</div>}
+      </SectionCard>
+
+      <SectionCard
+        title="自动策略运行"
+        subtitle={latestProductionTask ? `最近任务 ${latestProductionTask.id?.slice(0, 8) || '-'}，完成时间 ${latestProductionTask.finished_at || latestProductionTask.created_at || '-'}` : '尚未读取到生产运行任务'}
+      >
+        {latestProductionWarnings.length ? <div className="alert warning">{latestProductionWarnings[0]}</div> : null}
+        <DataTable
+          className="strategy-run-table"
+          columns={[
+            { label: '策略', render: (task) => <strong>{strategyCode(task)}</strong> },
+            { label: '触发', render: (task) => <StatusBadge tone={isSystemStrategyTask(task) ? 'success' : 'info'}>{isSystemStrategyTask(task) ? '系统定时' : '人工'}</StatusBadge> },
+            { label: '状态', render: (task) => <StatusBadge status={task.lifecycle_status || task.status}>{statusLabel(task.lifecycle_status || task.status)}</StatusBadge> },
+            { label: '生产结果', render: (task) => <StatusBadge status={taskResult(task).production_status || task.status}>{productionStatusLabel(taskResult(task).production_status)}</StatusBadge> },
+            {
+              label: '命中/订单',
+              render: (task) => {
+                const result = taskResult(task);
+                const paper = paperResult(task);
+                return `${result.scan?.matched_count ?? '-'} / ${itemCount(paper.orders)}`;
+              },
+            },
+            { label: '数据时效', render: (task) => dataFreshnessNode(task) },
+            { label: '阻断/提示', render: (task) => <span className="small-text">{executionNote(task)}</span> },
+          ]}
+          rows={productionTasks}
+          getKey={(task) => task.id}
+          emptyText="暂无自动策略运行任务。"
+        />
       </SectionCard>
 
       <SectionCard

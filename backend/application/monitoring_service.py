@@ -16,6 +16,7 @@ from backend.application.task_api_service import task_lifecycle_status
 from backend.infrastructure.cache.redis_client import cache_health
 from backend.infrastructure.market_data.factory import create_fallback_market_data_provider
 from backend.infrastructure.tasks.queue import list_tasks, mark_stale_tasks
+from backend.repositories import paper_trading_repo
 
 SENSITIVE_PATTERN = re.compile(
     r"(secret|password|token|authorization|cookie|database_url|redis_url|session)",
@@ -27,7 +28,7 @@ LOG_CANDIDATES = [
     BASE_DIR / "logs" / "app.log",
     BASE_DIR / "data" / "app.log",
 ]
-EXPECTED_ALEMBIC_REVISION = "0022_stock_daily_bar_timestamps"
+EXPECTED_ALEMBIC_REVISION = "0023_signal_review_links"
 
 
 def _safe_message(value: Any) -> str:
@@ -156,6 +157,18 @@ class MonitoringService:
         except Exception as exc:
             return {"provider": get_settings().market_data_provider, "ok": False, "message": _safe_message(exc)}
 
+    def signal_review_health(self, tenant_id: int) -> dict:
+        try:
+            return paper_trading_repo.signal_review_health(tenant_id)
+        except Exception as exc:
+            return {
+                "schema_version": "signal-review-health/v1",
+                "tenant_id": int(tenant_id or 0),
+                "status": "unavailable",
+                "complete_rate": 0,
+                "message": _safe_message(exc),
+            }
+
     def live_broker_gate_health(self) -> dict:
         try:
             status = LiveBrokerService().broker_status()
@@ -174,7 +187,12 @@ class MonitoringService:
     def market_data_provider_gate_health(self) -> dict:
         settings = get_settings()
         provider = (settings.market_data_provider or "").strip().lower()
-        fallbacks = [item.strip().lower() for item in (settings.market_data_fallbacks or "").split(",") if item.strip()]
+        raw_fallbacks = settings.market_data_fallbacks or ""
+        if isinstance(raw_fallbacks, (list, tuple, set)):
+            fallback_values = raw_fallbacks
+        else:
+            fallback_values = str(raw_fallbacks).split(",")
+        fallbacks = [str(item).strip().lower() for item in fallback_values if str(item).strip()]
         health = self.market_data_health()
         ok = provider != "mock" and "mock" not in fallbacks and bool(health.get("ok"))
         return {
@@ -200,16 +218,19 @@ class MonitoringService:
             },
             "market_data": self.market_data_health(),
             "tasks": self.task_summary(tenant_id),
+            "signal_review": self.signal_review_health(tenant_id),
         }
 
     def readiness(self) -> dict:
         settings = get_settings()
+        tenant_id = int(os.getenv("WORKER_TENANT_ID", "1") or 1)
         database = self.database_health()
         cache = cache_health().to_dict()
         schema_revision = self.schema_revision_health()
         tasks = self.all_task_summary()
         live_broker_gate = self.live_broker_gate_health()
         market_data_provider = self.market_data_provider_gate_health()
+        signal_review = self.signal_review_health(tenant_id)
         repository_backends = effective_repository_backends(settings.environment)
         production = (settings.environment or "").strip().lower() in {"prod", "production"}
         repositories_ok = not production or all(value == "mysql" for value in repository_backends.values())
@@ -217,15 +238,18 @@ class MonitoringService:
         schema_ok = (not production) or bool(schema_revision.get("ok"))
         stale_tasks = tasks["by_lifecycle_status"].get("stale", 0)
         running_tasks = tasks["by_lifecycle_status"].get("running", 0) + tasks["by_lifecycle_status"].get("queued", 0)
-        task_health_ok = not production or stale_tasks == 0
+        fail_on_stale_tasks = str(os.getenv("READINESS_FAIL_ON_STALE_TASKS", "0")).strip().lower() in {"1", "true", "yes"}
+        task_health_ok = not production or not fail_on_stale_tasks or stale_tasks == 0
         task_queue_ok = not production or (settings.task_queue_backend == "redis" and settings.task_execution_mode == "worker")
         live_broker_ok = (not production) or bool(live_broker_gate.get("ok"))
         market_data_provider_ok = (not production) or bool(market_data_provider.get("ok"))
+        signal_review_ok = (not production) or (signal_review.get("status") == "ok" and int(signal_review.get("incomplete") or 0) == 0)
         ready = bool(database.get("ok")) and cache_ok and repositories_ok and schema_ok and task_health_ok
-        ready = ready and task_queue_ok and live_broker_ok and market_data_provider_ok
+        ready = ready and task_queue_ok and live_broker_ok and market_data_provider_ok and signal_review_ok
         return {
             "ready": ready,
             "environment": settings.environment,
+            "tenant_id": tenant_id,
             "database": database,
             "schema_revision": schema_revision,
             "cache": cache,
@@ -244,6 +268,7 @@ class MonitoringService:
             "repository_backends": repository_backends,
             "live_broker_gate": live_broker_gate,
             "market_data_provider": market_data_provider,
+            "signal_review": signal_review,
             "checks": {
                 "database": bool(database.get("ok")),
                 "schema_revision": schema_ok,
@@ -253,12 +278,36 @@ class MonitoringService:
                 "repository_backends": repositories_ok,
                 "live_broker_gate": live_broker_ok,
                 "market_data_provider": market_data_provider_ok,
+                "signal_review": signal_review_ok,
             },
+        }
+
+    def public_readiness(self) -> dict:
+        detail = self.readiness()
+        checks = detail.get("checks") or {}
+        tasks = detail.get("tasks") or {}
+        return {
+            "ready": bool(detail.get("ready")),
+            "environment": detail.get("environment"),
+            "checks": {
+                "database": bool(checks.get("database")),
+                "cache": bool(checks.get("cache")),
+                "task_queue": bool(checks.get("task_queue")),
+                "tasks": bool(checks.get("tasks")),
+                "schema_revision": bool(checks.get("schema_revision")),
+            },
+            "tasks": {
+                "running_or_queued": int(tasks.get("running_or_queued") or 0),
+                "failed": int(tasks.get("failed") or 0),
+                "stale": int(tasks.get("stale") or 0),
+            },
+            "detail": "internal readiness details require admin access",
         }
 
     def metrics(self, tenant_id: int) -> dict:
         tasks = self.task_summary(tenant_id)
         status = tasks["by_status"]
+        signal_review = self.signal_review_health(tenant_id)
         return {
             "tenant_id": tenant_id,
             "tasks_total": tasks["total"],
@@ -270,6 +319,8 @@ class MonitoringService:
             "cache_ok": cache_health().ok,
             "database_ok": self.database_health()["ok"],
             "market_data_ok": bool(self.market_data_health().get("ok")),
+            "signal_review_complete_rate": signal_review.get("complete_rate", 0),
+            "signal_review_incomplete": signal_review.get("incomplete", 0),
         }
 
     def logs(self, limit: int = 50) -> dict:

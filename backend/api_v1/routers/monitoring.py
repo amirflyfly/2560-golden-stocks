@@ -30,6 +30,12 @@ def monitoring_metrics():
     return success(service.metrics(context.tenant_id))
 
 
+@bp.get("/monitoring/readiness")
+def monitoring_readiness():
+    _require_admin_context()
+    return success(service.readiness())
+
+
 @bp.get("/monitoring/logs")
 def monitoring_logs():
     _require_admin_context()

@@ -49,6 +49,10 @@ class InMemoryRedisLike:
         self._lists.setdefault(key, []).insert(0, value)
         return len(self._lists[key])
 
+    def rpush(self, key: str, value: str):
+        self._lists.setdefault(key, []).append(value)
+        return len(self._lists[key])
+
     def rpop(self, key: str):
         values = self._lists.get(key) or []
         if not values:
@@ -118,6 +122,10 @@ def get_json(key: str) -> dict | None:
 
 def push_value(key: str, value: str) -> None:
     get_redis_client().lpush(key, value)
+
+
+def push_priority_value(key: str, value: str) -> None:
+    get_redis_client().rpush(key, value)
 
 
 def pop_value(key: str) -> str | None:

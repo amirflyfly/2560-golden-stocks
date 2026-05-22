@@ -29,6 +29,7 @@ DB_PATH = DATA_DIR / 'picks.db'
 
 
 LEGACY_SECRET = DATA_DIR / 'web_panel_secret.txt'
+ALLOWED_RESTORE_MEMBERS = {'data/picks.db', 'data/web_panel_secret.txt', 'data/backup_hmac_key.txt', 'meta.json'}
 
 
 def _production_sqlite_backup_blocked() -> bool:
@@ -106,6 +107,9 @@ def save_backup_zip_to_disk(zip_bytes: bytes, prefix='backup', actor_username=''
 def restore_from_backup_zip_bytes(zip_bytes: bytes):
     """Restore picks.db from a backup zip. Auto-backup current DB first."""
     _ensure_legacy_sqlite_backup_allowed()
+    valid, message = validate_backup_zip_bytes(zip_bytes)
+    if not valid:
+        return False, message
     # auto-backup current
     if DB_PATH.exists():
         cur_bytes = make_backup_zip_bytes(actor={'username': 'system', 'role': 'system'})
@@ -119,7 +123,10 @@ def restore_from_backup_zip_bytes(zip_bytes: bytes):
 
     try:
         with zipfile.ZipFile(io.BytesIO(zip_bytes), 'r') as z:
-            z.extractall(tmp)
+            (tmp / 'data').mkdir(parents=True, exist_ok=True)
+            (tmp / 'data' / 'picks.db').write_bytes(z.read('data/picks.db'))
+            if 'data/web_panel_secret.txt' in z.namelist():
+                (tmp / 'data' / 'web_panel_secret.txt').write_bytes(z.read('data/web_panel_secret.txt'))
 
         src_db = tmp / 'data' / 'picks.db'
         if not src_db.exists():
@@ -182,6 +189,9 @@ def validate_backup_zip_bytes(zip_bytes: bytes):
     try:
         with zipfile.ZipFile(io.BytesIO(zip_bytes), 'r') as z:
             names = set(z.namelist())
+            unsafe = _unsafe_zip_members(z.infolist())
+            if unsafe:
+                return False, f'备份包包含不安全路径：{unsafe[0]}'
             if 'data/picks.db' not in names:
                 return False, '备份包缺少 data/picks.db'
             if 'meta.json' not in names:
@@ -224,6 +234,22 @@ def validate_backup_zip_bytes(zip_bytes: bytes):
         return True, 'ok'
     except Exception as e:
         return False, f'无效zip：{e}'
+
+
+def _unsafe_zip_members(infos: list[zipfile.ZipInfo]) -> list[str]:
+    unsafe = []
+    for info in infos:
+        name = str(info.filename or '').replace('\\', '/')
+        parts = [part for part in name.split('/') if part]
+        if (
+            not name
+            or name.startswith('/')
+            or ':' in name
+            or '..' in parts
+            or name not in ALLOWED_RESTORE_MEMBERS
+        ):
+            unsafe.append(name)
+    return unsafe
 
 
 

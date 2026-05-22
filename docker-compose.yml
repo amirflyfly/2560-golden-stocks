@@ -1,6 +1,7 @@
 services:
   mysql:
     image: ${MYSQL_IMAGE:-mysql:8.4}
+    restart: unless-stopped
     command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
     env_file:
       - .env
@@ -22,6 +23,7 @@ services:
 
   redis:
     image: ${REDIS_IMAGE:-redis:7-alpine}
+    restart: unless-stopped
     env_file:
       - .env
     command: sh -c 'redis-server --appendonly yes --requirepass "$${REDIS_PASSWORD}"'
@@ -84,6 +86,12 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    restart: unless-stopped
+    command: >
+      sh -c 'if [ ! -s /root/.mootdx/config.json ]; then python -m mootdx bestip || true; fi;
+      gunicorn --bind 0.0.0.0:8765 --workers $${WEB_WORKERS:-2} --threads $${WEB_THREADS:-4}
+      --timeout $${WEB_TIMEOUT:-120} --graceful-timeout $${WEB_GRACEFUL_TIMEOUT:-30}
+      --access-logfile - --error-logfile - --capture-output app:app'
     env_file:
       - .env
     environment:
@@ -118,6 +126,9 @@ services:
       PAPER_MAX_HOLDING_DAYS: ${PAPER_MAX_HOLDING_DAYS:-20}
       PAPER_LOT_SIZE: ${PAPER_LOT_SIZE:-100}
       PAPER_FEE_RATE: ${PAPER_FEE_RATE:-0}
+      PAPER_POSITION_SNAPSHOT_STALE_SECONDS: ${PAPER_POSITION_SNAPSHOT_STALE_SECONDS:-30}
+      STRATEGY_SNAPSHOT_MAX_AGE_SECONDS: ${STRATEGY_SNAPSHOT_MAX_AGE_SECONDS:-120}
+      STRATEGY_DAILY_BAR_MAX_LAG_DAYS: ${STRATEGY_DAILY_BAR_MAX_LAG_DAYS:-4}
       WEB_WORKERS: ${WEB_WORKERS:-2}
       WEB_THREADS: ${WEB_THREADS:-4}
       WEB_TIMEOUT: ${WEB_TIMEOUT:-120}
@@ -139,17 +150,27 @@ services:
       retries: 3
     volumes:
       - ./data:/app/data
+      - mootdx_config:/root/.mootdx
 
   worker:
     build:
       context: .
       dockerfile: Dockerfile
+    restart: unless-stopped
     command: >
+      sh -c 'if [ ! -s /root/.mootdx/config.json ]; then python -m mootdx bestip || true; fi;
       python -m backend.infrastructure.tasks.worker
       --alert-interval-seconds ${ALERT_EVALUATION_INTERVAL_SECONDS:-300}
       --market-sync-interval-seconds ${MARKET_SYNC_INTERVAL_SECONDS:-1800}
       --market-snapshot-interval-seconds ${MARKET_SNAPSHOT_INTERVAL_SECONDS:-60}
+      --paper-position-snapshot-interval-seconds ${PAPER_POSITION_SNAPSHOT_INTERVAL_SECONDS:-0}
+      --paper-position-monitor-interval-seconds ${PAPER_POSITION_MONITOR_INTERVAL_SECONDS:-5}
       --strategy-run-interval-seconds ${STRATEGY_RUN_INTERVAL_SECONDS:-300}
+      --strategy-scan-daily-times ${STRATEGY_SCAN_DAILY_TIMES:-14:45}
+      --strategy-scan-daily-strategies ${STRATEGY_SCAN_DAILY_STRATEGIES:-LIMIT_UP_RETURN,2560}
+      --indicator-precompute-interval-seconds ${INDICATOR_PRECOMPUTE_INTERVAL_SECONDS:-3600}
+      --qfq-repair-interval-seconds ${QFQ_REPAIR_INTERVAL_SECONDS:-86400}
+      --daily-review-interval-seconds ${DAILY_REVIEW_INTERVAL_SECONDS:-86400}'
     env_file:
       - .env
     environment:
@@ -176,9 +197,46 @@ services:
       MARKET_SNAPSHOT_SYMBOLS: ${MARKET_SNAPSHOT_SYMBOLS:-all}
       MARKET_SNAPSHOT_MAX_SYMBOLS: ${MARKET_SNAPSHOT_MAX_SYMBOLS:-0}
       MARKET_SNAPSHOT_BATCH_SIZE: ${MARKET_SNAPSHOT_BATCH_SIZE:-500}
+      PAPER_POSITION_SNAPSHOT_INTERVAL_SECONDS: ${PAPER_POSITION_SNAPSHOT_INTERVAL_SECONDS:-0}
+      PAPER_POSITION_SNAPSHOT_ACCOUNT_ID: ${PAPER_POSITION_SNAPSHOT_ACCOUNT_ID:-}
+      PAPER_POSITION_SNAPSHOT_MAX_SYMBOLS: ${PAPER_POSITION_SNAPSHOT_MAX_SYMBOLS:-200}
+      PAPER_POSITION_SNAPSHOT_BATCH_SIZE: ${PAPER_POSITION_SNAPSHOT_BATCH_SIZE:-0}
+      PAPER_POSITION_SNAPSHOT_SECURITY_TYPE: ${PAPER_POSITION_SNAPSHOT_SECURITY_TYPE:-}
+      PAPER_POSITION_MONITOR_INTERVAL_SECONDS: ${PAPER_POSITION_MONITOR_INTERVAL_SECONDS:-5}
+      PAPER_POSITION_MONITOR_ACCOUNT_ID: ${PAPER_POSITION_MONITOR_ACCOUNT_ID:-}
+      PAPER_POSITION_MONITOR_MAX_SYMBOLS: ${PAPER_POSITION_MONITOR_MAX_SYMBOLS:-200}
+      PAPER_POSITION_MONITOR_BATCH_SIZE: ${PAPER_POSITION_MONITOR_BATCH_SIZE:-100}
+      PAPER_POSITION_MONITOR_SECURITY_TYPE: ${PAPER_POSITION_MONITOR_SECURITY_TYPE:-}
+      PAPER_POSITION_MONITOR_SYNC_SNAPSHOTS: ${PAPER_POSITION_MONITOR_SYNC_SNAPSHOTS:-1}
+      PAPER_POSITION_MONITOR_EVALUATE_EXITS: ${PAPER_POSITION_MONITOR_EVALUATE_EXITS:-1}
+      PAPER_POSITION_SNAPSHOT_STALE_SECONDS: ${PAPER_POSITION_SNAPSHOT_STALE_SECONDS:-30}
       STRATEGY_RUN_INTERVAL_SECONDS: ${STRATEGY_RUN_INTERVAL_SECONDS:-300}
+      STRATEGY_RUN_DAILY_TIMES: ${STRATEGY_RUN_DAILY_TIMES:-}
+      STRATEGY_RUN_DAILY_STRATEGIES: ${STRATEGY_RUN_DAILY_STRATEGIES:-}
+      STRATEGY_RUN_DAILY_GRACE_SECONDS: ${STRATEGY_RUN_DAILY_GRACE_SECONDS:-900}
+      STRATEGY_SCAN_DAILY_TIMES: ${STRATEGY_SCAN_DAILY_TIMES:-14:45}
+      STRATEGY_SCAN_DAILY_STRATEGIES: ${STRATEGY_SCAN_DAILY_STRATEGIES:-LIMIT_UP_RETURN,2560}
+      STRATEGY_SCAN_DAILY_GRACE_SECONDS: ${STRATEGY_SCAN_DAILY_GRACE_SECONDS:-900}
+      STRATEGY_SCAN_DAILY_SCAN_LIMIT: ${STRATEGY_SCAN_DAILY_SCAN_LIMIT:-6000}
       STRATEGY_RUN_SCAN_LIMIT: ${STRATEGY_RUN_SCAN_LIMIT:-6000}
       STRATEGY_RUN_MIN_COVERAGE_RATIO: ${STRATEGY_RUN_MIN_COVERAGE_RATIO:-0}
+      STRATEGY_SNAPSHOT_MAX_AGE_SECONDS: ${STRATEGY_SNAPSHOT_MAX_AGE_SECONDS:-120}
+      STRATEGY_DAILY_BAR_MAX_LAG_DAYS: ${STRATEGY_DAILY_BAR_MAX_LAG_DAYS:-4}
+      INDICATOR_PRECOMPUTE_INTERVAL_SECONDS: ${INDICATOR_PRECOMPUTE_INTERVAL_SECONDS:-3600}
+      INDICATOR_PRECOMPUTE_SYMBOLS: ${INDICATOR_PRECOMPUTE_SYMBOLS:-all}
+      INDICATOR_PRECOMPUTE_MAX_SYMBOLS: ${INDICATOR_PRECOMPUTE_MAX_SYMBOLS:-0}
+      INDICATOR_PRECOMPUTE_LOOKBACK_DAYS: ${INDICATOR_PRECOMPUTE_LOOKBACK_DAYS:-180}
+      INDICATOR_PRECOMPUTE_ADJUST: ${INDICATOR_PRECOMPUTE_ADJUST:-qfq}
+      QFQ_REPAIR_INTERVAL_SECONDS: ${QFQ_REPAIR_INTERVAL_SECONDS:-86400}
+      QFQ_REPAIR_SYMBOLS: ${QFQ_REPAIR_SYMBOLS:-all}
+      QFQ_REPAIR_MAX_SYMBOLS: ${QFQ_REPAIR_MAX_SYMBOLS:-0}
+      QFQ_REPAIR_CORRECTION_DAYS: ${QFQ_REPAIR_CORRECTION_DAYS:-30}
+      DAILY_REVIEW_INTERVAL_SECONDS: ${DAILY_REVIEW_INTERVAL_SECONDS:-86400}
+      DAILY_REVIEW_EVALUATE_EXITS: ${DAILY_REVIEW_EVALUATE_EXITS:-1}
+      DAILY_REVIEW_PUSH: ${DAILY_REVIEW_PUSH:-0}
+      DAILY_REVIEW_CHANNELS: ${DAILY_REVIEW_CHANNELS:-}
+      DAILY_REVIEW_ACCOUNT_ID: ${DAILY_REVIEW_ACCOUNT_ID:-}
+      DAILY_REVIEW_USER_ID: ${DAILY_REVIEW_USER_ID:-}
       WORKER_TENANT_ID: ${WORKER_TENANT_ID:-1}
       MARKET_DATA_PROVIDER: ${MARKET_DATA_PROVIDER:-mootdx}
       MARKET_DATA_FALLBACKS: ${MARKET_DATA_FALLBACKS:-akshare}
@@ -214,6 +272,7 @@ services:
       retries: 3
     volumes:
       - ./data:/app/data
+      - mootdx_config:/root/.mootdx
 
   frontend:
     build:
@@ -222,6 +281,7 @@ services:
       args:
         NODE_BASE_IMAGE: ${FRONTEND_IMAGE:-swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/node:24-alpine}
         NGINX_BASE_IMAGE: ${NGINX_IMAGE:-swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/nginx:1.27-alpine}
+    restart: unless-stopped
     env_file:
       - .env
     ports:
@@ -233,3 +293,4 @@ services:
 volumes:
   mysql_data:
   redis_data:
+  mootdx_config:

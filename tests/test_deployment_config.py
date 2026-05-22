@@ -20,9 +20,11 @@ def test_wsgi_application_entrypoint_imports(monkeypatch):
     sys.modules.pop("app", None)
 
     module = importlib.import_module("app")
+    rules = {rule.rule for rule in module.app.url_map.iter_rules()}
 
     assert hasattr(module, "app")
-    assert "/api/v1/readiness" in {rule.rule for rule in module.app.url_map.iter_rules()}
+    assert "/api/v1/readiness" in rules
+    assert "/api/v1/monitoring/readiness" in rules
 
 
 def test_backend_dockerfile_uses_gunicorn_instead_of_flask_dev_server():
@@ -43,10 +45,18 @@ def test_backend_dockerfile_uses_gunicorn_instead_of_flask_dev_server():
 
 def test_readiness_checks_alembic_schema_revision():
     monitoring_source = (PROJECT_ROOT / "backend" / "application" / "monitoring_service.py").read_text(encoding="utf-8")
+    alembic_env_source = (PROJECT_ROOT / "alembic" / "env.py").read_text(encoding="utf-8")
+    final_migration_source = (PROJECT_ROOT / "alembic" / "versions" / "0023_signal_review_links.py").read_text(encoding="utf-8")
+    compose_source = (PROJECT_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
 
-    assert 'EXPECTED_ALEMBIC_REVISION = "0022_stock_daily_bar_timestamps"' in monitoring_source
+    assert 'EXPECTED_ALEMBIC_REVISION = "0023_signal_review_links"' in monitoring_source
     assert "SELECT version_num FROM alembic_version LIMIT 1" in monitoring_source
     assert '"schema_revision": schema_ok' in monitoring_source
+    assert "VARCHAR(191)" in alembic_env_source
+    assert "connection.commit()" in alembic_env_source
+    assert '"signal_review_links"' in final_migration_source
+    assert "command: alembic upgrade head" in compose_source
+    assert "stamp head" not in compose_source
 
 
 def test_backend_wsgi_tuning_is_exposed_in_compose_and_env_template():
@@ -66,8 +76,45 @@ def test_production_compose_runs_standalone_task_worker():
     assert "\n  worker:" in compose
     assert "python -m backend.infrastructure.tasks.worker" in compose
     assert "--alert-interval-seconds ${ALERT_EVALUATION_INTERVAL_SECONDS:-300}" in compose
+    assert "--indicator-precompute-interval-seconds ${INDICATOR_PRECOMPUTE_INTERVAL_SECONDS:-3600}" in compose
+    assert "--paper-position-snapshot-interval-seconds ${PAPER_POSITION_SNAPSHOT_INTERVAL_SECONDS:-0}" in compose
+    assert "--paper-position-monitor-interval-seconds ${PAPER_POSITION_MONITOR_INTERVAL_SECONDS:-5}" in compose
+    assert "--qfq-repair-interval-seconds ${QFQ_REPAIR_INTERVAL_SECONDS:-86400}" in compose
+    assert "--daily-review-interval-seconds ${DAILY_REVIEW_INTERVAL_SECONDS:-86400}" in compose
+    assert "PAPER_POSITION_SNAPSHOT_INTERVAL_SECONDS: ${PAPER_POSITION_SNAPSHOT_INTERVAL_SECONDS:-0}" in compose
+    assert "PAPER_POSITION_MONITOR_EVALUATE_EXITS: ${PAPER_POSITION_MONITOR_EVALUATE_EXITS:-1}" in compose
+    assert "STRATEGY_SNAPSHOT_MAX_AGE_SECONDS: ${STRATEGY_SNAPSHOT_MAX_AGE_SECONDS:-120}" in compose
+    assert "DAILY_REVIEW_EVALUATE_EXITS: ${DAILY_REVIEW_EVALUATE_EXITS:-1}" in compose
     assert "TASK_QUEUE_BACKEND: ${TASK_QUEUE_BACKEND:-redis}" in compose
     assert "TASK_EXECUTION_MODE: ${TASK_EXECUTION_MODE:-worker}" in compose
+    assert "MARKET_DATA_FALLBACKS: ${MARKET_DATA_FALLBACKS:-akshare}" in compose
+
+
+def test_compose_restarts_long_running_services():
+    compose = (PROJECT_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+
+    for service in ("mysql", "redis", "backend", "worker", "frontend"):
+        assert f"\n  {service}:" in compose
+    assert compose.count("restart: unless-stopped") >= 5
+
+
+def test_compose_persists_and_prewarms_mootdx_config():
+    compose = (PROJECT_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+
+    assert "mootdx_config:/root/.mootdx" in compose
+    assert "mootdx_config:" in compose
+    assert "python -m mootdx bestip" in compose
+
+
+def test_mysql_repositories_use_native_upsert_for_concurrent_defaults():
+    market_repo = (PROJECT_ROOT / "backend" / "repositories" / "market_data_repo.py").read_text(encoding="utf-8")
+    paper_repo = (PROJECT_ROOT / "backend" / "repositories" / "paper_trading_repo.py").read_text(encoding="utf-8")
+
+    assert "mysql_insert(Stock)" in market_repo
+    assert "mysql_insert(StockPriceSnapshot)" in market_repo
+    assert "stmt.on_duplicate_key_update" in market_repo
+    assert "mysql_insert(PaperAccount)" in paper_repo
+    assert "stmt.on_duplicate_key_update" in paper_repo
 
 
 def test_production_repository_backends_are_exposed_in_compose_and_env_template():
@@ -208,6 +255,7 @@ def test_frontend_nginx_proxies_api_to_internal_backend_service():
     nginx_conf = (PROJECT_ROOT / "frontend" / "nginx.conf").read_text(encoding="utf-8")
 
     assert "proxy_pass http://backend:8765/api/v1/;" in nginx_conf
+    assert "proxy_set_header Host $http_host;" in nginx_conf
     assert "location /api/" in nginx_conf
     assert "return 410" in nginx_conf
     assert "proxy_pass http://backend:8765/dist/;" in nginx_conf
@@ -218,7 +266,7 @@ def test_docker_context_excludes_vendor_and_tool_skill_caches():
     gitignore = (PROJECT_ROOT / ".gitignore").read_text(encoding="utf-8")
 
     assert "vendor/" in dockerignore
-    for path in (".aionrs/", ".claude/", ".gemini/", ".opencode/skills/"):
+    for path in (".aionrs/", ".claude/", ".gemini/", ".opencode/skills/", "frontend/data/"):
         assert path in gitignore
 
 
@@ -233,6 +281,15 @@ def test_ci_workflow_covers_tests_build_compose_and_images():
     assert "docker compose config --quiet" in workflow
     assert "docker build -t 2560-strategy-backend:ci ." in workflow
     assert "docker build -t 2560-strategy-frontend:ci ./frontend" in workflow
+    assert "docker compose up -d backend worker frontend" in workflow
+    assert 'test "$worker_status" = "worker"' in workflow
+    assert "Assert worker consumes a queued task" in workflow
+    assert '"reports.daily_review"' in workflow
+    assert "worker did not complete queued smoke task" in workflow
+    assert "Verify MySQL dump restore" in workflow
+    assert "restore_check_ci" in workflow
+    assert "sha256sum backups/ci_mysql_dump.sql" in workflow
+    assert "tests/test_production_evidence.py::test_production_evidence_accepts_complete_backup_soak_and_rollback_bundle" in workflow
     assert "http://localhost:5174/api/v1/readiness" in workflow
     assert "-X POST http://localhost:5174/api/picks" in workflow
     assert 'test "$legacy_status" = "410"' in workflow

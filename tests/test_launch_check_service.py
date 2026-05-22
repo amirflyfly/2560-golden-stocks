@@ -34,9 +34,12 @@ def test_launch_check_missing_evidence_returns_blocked_gate_without_exception(tm
     gate = service._production_evidence_gate(tmp_path / "missing.json")
 
     assert gate["ok"] is False
+    assert gate["status"] == "blocked"
     assert gate["summary"] == "production evidence file missing"
     assert gate["counts"] == {"total": 1, "failed": 1}
     assert gate["checks"] == ["production_evidence_file_present"]
+    assert gate["evidence_path"].endswith("missing.json")
+    assert "production evidence" in gate["next_action"]
 
 
 def test_launch_check_result_structure_contains_gates(monkeypatch, request):
@@ -57,7 +60,9 @@ def test_launch_check_result_structure_contains_gates(monkeypatch, request):
     result = service.run()
 
     assert result["ok"] is False
+    assert result["status"] == "blocked"
     assert result["counts"] == {"total": 7, "failed": 1}
+    assert "next_action" in result
     assert set(result["gates"]) == {
         "readiness",
         "repository_backends",
@@ -68,4 +73,4 @@ def test_launch_check_result_structure_contains_gates(monkeypatch, request):
         "legacy_policy_doc",
     }
     for gate in result["gates"].values():
-        assert set(gate) >= {"ok", "summary", "counts", "checks"}
+        assert set(gate) >= {"ok", "summary", "counts", "checks", "status", "next_action"}

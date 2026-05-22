@@ -10,7 +10,9 @@ from decimal import Decimal, InvalidOperation
 from math import floor
 from typing import Any
 
+from backend.application.data_quality_gate_service import DataQualityGateService
 from backend.application.live_broker_service import BrokerAdapter
+from backend.application.pick_api_service import PickApiService
 from backend.infrastructure.market_data.utils import normalize_bar_interval
 from backend.repositories import market_data_repo
 from backend.repositories import paper_trading_repo
@@ -20,9 +22,46 @@ LIMIT_UP_RETURN_CODE = "LIMIT_UP_RETURN"
 LIMIT_UP_RETURN_BUY_SUBTYPE = "breakout_confirmed"
 FIRST_LIMIT_UP_CODE = "FIRST_LIMIT_UP"
 FIRST_LIMIT_UP_BUY_SUBTYPE = "auction_confirmed"
+CONVERTIBLE_BOND_LOW_PREMIUM_CODE = "CONVERTIBLE_BOND_LOW_PREMIUM"
+
+
+DEFAULT_EXIT_RULES = {
+    "2560": {
+        "stop_loss_pct": "-0.08",
+        "take_profit_pct": "0.15",
+        "max_holding_days": 20,
+        "technical_exit_enabled": True,
+    },
+    FIRST_LIMIT_UP_CODE: {
+        "stop_loss_pct": "-0.06",
+        "take_profit_pct": "0.12",
+        "max_holding_days": 5,
+        "technical_exit_enabled": True,
+    },
+    LIMIT_UP_RETURN_CODE: {
+        "stop_loss_pct": "-0.05",
+        "take_profit_pct": "0.10",
+        "max_holding_days": 7,
+        "technical_exit_enabled": True,
+    },
+    CONVERTIBLE_BOND_LOW_PREMIUM_CODE: {
+        "stop_loss_pct": "-0.06",
+        "take_profit_pct": None,
+        "take_profit_price": "130",
+        "sell_premium_rate": "0.40",
+        "max_holding_days": 20,
+        "technical_exit_enabled": False,
+        "allow_t0": True,
+    },
+}
+DEFAULT_EXIT_RULE = DEFAULT_EXIT_RULES["2560"]
 
 
 class PaperTradingService:
+    def __init__(self) -> None:
+        self.pick_service = PickApiService()
+        self.quality_gate = DataQualityGateService()
+
     def _decimal(self, value: Any, default: Decimal = Decimal("0")) -> Decimal:
         if value in (None, ""):
             return default
@@ -49,8 +88,169 @@ class PaperTradingService:
             return None
         return self._bool_value(value)
 
+    def _strategy_env_suffix(self, strategy_code: str) -> str:
+        return "".join(ch if ch.isalnum() else "_" for ch in str(strategy_code or "").strip().upper())
+
     def _strategy_code(self, strategy: dict | None) -> str:
         return str((strategy or {}).get("code") or "").strip().upper()
+
+    def _optional_float(self, value: Any) -> float | None:
+        if value in (None, ""):
+            return None
+        return float(self._decimal(value))
+
+    def _ratio_value(self, value: Any, *, percent_key: bool = False) -> Decimal | None:
+        if value in (None, ""):
+            return None
+        ratio = self._decimal(value)
+        if percent_key or ratio > Decimal("1"):
+            return ratio / Decimal("100")
+        return ratio
+
+    def _premium_rate(self, *sources: dict | None) -> Decimal | None:
+        nested_sources: list[dict] = []
+        for source in sources:
+            if not isinstance(source, dict):
+                continue
+            for key in ("premium_rate", "premium", "convertible_premium_rate", "conversion_premium_rate"):
+                ratio = self._ratio_value(source.get(key))
+                if ratio is not None:
+                    return ratio
+            for key in ("premium_pct", "premium_percent", "premium_rate_pct"):
+                ratio = self._ratio_value(source.get(key), percent_key=True)
+                if ratio is not None:
+                    return ratio
+            for key in ("indicators", "metadata", "snapshot"):
+                nested = source.get(key)
+                if isinstance(nested, dict):
+                    nested_sources.append(nested)
+        for source in nested_sources:
+            ratio = self._premium_rate(source)
+            if ratio is not None:
+                return ratio
+        return None
+
+    def _exit_source_context(self, position: dict, open_link: dict | None) -> dict:
+        open_link = open_link or {}
+        link_metadata = open_link.get("metadata") if isinstance(open_link.get("metadata"), dict) else {}
+        position_metadata = position.get("metadata") if isinstance(position.get("metadata"), dict) else {}
+        if not position_metadata and isinstance(position.get("metadata_json"), dict):
+            position_metadata = position.get("metadata_json") or {}
+        buy_order = {}
+        if open_link.get("buy_order_id") and hasattr(paper_trading_repo, "get_order"):
+            buy_order = paper_trading_repo.get_order(int(open_link["buy_order_id"])) or {}
+        order_metadata = buy_order.get("metadata") if isinstance(buy_order.get("metadata"), dict) else {}
+        candidate = order_metadata.get("candidate") if isinstance(order_metadata.get("candidate"), dict) else {}
+        candidate_metadata = candidate.get("metadata") if isinstance(candidate.get("metadata"), dict) else {}
+        sell_model = {}
+        for source in (position_metadata, link_metadata, order_metadata, candidate_metadata):
+            model = source.get("sell_model") if isinstance(source, dict) else None
+            if isinstance(model, dict):
+                sell_model.update(model)
+
+        strategy_code = (
+            position_metadata.get("strategy_code")
+            or link_metadata.get("strategy_code")
+            or order_metadata.get("strategy_code")
+            or candidate.get("strategy_code")
+            or buy_order.get("strategy_code")
+            or position.get("strategy_code")
+            or ""
+        )
+        signal_subtype = (
+            position_metadata.get("signal_subtype")
+            or link_metadata.get("signal_subtype")
+            or order_metadata.get("signal_subtype")
+            or candidate.get("signal_subtype")
+            or candidate.get("signal")
+            or candidate.get("reason_tag")
+            or position.get("signal_subtype")
+            or ""
+        )
+        return {
+            "strategy_code": str(strategy_code or "").strip().upper(),
+            "signal_subtype": str(signal_subtype or "").strip().lower(),
+            "open_link": open_link,
+            "buy_order": buy_order,
+            "order_metadata": order_metadata,
+            "candidate": candidate,
+            "sell_model": sell_model,
+        }
+
+    def _param_override(self, params: dict, key: str, strategy_code: str = "") -> tuple[Any, str]:
+        suffix = self._strategy_env_suffix(strategy_code)
+        strategy_param_keys = []
+        if strategy_code:
+            strategy_param_keys.extend(
+                [
+                    f"{strategy_code.lower()}_{key}",
+                    f"{strategy_code.upper()}_{key}",
+                    f"{suffix.lower()}_{key}",
+                ]
+            )
+        for param_key in [*strategy_param_keys, key]:
+            if param_key in params:
+                return params.get(param_key), "params"
+
+        env_names = []
+        if suffix:
+            env_names.append(f"PAPER_{suffix}_{key.upper()}")
+        env_names.append(f"PAPER_{key.upper()}")
+        for env_name in env_names:
+            value = os.getenv(env_name)
+            if value is not None:
+                return value, env_name
+        return None, ""
+
+    def _exit_plan(self, position: dict, params: dict, source_context: dict | None = None) -> dict:
+        source_context = source_context or {}
+        strategy_code = str(source_context.get("strategy_code") or position.get("strategy_code") or "").strip().upper()
+        signal_subtype = str(source_context.get("signal_subtype") or position.get("signal_subtype") or "").strip().lower()
+        rule = dict(DEFAULT_EXIT_RULES.get(strategy_code, DEFAULT_EXIT_RULE))
+        sell_model = source_context.get("sell_model") if isinstance(source_context.get("sell_model"), dict) else {}
+        for key in ("stop_loss_pct", "take_profit_pct", "take_profit_price", "sell_premium_rate", "max_holding_days"):
+            if key in sell_model:
+                rule[key] = sell_model.get(key)
+        source = f"default:{strategy_code or '2560'}" if strategy_code in DEFAULT_EXIT_RULES else "default:2560"
+
+        stop_loss_raw, stop_loss_source = self._param_override(params, "stop_loss_pct", strategy_code)
+        take_profit_raw, take_profit_source = self._param_override(params, "take_profit_pct", strategy_code)
+        take_profit_price_raw, take_profit_price_source = self._param_override(params, "take_profit_price", strategy_code)
+        sell_premium_raw, sell_premium_source = self._param_override(params, "sell_premium_rate", strategy_code)
+        max_holding_raw, max_holding_source = self._param_override(params, "max_holding_days", strategy_code)
+        technical_raw, technical_source = self._param_override(params, "technical_exit_enabled", strategy_code)
+        allow_t0_raw, allow_t0_source = self._param_override(params, "allow_t0", strategy_code)
+
+        return {
+            "strategy_code": strategy_code,
+            "signal_subtype": signal_subtype,
+            "stop_loss_pct": float(self._decimal(stop_loss_raw if stop_loss_raw is not None else rule["stop_loss_pct"])),
+            "take_profit_pct": self._optional_float(take_profit_raw if take_profit_raw is not None else rule.get("take_profit_pct")),
+            "take_profit_price": self._optional_float(take_profit_price_raw if take_profit_price_raw is not None else rule.get("take_profit_price")),
+            "sell_premium_rate": self._optional_float(sell_premium_raw if sell_premium_raw is not None else rule.get("sell_premium_rate")),
+            "max_holding_days": int(max_holding_raw if max_holding_raw is not None else rule["max_holding_days"]),
+            "technical_exit_enabled": self._bool_value(
+                technical_raw,
+                default=bool(rule["technical_exit_enabled"]),
+            ),
+            "allow_t0": self._bool_value(allow_t0_raw, default=bool(rule.get("allow_t0", False))),
+            "reason": {
+                "source": source,
+                "stop_loss_pct": stop_loss_source or source,
+                "take_profit_pct": take_profit_source or source,
+                "take_profit_price": take_profit_price_source or source,
+                "sell_premium_rate": sell_premium_source or source,
+                "max_holding_days": max_holding_source or source,
+                "technical_exit_enabled": technical_source or source,
+                "allow_t0": allow_t0_source or source,
+            },
+        }
+
+    def exit_plan_for_position(self, tenant_id: int, account_id: int, position: dict, params: dict | None = None) -> dict:
+        symbol = str(position.get("symbol") or "").strip()
+        open_link = paper_trading_repo.get_open_signal_review_link_for_symbol(tenant_id, account_id, symbol) or {}
+        source_context = self._exit_source_context(position, open_link)
+        return self._exit_plan(position, params or {}, source_context)
 
     def _strategy_config_value(self, strategy: dict | None, params: dict | None, keys: tuple[str, ...]) -> Any:
         strategy = strategy or {}
@@ -105,6 +305,24 @@ class PaperTradingService:
 
     def _candidate_subtype(self, candidate: dict) -> str:
         return str(candidate.get("signal_subtype") or candidate.get("signal") or candidate.get("reason_tag") or "").strip().lower()
+
+    def _quality_gate_reason(self, candidate: dict, params: dict | None = None) -> str:
+        return self.quality_gate.paper_trade_block_reason(candidate, params)
+
+    def _executable_signal_block_reason(self, candidate: dict, params: dict | None = None) -> str:
+        params = params or {}
+        if self._bool_value(params.get("allow_non_executable_signals")):
+            return ""
+        runner = str(candidate.get("strategy_runner") or "").strip().lower()
+        if runner == "market_sample":
+            return "market_sample_not_executable"
+        explicit = candidate.get("executable_signal")
+        if explicit is not None:
+            return "" if self._bool_value(explicit) else "non_executable_signal"
+        signal_type = str(candidate.get("signal_type") or candidate.get("side") or "").strip().upper()
+        if signal_type and signal_type != "BUY":
+            return "non_buy_signal"
+        return ""
 
     def _limit_up_return_skip_reason(self, strategy: dict, candidate: dict) -> str:
         if self._strategy_code(strategy) != LIMIT_UP_RETURN_CODE:
@@ -245,6 +463,47 @@ class PaperTradingService:
     def summary(self, tenant_id: int, account_id: int | None = None) -> dict:
         return paper_trading_repo.summary(tenant_id, account_id)
 
+    def mark_to_market(self, tenant_id: int, account_id: int | None = None, payload: dict | None = None) -> dict:
+        payload = payload or {}
+        requested_account_id = int(account_id or payload.get("account_id") or 0)
+        if not requested_account_id:
+            account = self.ensure_default_account(tenant_id, payload)
+            requested_account_id = int(account.get("id") or 0)
+        positions = paper_trading_repo.list_positions(tenant_id, requested_account_id or None, active_only=True)
+        updated = []
+        missing = []
+        stale = []
+        for position in positions:
+            symbol = str(position.get("symbol") or "").strip()
+            if not symbol:
+                continue
+            snapshot = market_data_repo.get_latest_snapshot(symbol)
+            price = self._decimal((snapshot or {}).get("last_price"))
+            if price <= 0:
+                missing.append({"symbol": symbol, "reason": "missing_latest_snapshot"})
+                continue
+            trade_time = str((snapshot or {}).get("trade_time") or "")
+            if trade_time and trade_time[:10] != date.today().isoformat():
+                stale.append({"symbol": symbol, "trade_time": trade_time, "source": (snapshot or {}).get("source")})
+            item = paper_trading_repo.update_position_market_price(
+                tenant_id,
+                int(position.get("account_id") or requested_account_id),
+                symbol,
+                price,
+            )
+            if item:
+                updated.append({"position": item, "snapshot": snapshot or {}})
+        return {
+            "schema_version": "paper-mark-to-market/v1",
+            "tenant_id": int(tenant_id or 0),
+            "account_id": requested_account_id or None,
+            "updated": len(updated),
+            "missing": missing,
+            "stale": stale,
+            "items": updated,
+            "summary": self.summary(tenant_id, requested_account_id or None),
+        }
+
     def apply_strategy_scan(self, tenant_id: int, strategy: dict, scan: dict | None, params: dict | None = None) -> dict:
         params = params or {}
         if not scan:
@@ -296,6 +555,10 @@ class PaperTradingService:
             symbol = str(candidate.get("symbol") or candidate.get("code") or "").strip()
             if not symbol:
                 continue
+            quality_gate_reason = self._quality_gate_reason(candidate, params)
+            if quality_gate_reason:
+                blocked.append({"symbol": symbol, "reason": quality_gate_reason, "side": "BUY", "data_quality": candidate.get("data_quality"), "market_data_source": candidate.get("market_data_source")})
+                continue
             limit_up_return_skip_reason = self._limit_up_return_skip_reason(strategy, candidate)
             if limit_up_return_skip_reason:
                 skipped.append({"symbol": symbol, "reason": limit_up_return_skip_reason, "signal_subtype": self._candidate_subtype(candidate)})
@@ -312,6 +575,10 @@ class PaperTradingService:
             candidate_subtype = str(candidate.get("signal_subtype") or "").strip().lower()
             if candidate_signal_type == "RISK" or candidate_subtype == "failed_breakout":
                 skipped.append({"symbol": symbol, "reason": "risk_signal", "signal_type": candidate_signal_type, "signal_subtype": candidate_subtype})
+                continue
+            executable_block_reason = self._executable_signal_block_reason(candidate, params)
+            if executable_block_reason:
+                blocked.append({"symbol": symbol, "reason": executable_block_reason, "side": "BUY", "signal_type": candidate.get("signal_type"), "strategy_runner": candidate.get("strategy_runner")})
                 continue
             candidate_security_type = str(candidate.get("security_type") or security_type or "stock").strip().lower()
             candidate_bar_interval = normalize_bar_interval(candidate.get("bar_interval") or candidate.get("interval") or bar_interval)
@@ -377,6 +644,36 @@ class PaperTradingService:
                     bar_interval=candidate_bar_interval,
                     fee_rate=fee_rate,
                 )
+                pick = self._upsert_signal_pick(
+                    tenant_id,
+                    strategy=strategy,
+                    candidate=candidate,
+                    trade_date=trade_date,
+                    symbol=symbol,
+                    price=price,
+                    signal_hash=signal_hash,
+                    signal=signal,
+                    snapshot=snapshot,
+                    security_type=candidate_security_type,
+                    bar_interval=candidate_bar_interval,
+                )
+                paper_trading_repo.upsert_signal_review_link(
+                    tenant_id,
+                    signal_hash,
+                    trade_signal_id=signal.get("id"),
+                    pick_id=(pick or {}).get("id"),
+                    buy_order_id=(created.get("order") or {}).get("id"),
+                    status="open",
+                    metadata={
+                        "strategy_code": strategy.get("code") or "",
+                        "signal_subtype": self._candidate_subtype(candidate),
+                        "symbol": symbol,
+                        "trade_date": trade_date,
+                        "security_type": candidate_security_type,
+                        "bar_interval": candidate_bar_interval,
+                        "source_context": candidate.get("source_context") or {},
+                    },
+                )
             except Exception as exc:
                 skipped.append({"symbol": symbol, "reason": str(exc)})
                 continue
@@ -417,48 +714,76 @@ class PaperTradingService:
 
     def evaluate_exits(self, tenant_id: int, account_id: int, params: dict | None = None) -> dict:
         params = params or {}
-        stop_loss_pct = self._decimal(params.get("stop_loss_pct") or os.getenv("PAPER_STOP_LOSS_PCT") or "-0.08")
-        take_profit_pct = self._decimal(params.get("take_profit_pct") or os.getenv("PAPER_TAKE_PROFIT_PCT") or "0.15")
-        max_holding_days = int(params.get("max_holding_days") or os.getenv("PAPER_MAX_HOLDING_DAYS", "20") or 20)
         fee_rate = self._decimal(params.get("fee_rate") or os.getenv("PAPER_FEE_RATE") or "0")
         orders = []
         skipped = []
         blocked = []
+        evaluated = []
         positions = paper_trading_repo.list_positions(tenant_id, account_id, active_only=True)
         for position in positions:
             symbol = position.get("symbol")
+            open_link = paper_trading_repo.get_open_signal_review_link_for_symbol(tenant_id, account_id, symbol) or {}
+            source_context = self._exit_source_context(position, open_link)
+            exit_plan = self._exit_plan(position, params, source_context)
+            exit_rule = exit_plan
             quantity = int(position.get("quantity") or 0)
             avg_cost = self._decimal(position.get("avg_cost"))
             security_type = str(position.get("security_type") or "stock").strip().lower()
             bar_interval = normalize_bar_interval(position.get("bar_interval") or params.get("bar_interval") or params.get("interval") or "1d")
             adjust = str(params.get("adjust") or ("none" if bar_interval != "1d" else "qfq")).strip().lower()
-            allow_t0 = self._bool_value(params.get("allow_t0"), default=security_type == "convertible_bond")
+            allow_t0 = self._bool_value(params.get("allow_t0"), default=bool(exit_plan.get("allow_t0")) or security_type == "convertible_bond")
             snapshot = market_data_repo.get_latest_snapshot(symbol)
             sell_block_reason = self._sell_block_reason(snapshot, position)
             if sell_block_reason:
-                blocked.append({"symbol": symbol, "reason": sell_block_reason, "side": "SELL", "snapshot": snapshot or {}})
+                evaluated.append({"symbol": symbol, "reason": sell_block_reason, "exit_plan": exit_plan, "exit_rule": exit_rule})
+                blocked.append({"symbol": symbol, "reason": sell_block_reason, "side": "SELL", "snapshot": snapshot or {}, "exit_plan": exit_plan, "exit_rule": exit_rule})
                 continue
             price = self._decimal((snapshot or {}).get("last_price") or position.get("market_price"))
             if quantity <= 0 or price <= 0 or avg_cost <= 0:
-                skipped.append({"symbol": symbol, "reason": "missing_exit_price"})
+                evaluated.append({"symbol": symbol, "reason": "missing_exit_price", "exit_plan": exit_plan, "exit_rule": exit_rule})
+                skipped.append({"symbol": symbol, "reason": "missing_exit_price", "exit_plan": exit_plan, "exit_rule": exit_rule})
                 continue
             return_pct = (price - avg_cost) / avg_cost
             holding_days = self._holding_days(position.get("opened_at"))
             if holding_days == 0 and not allow_t0:
-                skipped.append({"symbol": symbol, "reason": "t0_sell_blocked", "security_type": security_type})
+                evaluated.append({"symbol": symbol, "reason": "t0_sell_blocked", "exit_plan": exit_plan, "exit_rule": exit_rule, "return_pct": float(return_pct), "holding_days": holding_days})
+                skipped.append({"symbol": symbol, "reason": "t0_sell_blocked", "security_type": security_type, "exit_plan": exit_plan, "exit_rule": exit_rule, "return_pct": float(return_pct), "holding_days": holding_days})
                 continue
             reason = ""
+            stop_loss_pct = self._decimal(exit_plan["stop_loss_pct"])
+            take_profit_pct = self._decimal(exit_plan["take_profit_pct"]) if exit_plan.get("take_profit_pct") is not None else None
+            take_profit_price = self._decimal(exit_plan.get("take_profit_price"))
+            sell_premium_rate = self._decimal(exit_plan.get("sell_premium_rate"))
+            max_holding_days = int(exit_plan["max_holding_days"])
+            premium_rate = self._premium_rate(snapshot or {}, position, source_context.get("candidate"), source_context.get("order_metadata"))
             if return_pct <= stop_loss_pct:
                 reason = "stop_loss"
-            elif return_pct >= take_profit_pct:
+            elif take_profit_price > 0 and price >= take_profit_price:
+                reason = "take_profit_price"
+            elif sell_premium_rate > 0 and premium_rate is not None and premium_rate >= sell_premium_rate:
+                reason = "premium_expanded"
+            elif take_profit_pct is not None and return_pct >= take_profit_pct:
                 reason = "take_profit"
             else:
-                reason = self._technical_exit_reason(symbol, price, bar_interval=bar_interval, adjust=adjust, params=params)
+                technical_params = {**params, "technical_exit_enabled": exit_plan["technical_exit_enabled"]}
+                reason = self._technical_exit_reason(symbol, price, bar_interval=bar_interval, adjust=adjust, params=technical_params)
             if not reason and holding_days >= max_holding_days:
                 reason = "max_holding_days"
+            evaluation = {
+                "symbol": symbol,
+                "reason": reason,
+                "exit_plan": exit_plan,
+                "exit_rule": exit_rule,
+                "return_pct": float(return_pct),
+                "holding_days": holding_days,
+            }
+            if premium_rate is not None:
+                evaluation["premium_rate"] = float(premium_rate)
+            evaluated.append(evaluation)
             if not reason:
                 continue
             idempotency_key = f"paper:sell:{tenant_id}:{account_id}:{symbol}:{datetime.now().date().isoformat()}:{reason}"
+            source_hash = open_link.get("source_signal_hash") or reason
             try:
                 created = paper_trading_repo.create_filled_order(
                     tenant_id,
@@ -468,20 +793,48 @@ class PaperTradingService:
                     quantity=quantity,
                     price=price,
                     strategy_id=None,
-                    strategy_code="exit_rule",
+                    strategy_code=exit_plan.get("strategy_code") or "exit_rule",
                     idempotency_key=idempotency_key,
-                    source_signal_hash=reason,
+                    source_signal_hash=source_hash,
                     reason=reason,
-                    metadata={"position": position, "snapshot": snapshot or {}, "return_pct": float(return_pct), "holding_days": holding_days, "security_type": security_type, "bar_interval": bar_interval, "adjust": adjust, "allow_t0": allow_t0},
+                    metadata={"position": position, "snapshot": snapshot or {}, "exit_plan": exit_plan, "exit_rule": exit_rule, "return_pct": float(return_pct), "premium_rate": float(premium_rate) if premium_rate is not None else None, "holding_days": holding_days, "security_type": security_type, "bar_interval": bar_interval, "adjust": adjust, "allow_t0": allow_t0},
                     security_type=security_type,
                     bar_interval=bar_interval,
                     fee_rate=fee_rate,
                 )
-                orders.append(created.get("order"))
+                order = created.get("order")
+                if isinstance(order, dict):
+                    order.setdefault("exit_plan", exit_plan)
+                    order.setdefault("exit_rule", exit_rule)
+                    order.setdefault("return_pct", float(return_pct))
+                    order.setdefault("holding_days", holding_days)
+                    if premium_rate is not None:
+                        order.setdefault("premium_rate", float(premium_rate))
+                paper_trading_repo.upsert_signal_review_link(
+                    tenant_id,
+                    source_hash,
+                    sell_order_id=(created.get("order") or {}).get("id"),
+                    status="closed",
+                    closed_at=datetime.now(),
+                    realized_return_pct=float(return_pct * Decimal("100")),
+                    metadata={"exit_reason": reason, "exit_plan": exit_plan, "return_pct": float(return_pct), "holding_days": holding_days},
+                )
+                if open_link.get("pick_id"):
+                    self.pick_service.update_review(
+                        tenant_id,
+                        int(open_link["pick_id"]),
+                        {
+                            "deal_status": "closed",
+                            "return_pct": float(return_pct * Decimal("100")),
+                            "holding_days": holding_days,
+                            "validation_result": reason,
+                        },
+                    )
+                orders.append(order)
             except Exception as exc:
-                skipped.append({"symbol": symbol, "reason": str(exc)})
+                skipped.append({"symbol": symbol, "reason": str(exc), "exit_plan": exit_plan, "exit_rule": exit_rule, "return_pct": float(return_pct), "holding_days": holding_days})
         report = self._execution_report(skipped=skipped, blocked=blocked, sample_count=len(positions))
-        return {"orders": [item for item in orders if item], "skipped": skipped, "blocked": blocked, **report, "execution_report": report}
+        return {"orders": [item for item in orders if item], "evaluated": evaluated, "skipped": skipped, "blocked": blocked, **report, "execution_report": report}
 
     def _technical_exit_reason(self, symbol: str, price: Decimal, *, bar_interval: str, adjust: str, params: dict) -> str:
         if not self._bool_value(params.get("technical_exit_enabled"), default=True):
@@ -525,6 +878,57 @@ class PaperTradingService:
                 continue
             normalized.append({**item, "symbol": symbol})
         return normalized
+
+    def _upsert_signal_pick(
+        self,
+        tenant_id: int,
+        *,
+        strategy: dict,
+        candidate: dict,
+        trade_date: str,
+        symbol: str,
+        price: Decimal,
+        signal_hash: str,
+        signal: dict,
+        snapshot: dict | None,
+        security_type: str,
+        bar_interval: str,
+    ) -> dict:
+        market_data = snapshot or {}
+        reason = str(candidate.get("signal") or candidate.get("reason_tag") or candidate.get("signal_subtype") or "strategy_signal")
+        note = str(candidate.get("note") or candidate.get("reason") or candidate.get("explain") or "")
+        payload = {
+            "symbol": symbol,
+            "stock_name": candidate.get("name") or candidate.get("stock_name") or symbol,
+            "trade_date": trade_date,
+            "source": "production_signal",
+            "source_channel": "paper_trading",
+            "strategy_code": strategy.get("code") or "",
+            "reason": reason,
+            "note": note,
+            "risk_level": candidate.get("risk_level") or candidate.get("risk_grade") or "pending",
+            "signal": candidate.get("signal_type") or candidate.get("signal") or "BUY",
+            "pick_price": float(price),
+            "status": "accepted",
+            "deal_status": "filled",
+            "secondary_spread": security_type,
+            "data_quality": candidate.get("data_quality") or market_data.get("data_quality") or "",
+            "market_data_source": candidate.get("market_data_source") or market_data.get("source") or "",
+            "fallback_used": bool(candidate.get("fallback_used") or market_data.get("fallback_used")),
+            "content_title": f"{strategy.get('code') or 'strategy'} {symbol}",
+            "content_ref": signal_hash,
+            "legacy_payload_json": {"source_context": candidate.get("source_context") or {}, "signal_hash": signal_hash},
+        }
+        pick = self.pick_service.create_pick(tenant_id, payload)
+        paper_trading_repo.upsert_signal_review_link(
+            tenant_id,
+            signal_hash,
+            trade_signal_id=signal.get("id"),
+            pick_id=pick.get("id"),
+            status="open",
+            metadata={"pick_source": "production_signal", "strategy_code": strategy.get("code") or "", "signal_subtype": self._candidate_subtype(candidate), "symbol": symbol, "source_context": candidate.get("source_context") or {}},
+        )
+        return pick
 
     def _signal_hash(self, strategy: dict, candidate: dict) -> str:
         payload = {

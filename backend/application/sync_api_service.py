@@ -11,9 +11,14 @@ from typing import Any
 from backend.infrastructure.cache.redis_client import get_json, set_json
 from backend.infrastructure.market_data.factory import create_fallback_market_data_provider
 from backend.infrastructure.market_data.provider import MarketDataProvider
-from backend.infrastructure.market_data.utils import infer_exchange, infer_security_type, normalize_bar_interval
+from backend.infrastructure.market_data.utils import BAR_INTERVAL_ALIASES, infer_exchange, infer_security_type, normalize_bar_interval
 from backend.infrastructure.tasks.queue import append_current_task_event, enqueue_task
-from backend.repositories import market_data_repo
+from backend.core.errors import AppError
+from backend.repositories import market_data_repo, paper_trading_repo
+
+
+ALLOWED_ADJUSTS = {"qfq", "hfq", "none", "raw", "bfq", "不复权"}
+ALLOWED_SECURITY_TYPES = {"stock", "etf", "index", "convertible_bond", "bond", "fund", "b_share", "other"}
 
 
 class SyncApiService:
@@ -68,7 +73,7 @@ class SyncApiService:
 
     def _normalize_provider_adjust(self, adjust: str) -> str:
         normalized = str(adjust or "qfq").strip().lower()
-        return "" if normalized in {"none", "raw", "bfq", "不复权"} else normalized
+        return "none" if normalized in {"none", "raw", "bfq", "不复权"} else normalized
 
     def _normalize_storage_adjust(self, adjust: str) -> str:
         normalized = str(adjust or "qfq").strip().lower()
@@ -84,6 +89,61 @@ class SyncApiService:
     def _chunked(self, items: list[str], batch_size: int) -> list[list[str]]:
         safe_batch_size = max(1, int(batch_size or 1))
         return [items[index : index + safe_batch_size] for index in range(0, len(items), safe_batch_size)]
+
+    def _local_symbol_names(self, symbols: list[str]) -> dict[str, str]:
+        names: dict[str, str] = {}
+        for symbol in symbols[:1000]:
+            normalized_symbol = str(symbol or "").strip()
+            if not normalized_symbol:
+                continue
+            payload = market_data_repo.list_stocks(keyword=normalized_symbol, limit=5)
+            for item in payload.get("items") or []:
+                name = str(item.get("name") or "").strip()
+                if item.get("symbol") == normalized_symbol and self._usable_symbol_name(normalized_symbol, name):
+                    names[normalized_symbol] = name
+                    break
+        missing = [symbol for symbol in symbols if symbol not in names]
+        if missing:
+            names.update(self._provider_symbol_names(missing))
+        return names
+
+    def _usable_symbol_name(self, symbol: str, name: str) -> bool:
+        normalized_name = str(name or "").strip()
+        return bool(normalized_name and normalized_name != symbol and "?" not in normalized_name and "\ufffd" not in normalized_name)
+
+    def _provider_symbol_names(self, symbols: list[str]) -> dict[str, str]:
+        wanted = {str(symbol or "").strip() for symbol in symbols if str(symbol or "").strip()}
+        if not wanted:
+            return {}
+        try:
+            stocks = self.market_data_provider.get_stock_list()
+        except Exception:
+            return {}
+        names: dict[str, str] = {}
+        matched = []
+        for item in stocks:
+            symbol = str(getattr(item, "symbol", "") or "").strip()
+            name = str(getattr(item, "name", "") or "").strip()
+            if symbol in wanted and self._usable_symbol_name(symbol, name):
+                names[symbol] = name
+                matched.append(item)
+        if matched:
+            market_data_repo.upsert_stocks(matched)
+        return names
+
+    def _symbol_label(self, symbol: str, names: dict[str, str]) -> str:
+        name = str(names.get(symbol) or "").strip()
+        return f"{symbol} {name}" if name and name != symbol else symbol
+
+    def _provider_display_name(self) -> str:
+        usage = getattr(self.market_data_provider, "last_usage", None)
+        actual_provider = str(getattr(usage, "actual_provider", "") or "").strip()
+        if actual_provider:
+            return actual_provider
+        providers = getattr(self.market_data_provider, "providers", None) or []
+        if providers:
+            return str(getattr(providers[0], "name", "") or self.market_data_provider.name)
+        return str(self.market_data_provider.name)
 
     def _bool_value(self, value: Any, default: bool = False) -> bool:
         if value is None:
@@ -142,6 +202,59 @@ class SyncApiService:
         except ValueError:
             return None
 
+    def _required_int(self, payload: dict, key: str, default: int = 0, *, min_value: int = 0, max_value: int | None = None) -> int:
+        raw = payload.get(key)
+        if raw in (None, ""):
+            value = default
+        else:
+            try:
+                value = int(raw)
+            except (TypeError, ValueError) as exc:
+                raise AppError(f"{key} must be an integer") from exc
+        if value < min_value:
+            raise AppError(f"{key} must be >= {min_value}")
+        if max_value is not None and value > max_value:
+            raise AppError(f"{key} must be <= {max_value}")
+        return value
+
+    def _validate_date_window(self, payload: dict, *, require_start: bool = False) -> tuple[str, str]:
+        start_date = str(payload.get("start_date") or "").strip()
+        end_date = str(payload.get("end_date") or date.today().isoformat()).strip()
+        parsed_start = self._parse_date(start_date) if start_date else None
+        parsed_end = self._parse_date(end_date)
+        if require_start and not start_date:
+            raise AppError("start_date is required")
+        if start_date and not parsed_start:
+            raise AppError("start_date must use YYYY-MM-DD")
+        if not parsed_end:
+            raise AppError("end_date must use YYYY-MM-DD")
+        if parsed_start and parsed_start > parsed_end:
+            raise AppError("start_date must be before or equal to end_date")
+        return start_date, end_date
+
+    def _validate_interval(self, value: Any, *, allow_1m: bool = False) -> str:
+        text = str(value or "1d").strip().lower()
+        interval = normalize_bar_interval(text)
+        allowed = set(BAR_INTERVAL_ALIASES.values())
+        if not allow_1m:
+            allowed.discard("1m")
+        if interval not in allowed:
+            raise AppError("interval must be one of 1d, 5m, 15m, 30m or 1h")
+        return interval
+
+    def _validate_adjust(self, value: Any, *, interval: str) -> str:
+        default = "none" if interval != "1d" else "qfq"
+        adjust = str(value or default).strip().lower()
+        if adjust not in ALLOWED_ADJUSTS:
+            raise AppError("adjust must be one of qfq, hfq or none")
+        return adjust
+
+    def _validate_security_type(self, value: Any, *, default: str | None = None) -> str | None:
+        normalized = str(value or default or "").strip().lower()
+        if normalized and normalized not in ALLOWED_SECURITY_TYPES:
+            raise AppError("security_type is not supported")
+        return normalized or None
+
     def _symbol_sync_window(
         self,
         symbol: str,
@@ -197,6 +310,7 @@ class SyncApiService:
         normalized_interval = normalize_bar_interval(interval)
         resolved_symbols, symbol_meta = self._resolve_symbols(symbols, max_symbols=max_symbols, security_type=security_type)
         total = len(resolved_symbols)
+        symbol_names = self._local_symbol_names(resolved_symbols)
         provider_adjust = self._normalize_provider_adjust(adjust)
         storage_adjust = self._normalize_storage_adjust(adjust)
         if normalized_interval != "1d" and storage_adjust in {"qfq", "hfq"}:
@@ -204,10 +318,11 @@ class SyncApiService:
             storage_adjust = "none"
         requested_end = end_date or date.today().isoformat()
         mode = "incremental" if incremental else ("explicit" if start_date else "bootstrap")
+        provider_display_name = self._provider_display_name()
         sync_run = market_data_repo.create_sync_run(
             tenant_id,
             mode=mode,
-            source=self.market_data_provider.name,
+            source=provider_display_name,
             adjust=storage_adjust,
             interval=normalized_interval,
             requested_symbols=total,
@@ -226,7 +341,7 @@ class SyncApiService:
         )
         run_id = sync_run.get("id")
         append_current_task_event(
-            f"market sync started: {total} symbols, provider={self.market_data_provider.name}, interval={normalized_interval}, adjust={storage_adjust}",
+            f"行情同步开始：共 {total} 个标的，数据源 {provider_display_name}，周期 {normalized_interval}，复权 {storage_adjust}",
             progress={"current": 0, "total": total, "percent": 0 if total else 100},
             detail={"run_id": run_id, "mode": mode, "security_type": security_type or ""},
         )
@@ -234,6 +349,7 @@ class SyncApiService:
             normalized_symbol = str(symbol or "").strip()
             if not normalized_symbol:
                 continue
+            symbol_label = self._symbol_label(normalized_symbol, symbol_names)
             effective_start, effective_end, window_meta = self._symbol_sync_window(
                 normalized_symbol,
                 requested_start=start_date,
@@ -246,20 +362,27 @@ class SyncApiService:
             )
             try:
                 append_current_task_event(
-                    f"[{index}/{total}] syncing {normalized_symbol} {effective_start}..{effective_end}",
+                    f"[{index}/{total}] {symbol_label} 开始同步，区间 {effective_start} 至 {effective_end}",
                     progress={"current": index - 1, "total": total, "percent": round(((index - 1) / total) * 100, 2) if total else 100},
-                    detail={"symbol": normalized_symbol, "start_date": effective_start, "end_date": effective_end},
+                    detail={"symbol": normalized_symbol, "name": symbol_names.get(normalized_symbol) or "", "start_date": effective_start, "end_date": effective_end},
                 )
                 bars = self.market_data_provider.get_daily_bars(normalized_symbol, effective_start, effective_end, adjust=provider_adjust, interval=normalized_interval)
                 source = bars[0].source if bars else self.market_data_provider.name
+                if not symbol_names.get(normalized_symbol):
+                    for bar in bars:
+                        name = str(getattr(bar, "name", "") or "").strip()
+                        if name:
+                            symbol_names[normalized_symbol] = name
+                            symbol_label = self._symbol_label(normalized_symbol, symbol_names)
+                            break
                 market_data_repo.upsert_stocks(
                     [
                         {
                             "symbol": normalized_symbol,
-                            "name": normalized_symbol,
+                            "name": symbol_names.get(normalized_symbol) or normalized_symbol,
                             "exchange": infer_exchange(normalized_symbol),
                             "market": "A",
-                            "security_type": infer_security_type(normalized_symbol, normalized_symbol),
+                            "security_type": infer_security_type(normalized_symbol, symbol_names.get(normalized_symbol) or normalized_symbol),
                         }
                     ]
                 )
@@ -305,9 +428,9 @@ class SyncApiService:
                     }
                 )
                 append_current_task_event(
-                    f"[{index}/{total}] synced {normalized_symbol}: bars={len(bars)}, persisted={persisted}, source={source}",
+                    f"[{index}/{total}] {symbol_label} 同步成功，本次获取 {len(bars)} 条，写入/更新 {persisted} 条，来源 {source}",
                     progress={"current": index, "total": total, "percent": round((index / total) * 100, 2) if total else 100},
-                    detail={"symbol": normalized_symbol, "bars": len(bars), "persisted_bars": persisted, "source": source},
+                    detail={"symbol": normalized_symbol, "name": symbol_names.get(normalized_symbol) or "", "bars": len(bars), "persisted_bars": persisted, "source": source},
                 )
             except Exception as exc:
                 message = str(exc)
@@ -315,7 +438,7 @@ class SyncApiService:
                 market_data_repo.upsert_sync_state(
                     tenant_id,
                     symbol=normalized_symbol,
-                    source=self.market_data_provider.name,
+                    source=provider_display_name,
                     adjust=storage_adjust,
                     interval=normalized_interval,
                     coverage=market_data_repo.get_symbol_coverage(normalized_symbol, adjust=storage_adjust, interval=normalized_interval),
@@ -329,22 +452,22 @@ class SyncApiService:
                     status="failed",
                     start_date=effective_start,
                     end_date=effective_end,
-                    source=self.market_data_provider.name,
+                    source=provider_display_name,
                     adjust=storage_adjust,
                     interval=normalized_interval,
                     error=message,
                 )
                 append_current_task_event(
-                    f"[{index}/{total}] failed {normalized_symbol}: {message[:200]}",
+                    f"[{index}/{total}] {symbol_label} 同步失败：{message[:300]}",
                     status="running",
                     progress={"current": index, "total": total, "percent": round((index / total) * 100, 2) if total else 100},
-                    detail={"symbol": normalized_symbol, "error": message[:500]},
+                    detail={"symbol": normalized_symbol, "name": symbol_names.get(normalized_symbol) or "", "error": message[:500]},
                 )
         if errors and not synced:
             joined = " | ".join(f"{item['symbol']}: {item['message']}" for item in errors[:5])
             market_data_repo.finish_sync_run(run_id, status="failed", result={"synced_symbols": 0, "failed_symbols": len(errors), "persisted_bars": 0, "interval": normalized_interval, "errors": errors[:20]})
             append_current_task_event(
-                f"market sync failed: failed_symbols={len(errors)}; {joined[:300]}",
+                f"行情同步失败：全部标的失败，共 {len(errors)} 个。原因：{joined[:300]}",
                 status="failed",
                 progress={"current": total, "total": total, "percent": 100 if total else 0},
                 detail={"run_id": run_id, "failed_symbols": len(errors)},
@@ -372,7 +495,7 @@ class SyncApiService:
         }
         market_data_repo.finish_sync_run(run_id, status="completed_with_errors" if errors else "completed", result=result)
         append_current_task_event(
-            f"market sync finished: synced={len(synced)}, failed={len(errors)}, persisted_bars={result['persisted_bars']}",
+            f"行情同步完成：成功 {len(synced)} 个，失败 {len(errors)} 个，本次写入/更新 {result['persisted_bars']} 条",
             progress=result["progress"],
             detail={"run_id": run_id, "synced_symbols": len(synced), "failed_symbols": len(errors), "persisted_bars": result["persisted_bars"]},
         )
@@ -737,18 +860,16 @@ class SyncApiService:
         )
 
     def enqueue_market_data_sync(self, tenant_id: int, payload: dict) -> dict:
-        today = date.today()
         symbols = payload.get("symbols") or ["000001", "600519"]
-        start_date = payload.get("start_date") or ""
-        end_date = payload.get("end_date") or today.isoformat()
-        interval = normalize_bar_interval(payload.get("interval") or payload.get("bar_interval") or "1d")
-        adjust = payload.get("adjust") or ("none" if interval != "1d" else "qfq")
-        max_symbols = int(payload.get("max_symbols") or 0)
-        security_type = str(payload.get("security_type") or "").strip().lower() or None
-        batch_size = int(payload.get("batch_size") or (200 if self._is_all_symbols(symbols) else 0))
+        start_date, end_date = self._validate_date_window(payload)
+        interval = self._validate_interval(payload.get("interval") or payload.get("bar_interval") or "1d")
+        adjust = self._validate_adjust(payload.get("adjust"), interval=interval)
+        max_symbols = self._required_int(payload, "max_symbols", 0, min_value=0, max_value=20000)
+        security_type = self._validate_security_type(payload.get("security_type"))
+        batch_size = self._required_int(payload, "batch_size", 200 if self._is_all_symbols(symbols) else 0, min_value=0, max_value=1000)
         incremental = self._bool_value(payload.get("incremental"), self._bool_value(os.getenv("MARKET_SYNC_INCREMENTAL"), True))
-        bootstrap_days = int(payload.get("bootstrap_days") or self._int_env("MARKET_BOOTSTRAP_DAYS", 180))
-        correction_days = int(payload.get("correction_days") or self._int_env("MARKET_SYNC_CORRECTION_DAYS", 3))
+        bootstrap_days = self._required_int(payload, "bootstrap_days", self._int_env("MARKET_BOOTSTRAP_DAYS", 180), min_value=1, max_value=3650)
+        correction_days = self._required_int(payload, "correction_days", self._int_env("MARKET_SYNC_CORRECTION_DAYS", 3), min_value=0, max_value=365)
         if batch_size > 0:
             return enqueue_task(
                 "market.sync.plan",
@@ -813,9 +934,9 @@ class SyncApiService:
 
     def enqueue_quote_snapshot_sync(self, tenant_id: int, payload: dict) -> dict:
         symbols = payload.get("symbols") or ["000001", "600519"]
-        max_symbols = int(payload.get("max_symbols") or 0)
-        security_type = str(payload.get("security_type") or "").strip().lower() or None
-        batch_size = int(payload.get("batch_size") or (500 if self._is_all_symbols(symbols) else 0))
+        max_symbols = self._required_int(payload, "max_symbols", 0, min_value=0, max_value=20000)
+        security_type = self._validate_security_type(payload.get("security_type"))
+        batch_size = self._required_int(payload, "batch_size", 500 if self._is_all_symbols(symbols) else 0, min_value=0, max_value=1000)
         if batch_size > 0:
             return enqueue_task(
                 "market.snapshot.plan",
@@ -840,11 +961,207 @@ class SyncApiService:
         )
         return task
 
+    def enqueue_paper_position_snapshot_sync(self, tenant_id: int, payload: dict) -> dict:
+        account_id = self._required_int(payload, "account_id", 0, min_value=0) or None
+        max_symbols = self._required_int(payload, "max_symbols", 200, min_value=0, max_value=20000)
+        batch_size = self._required_int(payload, "batch_size", 100, min_value=0, max_value=1000)
+        security_type = self._validate_security_type(payload.get("security_type"))
+        source = str(payload.get("source") or "paper-position-snapshot").strip()
+        scheduled_bucket = payload.get("scheduled_bucket")
+        symbols = paper_trading_repo.list_active_position_symbols(tenant_id, account_id=account_id, limit=max_symbols)
+        updated_at = datetime.now().isoformat(timespec="seconds")
+        if not symbols:
+            return {
+                "schema_version": "paper-position-snapshot/v1",
+                "status": "skipped",
+                "skip_reason": "no_active_paper_positions",
+                "tenant_id": int(tenant_id or 0),
+                "account_id": account_id,
+                "symbol_count": 0,
+                "symbols": [],
+                "updated_at": updated_at,
+                "source": source,
+                "scheduled_bucket": scheduled_bucket,
+                "progress": {"current": 0, "total": 0, "percent": 100},
+            }
+        snapshot_payload = {
+            "symbols": symbols,
+            "symbol_count": len(symbols),
+            "max_symbols": 0,
+            "batch_size": batch_size,
+            "security_type": security_type or "",
+            "source": source,
+            "scheduled_bucket": scheduled_bucket,
+            "parent": "paper.positions.snapshot",
+            "paper_position_symbol_count": len(symbols),
+            "updated_at": updated_at,
+            "skip_reason": "",
+        }
+        if account_id:
+            snapshot_payload["account_id"] = account_id
+        if batch_size > 0:
+            task = enqueue_task(
+                "market.snapshot.plan",
+                self._plan_quote_snapshot_sync,
+                tenant_id,
+                symbols,
+                0,
+                batch_size,
+                security_type,
+                tenant_id=tenant_id,
+                payload=snapshot_payload,
+                idempotency_key=f"paper.positions.snapshot.child:{tenant_id}:{account_id or ''}:{scheduled_bucket}:{batch_size}:{security_type or ''}:{','.join(symbols)[:256]}",
+                max_retries=1,
+                priority=True,
+            )
+        else:
+            task = enqueue_task(
+                "market.snapshot",
+                self._sync_quote_snapshots,
+                symbols,
+                0,
+                security_type,
+                tenant_id=tenant_id,
+                payload=snapshot_payload,
+                idempotency_key=f"paper.positions.snapshot.child:{tenant_id}:{account_id or ''}:{scheduled_bucket}:{batch_size}:{security_type or ''}:{','.join(symbols)[:256]}",
+                max_retries=1,
+                priority=True,
+            )
+        return {
+            "schema_version": "paper-position-snapshot/v1",
+            "status": "queued",
+            "skip_reason": "",
+            "tenant_id": int(tenant_id or 0),
+            "account_id": account_id,
+            "symbol_count": len(symbols),
+            "symbols": symbols[:50],
+            "updated_at": updated_at,
+            "source": source,
+            "scheduled_bucket": scheduled_bucket,
+            "snapshot_task": {"id": task.get("id"), "name": task.get("name"), "status": task.get("status")},
+            "batch_size": batch_size,
+            "security_type": security_type or "",
+            "progress": {"current": len(symbols), "total": len(symbols), "percent": 100},
+        }
+
+    def monitor_paper_positions(self, tenant_id: int, payload: dict) -> dict:
+        from backend.application.paper_trading_service import PaperTradingService
+
+        account_id = self._required_int(payload, "account_id", 0, min_value=0) or None
+        max_symbols = self._required_int(payload, "max_symbols", 200, min_value=0, max_value=20000)
+        batch_size = self._required_int(payload, "batch_size", 100, min_value=0, max_value=1000)
+        security_type = self._validate_security_type(payload.get("security_type"))
+        source = str(payload.get("source") or "paper-position-monitor").strip()
+        scheduled_bucket = payload.get("scheduled_bucket")
+        sync_snapshots = self._bool_value(payload.get("sync_snapshots"), True)
+        evaluate_exits = self._bool_value(payload.get("evaluate_exits"), True)
+
+        positions = paper_trading_repo.list_positions(tenant_id, account_id=account_id, active_only=True)
+        if security_type:
+            positions = [item for item in positions if str(item.get("security_type") or "").strip().lower() == security_type]
+
+        symbols = []
+        seen = set()
+        for position in positions:
+            symbol = str(position.get("symbol") or "").strip()
+            if not symbol or symbol in seen:
+                continue
+            seen.add(symbol)
+            symbols.append(symbol)
+            if max_symbols and len(symbols) >= max_symbols:
+                break
+        selected_symbols = set(symbols)
+        positions = [item for item in positions if str(item.get("symbol") or "").strip() in selected_symbols]
+
+        updated_at = datetime.now().isoformat(timespec="seconds")
+        if not symbols:
+            return {
+                "schema_version": "paper-position-monitor/v1",
+                "status": "skipped",
+                "skip_reason": "no_active_paper_positions",
+                "tenant_id": int(tenant_id or 0),
+                "account_id": account_id,
+                "position_count": 0,
+                "symbol_count": 0,
+                "symbols": [],
+                "updated_at": updated_at,
+                "source": source,
+                "scheduled_bucket": scheduled_bucket,
+                "progress": {"current": 0, "total": 0, "percent": 100},
+            }
+
+        snapshot_results = []
+        if sync_snapshots:
+            safe_batch_size = max(1, int(batch_size or len(symbols) or 1))
+            for batch_symbols in self._chunked(symbols, safe_batch_size):
+                snapshot_results.append(self._sync_quote_snapshots(batch_symbols, 0, security_type))
+
+        paper_service = PaperTradingService()
+        account_ids = sorted({int(item.get("account_id") or 0) for item in positions if int(item.get("account_id") or 0)})
+        accounts = []
+        total_exit_orders = 0
+        total_exit_skipped = 0
+        total_exit_blocked = 0
+        for active_account_id in account_ids:
+            monitor_payload = {**payload, "source": source, "account_id": active_account_id}
+            mark_result = paper_service.mark_to_market(tenant_id, active_account_id, monitor_payload)
+            exit_result = paper_service.evaluate_exits(tenant_id, active_account_id, monitor_payload) if evaluate_exits else {"orders": [], "skipped": [], "blocked": []}
+            total_exit_orders += len(exit_result.get("orders") or [])
+            total_exit_skipped += len(exit_result.get("skipped") or [])
+            total_exit_blocked += len(exit_result.get("blocked") or [])
+            accounts.append(
+                {
+                    "account_id": active_account_id,
+                    "mark_to_market": {
+                        "updated": mark_result.get("updated", 0),
+                        "missing": len(mark_result.get("missing") or []),
+                        "stale": len(mark_result.get("stale") or []),
+                    },
+                    "exits": {
+                        "orders": len(exit_result.get("orders") or []),
+                        "skipped": len(exit_result.get("skipped") or []),
+                        "blocked": len(exit_result.get("blocked") or []),
+                    },
+                }
+            )
+
+        return {
+            "schema_version": "paper-position-monitor/v1",
+            "status": "completed",
+            "skip_reason": "",
+            "tenant_id": int(tenant_id or 0),
+            "account_id": account_id,
+            "position_count": len(positions),
+            "symbol_count": len(symbols),
+            "symbols": symbols[:50],
+            "updated_at": updated_at,
+            "source": source,
+            "scheduled_bucket": scheduled_bucket,
+            "sync_snapshots": sync_snapshots,
+            "evaluate_exits": evaluate_exits,
+            "snapshot_sync": {
+                "batch_count": len(snapshot_results),
+                "requested_symbols": sum(int(item.get("requested_symbols") or 0) for item in snapshot_results),
+                "snapshot_count": sum(int(item.get("snapshot_count") or 0) for item in snapshot_results),
+                "persisted_snapshots": sum(int(item.get("persisted_snapshots") or 0) for item in snapshot_results),
+                "source": ",".join(sorted({str(item.get("source") or "") for item in snapshot_results if item.get("source")})),
+            },
+            "accounts": accounts,
+            "exit_summary": {
+                "orders": total_exit_orders,
+                "skipped": total_exit_skipped,
+                "blocked": total_exit_blocked,
+            },
+            "progress": {"current": len(symbols), "total": len(symbols), "percent": 100},
+        }
+
     def enqueue_auction_snapshot_sync(self, tenant_id: int, payload: dict) -> dict:
         symbols = payload.get("symbols") or "all"
         trade_date = payload.get("trade_date") or date.today().isoformat()
-        max_symbols = int(payload.get("max_symbols") or 0)
-        security_type = str(payload.get("security_type") or "stock").strip().lower() or "stock"
+        if not self._parse_date(trade_date):
+            raise AppError("trade_date must use YYYY-MM-DD")
+        max_symbols = self._required_int(payload, "max_symbols", 0, min_value=0, max_value=20000)
+        security_type = self._validate_security_type(payload.get("security_type"), default="stock") or "stock"
         force = self._bool_value(payload.get("force"), False)
         normalized_payload = {
             "symbols": symbols,
@@ -870,11 +1187,11 @@ class SyncApiService:
 
     def enqueue_indicator_precompute(self, tenant_id: int, payload: dict) -> dict:
         symbols = payload.get("symbols") or "all"
-        adjust = payload.get("adjust") or "qfq"
-        interval = normalize_bar_interval(payload.get("interval") or payload.get("bar_interval") or "1d")
-        max_symbols = int(payload.get("max_symbols") or 0)
-        lookback_days = int(payload.get("lookback_days") or 180)
-        security_type = str(payload.get("security_type") or "stock").strip().lower() or "stock"
+        interval = self._validate_interval(payload.get("interval") or payload.get("bar_interval") or "1d")
+        adjust = self._validate_adjust(payload.get("adjust") or "qfq", interval=interval)
+        max_symbols = self._required_int(payload, "max_symbols", 0, min_value=0, max_value=20000)
+        lookback_days = self._required_int(payload, "lookback_days", 180, min_value=20, max_value=2000)
+        security_type = self._validate_security_type(payload.get("security_type"), default="stock") or "stock"
         normalized_payload = {
             "symbols": symbols,
             "adjust": adjust,
@@ -901,10 +1218,10 @@ class SyncApiService:
 
     def enqueue_qfq_repair(self, tenant_id: int, payload: dict) -> dict:
         symbols = payload.get("symbols") or "all"
-        max_symbols = int(payload.get("max_symbols") or 0)
-        correction_days = int(payload.get("correction_days") or 30)
-        interval = normalize_bar_interval(payload.get("interval") or payload.get("bar_interval") or "1d")
-        security_type = str(payload.get("security_type") or "stock").strip().lower() or "stock"
+        max_symbols = self._required_int(payload, "max_symbols", 0, min_value=0, max_value=20000)
+        correction_days = self._required_int(payload, "correction_days", 30, min_value=1, max_value=365)
+        interval = self._validate_interval(payload.get("interval") or payload.get("bar_interval") or "1d")
+        security_type = self._validate_security_type(payload.get("security_type"), default="stock") or "stock"
         normalized_payload = {
             "symbols": symbols,
             "max_symbols": max_symbols,

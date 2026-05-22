@@ -197,6 +197,23 @@ def download_backup(name):
     return send_file(path, as_attachment=True, download_name=name)
 
 
+@bp.route('/backups/<name>')
+@admin_required
+def backup_detail(name):
+    backup_dir = current_app.config.get('BACKUP_DIR', 'backups')
+    path = os.path.join(backup_dir, name)
+    if not os.path.isfile(path):
+        return '文件不存在', 404
+    st = os.stat(path)
+    meta = {
+        'created_at': datetime.fromtimestamp(st.st_mtime).strftime('%Y-%m-%d %H:%M:%S'),
+        'version': 'legacy',
+        'picks_count': '-',
+        'actor': {'username': 'system'},
+    }
+    return render_template('admin/backup_detail.html', name=name, meta=meta)
+
+
 @bp.route('/backups/<name>', methods=['DELETE'])
 @admin_required
 def delete_backup(name):

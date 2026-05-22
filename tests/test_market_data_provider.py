@@ -1,5 +1,6 @@
 from datetime import date, datetime
 from decimal import Decimal
+import time
 
 import pytest
 
@@ -56,6 +57,18 @@ class WorkingProvider:
         return HealthCheckResult(provider=self.name, ok=True)
 
 
+class SlowProvider(WorkingProvider):
+    name = "slow"
+
+    def get_daily_bars(self, symbol, start_date, end_date, adjust="qfq", interval="1d"):
+        time.sleep(0.2)
+        return super().get_daily_bars(symbol, start_date, end_date, adjust=adjust, interval=interval)
+
+    def health_check(self):
+        time.sleep(0.2)
+        return HealthCheckResult(provider=self.name, ok=True)
+
+
 def test_fallback_provider_uses_next_provider_when_first_fails():
     provider = FallbackMarketDataProvider([BrokenProvider(), WorkingProvider()])
 
@@ -77,6 +90,21 @@ def test_fallback_provider_raises_when_all_providers_fail():
 
     with pytest.raises(RuntimeError):
         provider.get_stock_list()
+
+
+def test_fallback_provider_times_out_slow_primary_and_uses_next_provider():
+    provider = FallbackMarketDataProvider([SlowProvider(), WorkingProvider()], timeout_seconds=0.01)
+
+    started = time.perf_counter()
+    bars = provider.get_daily_bars("000001", "2026-04-27", "2026-05-02")
+    elapsed = time.perf_counter() - started
+    usage = provider.usage_metadata()
+
+    assert elapsed < 0.15
+    assert bars
+    assert usage["actual_provider"] == "akshare"
+    assert usage["fallback_used"] is True
+    assert any("timed out" in error for error in usage["errors"])
 
 
 def test_mootdx_provider_health_check_does_not_raise_when_unavailable():

@@ -100,6 +100,7 @@ jobs:
           LOGS_REPOSITORY_BACKEND=mysql
           STRATEGY_POOL_REPOSITORY_BACKEND=mysql
           STRATEGY_REPOSITORY_BACKEND=mysql
+          TRADING_REPOSITORY_BACKEND=mysql
           WEB_WORKERS=2
           WEB_THREADS=4
           WEB_TIMEOUT=120
@@ -146,6 +147,7 @@ jobs:
           LOGS_REPOSITORY_BACKEND=mysql
           STRATEGY_POOL_REPOSITORY_BACKEND=mysql
           STRATEGY_REPOSITORY_BACKEND=mysql
+          TRADING_REPOSITORY_BACKEND=mysql
           WEB_WORKERS=2
           WEB_THREADS=4
           WEB_TIMEOUT=120
@@ -168,8 +170,21 @@ jobs:
       - name: Validate MySQL schema
         run: docker compose run --rm backend python scripts/validate_mysql_schema.py
 
+      - name: Verify MySQL dump restore
+        run: |
+          mkdir -p backups
+          docker compose exec -T mysql sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysqldump -uroot --single-transaction --routines --triggers "$MYSQL_DATABASE"' > backups/ci_mysql_dump.sql
+          sha256sum backups/ci_mysql_dump.sql
+          test -s backups/ci_mysql_dump.sql
+          docker compose exec -T mysql sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot -e "DROP DATABASE IF EXISTS restore_check_ci; CREATE DATABASE restore_check_ci CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"'
+          docker compose exec -T mysql sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot restore_check_ci' < backups/ci_mysql_dump.sql
+          docker compose run --rm -e DATABASE_URL=mysql+pymysql://${MYSQL_USER:-strategy}:${MYSQL_PASSWORD}@mysql:3306/restore_check_ci?charset=utf8mb4 backend python scripts/validate_mysql_schema.py
+
+      - name: Validate production evidence passing fixture
+        run: python -m pytest tests/test_production_evidence.py::test_production_evidence_accepts_complete_backup_soak_and_rollback_bundle
+
       - name: Start production stack
-        run: docker compose up -d backend frontend
+        run: docker compose up -d backend worker frontend
 
       - name: Assert production readiness over gateway
         run: |
@@ -184,8 +199,33 @@ jobs:
             fi
             sleep 2
           done
+          worker_status="$(docker compose ps --status running --services worker)"
+          test "$worker_status" = "worker"
           legacy_status="$(curl -sS -o /tmp/legacy-api-response.txt -w '%{http_code}' -X POST http://localhost:5174/api/picks -H 'Content-Type: application/json' -d '{}')"
           test "$legacy_status" = "410"
+
+      - name: Assert worker consumes a queued task
+        run: |
+          docker compose exec -T backend python - <<'PY'
+          import time
+          from backend.infrastructure.tasks.handlers import get_task_handler
+          from backend.infrastructure.tasks.queue import enqueue_task, get_task
+
+          task = enqueue_task(
+              "reports.daily_review",
+              get_task_handler("reports.daily_review"),
+              tenant_id=1,
+              payload={"trade_date": "2026-05-12", "source": "ci-worker-smoke"},
+              idempotency_key=f"ci-worker-smoke-{int(time.time())}",
+          )
+          for _ in range(30):
+              current = get_task(task["id"]) or {}
+              if current.get("status") in {"completed", "failed", "cancelled", "stale"}:
+                  print(current)
+                  raise SystemExit(0 if current.get("status") == "completed" else 1)
+              time.sleep(2)
+          raise SystemExit("worker did not complete queued smoke task")
+          PY
 
       - name: Stop compose services
         if: always()

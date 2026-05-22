@@ -106,3 +106,22 @@ class PaperFill(TenantScopedMixin, TimestampMixin, Base):
     amount: Mapped[Decimal] = mapped_column(Numeric(24, 4), nullable=False)
     fee: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False, default=Decimal("0"))
     filled_at: Mapped[datetime] = mapped_column(DateTime, index=True, nullable=False)
+
+
+class SignalReviewLink(TenantScopedMixin, TimestampMixin, Base):
+    __tablename__ = "signal_review_links"
+    __table_args__ = (UniqueConstraint("tenant_id", "source_signal_hash", name="uk_signal_review_links_source_hash"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    source_signal_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    trade_signal_id: Mapped[int | None] = mapped_column(index=True, nullable=True)
+    pick_id: Mapped[int | None] = mapped_column(index=True, nullable=True)
+    buy_order_id: Mapped[int | None] = mapped_column(index=True, nullable=True)
+    sell_order_id: Mapped[int | None] = mapped_column(index=True, nullable=True)
+    buy_fill_id: Mapped[int | None] = mapped_column(index=True, nullable=True)
+    sell_fill_id: Mapped[int | None] = mapped_column(index=True, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), index=True, nullable=False, default="open")
+    opened_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    realized_return_pct: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    metadata_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)

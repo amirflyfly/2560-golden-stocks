@@ -61,6 +61,7 @@ def create_daily_review():
             channels=payload.get("channels") if isinstance(payload.get("channels"), list) else None,
             user_id=context.user_id,
             source="api",
+            evaluate_exits=_bool_value(payload.get("evaluate_exits")),
         )
     )
 

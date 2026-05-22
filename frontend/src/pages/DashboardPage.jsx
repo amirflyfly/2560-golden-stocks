@@ -46,6 +46,22 @@ function taskStatusLabel(value) {
   return labels[String(value || '').toLowerCase()] || value || '-';
 }
 
+function productionStatusLabel(value) {
+  const labels = {
+    completed: '已完成',
+    metadata_only: '仅元数据',
+    blocked_no_snapshot: '缺实时快照',
+    blocked_no_history: '缺K线历史',
+    blocked_mock_fallback_source: '数据源阻断',
+    blocked_low_coverage: '覆盖不足',
+    blocked_no_qfq_history: '缺前复权',
+    blocked_no_raw_history: '缺不复权',
+    blocked_no_limit_rules: '缺涨跌停规则',
+    blocked_oos_backtest_required: '需样本外验证',
+  };
+  return labels[String(value || '').toLowerCase()] || value || '-';
+}
+
 function countByStatus(items, status) {
   return items.filter((item) => String(item.status || '').toLowerCase() === status).length;
 }
@@ -57,6 +73,62 @@ function providerChainLabel(market) {
 
 function readinessCheckItems(readiness) {
   return Object.entries(readiness?.checks || {}).map(([name, ok]) => ({ name, ok }));
+}
+
+function taskResult(task) {
+  return task?.result && typeof task.result === 'object' ? task.result : {};
+}
+
+function paperResult(task) {
+  const result = taskResult(task);
+  return result.paper_trading && typeof result.paper_trading === 'object' ? result.paper_trading : {};
+}
+
+function itemCount(value) {
+  return Array.isArray(value) ? value.length : 0;
+}
+
+function strategyCode(task) {
+  return task?.payload?.strategy_code || taskResult(task).strategy?.code || '-';
+}
+
+function isSystemStrategyTask(task) {
+  const payload = task?.payload || {};
+  const params = payload.params || {};
+  const source = String(params.source || payload.source || '').toLowerCase();
+  return Boolean(params.scheduled_bucket || payload.scheduled_bucket) || source.includes('worker') || source.includes('scheduler');
+}
+
+function productionScan(task) {
+  const scan = taskResult(task).scan;
+  return scan && typeof scan === 'object' ? scan : {};
+}
+
+function productionMatchedCount(task) {
+  const scan = productionScan(task);
+  return scan.matched_count ?? task?.result_summary?.matched_count ?? null;
+}
+
+function hitSymbolText(task) {
+  const symbols = productionScan(task)?.market_data?.sample_symbols || [];
+  const text = symbols
+    .slice(0, 5)
+    .map((item) => item.symbol || item.code || item.stock_code || '')
+    .filter(Boolean)
+    .join('、');
+  return text || '-';
+}
+
+function productionNote(task) {
+  const result = taskResult(task);
+  const paper = paperResult(task);
+  const warnings = result.warnings || [];
+  const blocked = paper.blocked || [];
+  const skipped = paper.skipped || [];
+  if (blocked[0]) return `阻断 ${blocked[0].symbol || '-'}：${blocked[0].reason || '-'}`;
+  if (skipped[0]) return `跳过 ${skipped[0].symbol || '-'}：${skipped[0].reason || '-'}`;
+  if (warnings[0]) return warnings[0];
+  return '-';
 }
 
 function actionVerdict({ readiness, market, failedTasks, staleTasks }) {
@@ -88,6 +160,7 @@ export function DashboardPage({ onNavigate }) {
     runningTasks: null,
     staleTasks: null,
     picks: null,
+    strategyTasks: null,
   });
 
   useEffect(() => {
@@ -103,10 +176,11 @@ export function DashboardPage({ onNavigate }) {
       api.tasks({ page: 1, page_size: 1, status: 'stale' }).catch(() => ({ total: 0, items: [] })),
       api.tasks({ page: 1, page_size: 1, status: 'running' }).catch(() => ({ total: 0, items: [] })),
       api.picks({ page: 1, page_size: 5 }).catch(() => ({ total: 0, items: [] })),
+      api.tasks({ page: 1, page_size: 8, name: 'strategy.production_run', sort: 'created_at', order: 'desc' }).catch(() => ({ total: 0, items: [] })),
     ])
-      .then(([health, market, readiness, strategies, scans, tasks, failedTasks, staleTasks, runningTasks, picks]) => {
+      .then(([health, market, readiness, strategies, scans, tasks, failedTasks, staleTasks, runningTasks, picks, strategyTasks]) => {
         if (alive) {
-          setState({ loading: false, error: '', health, market, readiness, strategies, scans, tasks, failedTasks, staleTasks, runningTasks, picks });
+          setState({ loading: false, error: '', health, market, readiness, strategies, scans, tasks, failedTasks, staleTasks, runningTasks, picks, strategyTasks });
         }
       })
       .catch((error) => {
@@ -125,6 +199,9 @@ export function DashboardPage({ onNavigate }) {
     ?? recentTasks.filter((task) => ['pending', 'running', 'retrying'].includes(String(task.status || '').toLowerCase())).length;
   const verdict = actionVerdict({ readiness: state.readiness, market: state.market, failedTasks, staleTasks });
   const checks = readinessCheckItems(state.readiness);
+  const productionTasks = state.strategyTasks?.items || [];
+  const latest2560Task = productionTasks.find((task) => String(strategyCode(task)).toLowerCase() === '2560') || null;
+  const latest2560Count = productionMatchedCount(latest2560Task);
 
   if (state.loading) {
     return (
@@ -169,6 +246,11 @@ export function DashboardPage({ onNavigate }) {
           badge={<span className={marketOk ? 'data-badge success small-text' : 'data-badge warning small-text'}>{booleanLabel(state.market?.ok)}</span>}
         />
         <MetricCard label="策略数量" value={state.strategies?.total ?? 0} hint="当前可用策略" />
+        <MetricCard
+          label="2560 最新命中"
+          value={latest2560Count ?? '-'}
+          hint={latest2560Task ? hitSymbolText(latest2560Task) : '等待自动策略运行'}
+        />
         <MetricCard label="候选池" value={state.picks?.total ?? 0} hint="待复盘或观察的候选标的" />
         <MetricCard label="扫描任务" value={state.scans?.total ?? 0} hint="已创建的策略扫描任务" />
         <MetricCard label="失败任务" value={failedTasks} hint={`运行中 ${runningTasks}`} danger={failedTasks > 0} />
@@ -238,6 +320,34 @@ export function DashboardPage({ onNavigate }) {
             ))}
           </div>
         ) : <div className="empty">readiness checks 暂不可用。</div>}
+      </SectionCard>
+
+      <SectionCard
+        title="最近策略命中"
+        subtitle={latest2560Task ? `2560 最近完成时间 ${latest2560Task.finished_at || latest2560Task.created_at || '-'}` : '尚未读取到 2560 生产运行任务'}
+        actions={<button type="button" className="btn-secondary" onClick={() => onNavigate?.('monitoring')}>查看生产监控</button>}
+      >
+        <DataTable
+          className="strategy-run-table"
+          columns={[
+            { label: '策略', render: (task) => <strong>{strategyCode(task)}</strong> },
+            { label: '触发', render: (task) => <StatusBadge tone={isSystemStrategyTask(task) ? 'success' : 'info'}>{isSystemStrategyTask(task) ? '系统定时' : '人工'}</StatusBadge> },
+            { label: '状态', render: (task) => <StatusBadge status={task.status}>{taskStatusLabel(task.status)}</StatusBadge> },
+            { label: '生产结果', render: (task) => <StatusBadge status={taskResult(task).production_status || task.status}>{productionStatusLabel(taskResult(task).production_status)}</StatusBadge> },
+            {
+              label: '命中/阻断',
+              render: (task) => {
+                const paper = paperResult(task);
+                return `${productionMatchedCount(task) ?? '-'} / ${itemCount(paper.blocked)}`;
+              },
+            },
+            { label: '命中标的', render: (task) => <span className="small-text">{hitSymbolText(task)}</span> },
+            { label: '提示', render: (task) => <span className="small-text">{productionNote(task)}</span> },
+          ]}
+          rows={productionTasks}
+          getKey={(task) => task.id}
+          emptyText="暂无自动策略运行任务。"
+        />
       </SectionCard>
 
       <SectionCard title="最近任务" actions={<button type="button" className="btn-secondary" onClick={() => onNavigate?.('monitoring')}>查看监控</button>}>

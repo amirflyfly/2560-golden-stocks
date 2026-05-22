@@ -32,6 +32,33 @@ def _summary(result: dict[str, Any], *, name: str | None = None) -> dict[str, An
     }
 
 
+def _gate_status(gate: dict[str, Any]) -> str:
+    if gate.get("status") in {"passed", "warning", "blocked", "unknown"}:
+        return str(gate["status"])
+    if gate.get("ok") is True:
+        return "passed"
+    if gate.get("ok") is False:
+        return "blocked"
+    return "unknown"
+
+
+def _gate_next_action(name: str, gate: dict[str, Any]) -> str:
+    if gate.get("next_action"):
+        return str(gate["next_action"])
+    if gate.get("ok") is True:
+        return "门禁已通过，发布前继续保留当前证据。"
+    actions = {
+        "readiness": "先修复 readiness 失败项，再重新执行上线检查。",
+        "repository_backends": "生产环境必须使用 MySQL/Redis/worker 等安全后端，请修正配置后重试。",
+        "live_broker_safe": "保持 live broker disabled 且真实下单通道关闭，确认后重新检查。",
+        "production_evidence": "补齐目标环境 production evidence 文件并通过校验后重试。",
+        "deploy_preflight": "修复 deploy preflight 失败项后重新执行脚本。",
+        "repo_hygiene": "清理仓库卫生检查失败项，避免生成物或敏感内容进入发布包。",
+        "legacy_policy_doc": "补齐 legacy 管理策略文档后重新执行上线检查。",
+    }
+    return actions.get(name, "请按 runbook 修复该门禁失败项后重新检查。")
+
+
 class LaunchCheckService:
     def __init__(self, monitoring_service: MonitoringService | None = None, live_broker_service: LiveBrokerService | None = None):
         self.monitoring_service = monitoring_service or MonitoringService()
@@ -47,13 +74,24 @@ class LaunchCheckService:
             "repo_hygiene": self._repo_hygiene_gate(),
             "legacy_policy_doc": self._legacy_policy_gate(),
         }
-        failed = [name for name, gate in gates.items() if not gate.get("ok")]
+        enriched_gates = {
+            name: {
+                **gate,
+                "status": _gate_status(gate),
+                "next_action": _gate_next_action(name, gate),
+            }
+            for name, gate in gates.items()
+        }
+        failed = [name for name, gate in enriched_gates.items() if not gate.get("ok")]
+        status = "passed" if not failed else "blocked"
         return {
             "ok": not failed,
+            "status": status,
             "summary": "launch gates passed" if not failed else f"launch blocked: {len(failed)} gates failed",
-            "counts": {"total": len(gates), "failed": len(failed)},
-            "gates": gates,
+            "counts": {"total": len(enriched_gates), "failed": len(failed)},
+            "gates": enriched_gates,
             "failed_gates": failed,
+            "next_action": "所有 P0 上线门禁已通过，发布前仍需保留证据与回滚方案。" if not failed else "先修复 failed_gates 中的 P0 门禁，再重新执行上线检查；不可显示为正式可上线。",
         }
 
     def _readiness_gate(self) -> dict[str, Any]:
@@ -63,11 +101,14 @@ class LaunchCheckService:
                 {"name": name, "ok": bool(ok)}
                 for name, ok in (readiness.get("checks") or {}).items()
             ]
+            ok = bool(readiness.get("ready"))
             return {
-                "ok": bool(readiness.get("ready")),
-                "summary": "ready" if readiness.get("ready") else "readiness failed",
+                "ok": ok,
+                "status": "passed" if ok else "blocked",
+                "summary": "ready" if ok else "readiness failed",
                 "counts": {"total": len(checks), "failed": len([item for item in checks if not item["ok"]])},
                 "checks": [item["name"] for item in checks],
+                "next_action": "readiness 已通过，继续保留健康检查证据。" if ok else "先修复 readiness 失败项，确认数据库、缓存、schema、worker 与行情源均正常。",
             }
         except Exception as exc:
             return self._failed_gate("readiness unavailable", exc)
@@ -77,11 +118,14 @@ class LaunchCheckService:
         backends = effective_repository_backends(settings.environment)
         production = (settings.environment or "").strip().lower() in {"prod", "production"}
         failed = [name for name, value in backends.items() if production and value != "mysql"]
+        ok = not failed
         return {
-            "ok": not failed,
-            "summary": "repository backends are production safe" if not failed else "repository backends are not production safe",
+            "ok": ok,
+            "status": "passed" if ok else "blocked",
+            "summary": "repository backends are production safe" if ok else "repository backends are not production safe",
             "counts": {"total": len(backends), "failed": len(failed)},
             "checks": sorted(backends.keys()),
+            "next_action": "仓储后端满足生产安全要求。" if ok else "生产环境必须切换到 MySQL 等安全后端，不要使用 SQLite/内存后端发布。",
         }
 
     def _live_broker_gate(self) -> dict[str, Any]:
@@ -93,9 +137,11 @@ class LaunchCheckService:
             ok = policy_disabled and not validation.get("ready_for_live_orders")
             return {
                 "ok": ok,
-                "summary": "live broker launch policy disabled" if ok else "live broker policy is not v1.0 safe",
+                "status": "passed" if ok else "blocked",
+                "summary": "live broker launch policy disabled" if ok else "live broker policy is not v1.1 safe",
                 "counts": {"total": 2, "failed": 0 if ok else 1},
                 "checks": ["launch_policy_disabled", "live_orders_not_open"],
+                "next_action": "live broker 已保持 disabled 且真实下单通道关闭。" if ok else "关闭 live broker policy 并确认 ready_for_live_orders=false 后再检查。",
             }
         except Exception as exc:
             return self._failed_gate("live broker gate unavailable", exc)
@@ -104,13 +150,20 @@ class LaunchCheckService:
         if not path.exists():
             return {
                 "ok": False,
+                "status": "blocked",
                 "summary": "production evidence file missing",
                 "counts": {"total": 1, "failed": 1},
                 "checks": ["production_evidence_file_present"],
+                "evidence_path": str(path),
+                "next_action": "补齐目标环境 production evidence 文件并通过校验后重新执行上线检查。",
             }
         try:
             result = validate_evidence(load_evidence(path))
-            return _summary(result)
+            gate = _summary(result)
+            gate["status"] = _gate_status(gate)
+            gate["evidence_path"] = str(path)
+            gate["next_action"] = "production evidence 已通过校验。" if gate.get("ok") else "修复 production evidence 校验失败项后重新采集证据。"
+            return gate
         except (OSError, json.JSONDecodeError, ValueError, TypeError) as exc:
             return self._failed_gate("production evidence invalid", exc)
 

@@ -8,6 +8,9 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
+import os
+import queue
+import threading
 from typing import TypeVar
 
 from .provider import AuctionSnapshot, DailyBar, HealthCheckResult, MarketDataProvider, QuoteSnapshot, StockInfo
@@ -31,10 +34,11 @@ class ProviderUsage:
 class FallbackMarketDataProvider:
     name = "fallback"
 
-    def __init__(self, providers: list[MarketDataProvider]):
+    def __init__(self, providers: list[MarketDataProvider], timeout_seconds: float | None = None):
         if not providers:
             raise ValueError("at least one provider is required")
         self.providers = providers
+        self.timeout_seconds = self._resolve_timeout(timeout_seconds)
         self.last_usage = ProviderUsage(
             primary_provider=providers[0].name,
             actual_provider=providers[0].name,
@@ -44,9 +48,40 @@ class FallbackMarketDataProvider:
             errors=[],
         )
 
+    def _resolve_timeout(self, value: float | None) -> float:
+        if value is None:
+            raw = os.getenv("MARKET_DATA_PROVIDER_TIMEOUT_SECONDS", "15")
+        else:
+            raw = value
+        try:
+            timeout = float(raw)
+        except (TypeError, ValueError):
+            timeout = 15.0
+        return max(0.1, min(timeout, 120.0))
+
+    def _call_with_timeout(self, provider: MarketDataProvider, method_name: str, *args, **kwargs):
+        method: Callable[..., T] = getattr(provider, method_name)
+        result_queue: queue.Queue[tuple[str, object]] = queue.Queue(maxsize=1)
+
+        def run():
+            try:
+                result_queue.put(("ok", method(*args, **kwargs)))
+            except BaseException as exc:  # pragma: no cover - defensive wrapper for provider libraries.
+                result_queue.put(("error", exc))
+
+        thread = threading.Thread(target=run, name=f"market-data-{provider.name}-{method_name}", daemon=True)
+        thread.start()
+        thread.join(self.timeout_seconds)
+        if thread.is_alive():
+            raise TimeoutError(f"{method_name} timed out after {self.timeout_seconds:g}s")
+        status, value = result_queue.get_nowait()
+        if status == "error":
+            raise value
+        return value
+
     def _quality_for(self, provider_name: str, fallback_used: bool) -> str:
         if provider_name == "mock":
-            return "mock"
+            raise RuntimeError("mock market data provider is disabled")
         if fallback_used:
             return "fallback"
         return "primary"
@@ -71,8 +106,7 @@ class FallbackMarketDataProvider:
         errors: list[str] = []
         for provider in self.providers:
             try:
-                method: Callable[..., T] = getattr(provider, method_name)
-                result = method(*args, **kwargs)
+                result = self._call_with_timeout(provider, method_name, *args, **kwargs)
                 if result:
                     self._record_usage(provider.name, errors)
                     return result
@@ -100,7 +134,10 @@ class FallbackMarketDataProvider:
         messages: list[str] = []
         errors: list[str] = []
         for provider in self.providers:
-            result = provider.health_check()
+            try:
+                result = self._call_with_timeout(provider, "health_check")
+            except Exception as exc:
+                result = HealthCheckResult(provider=provider.name, ok=False, message=str(exc))
             messages.append(f"{provider.name}={result.ok}")
             if result.ok:
                 self._record_usage(provider.name, errors)

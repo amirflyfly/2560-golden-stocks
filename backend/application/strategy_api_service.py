@@ -230,6 +230,11 @@ class StrategyApiService:
         snapshot_items = snapshot_payload.get("items") or []
         snapshot_summary = snapshot_payload.get("summary") or {}
         coverage = market_data_repo.coverage_summary(interval=bar_interval, security_type=target_security_type, adjust=adjust)
+        freshness = self._market_data_freshness(
+            security_type=target_security_type,
+            bar_interval=bar_interval,
+            adjust=adjust,
+        )
         target_count = int(coverage.get("target_security_count") or coverage.get("security_count") or (coverage.get("security_type_counts") or {}).get(target_security_type) or 0)
         synced_symbols = int(coverage.get("synced_symbols") or 0)
         coverage_ratio = float(coverage.get("coverage_ratio") or (round(synced_symbols / target_count, 4) if target_count else 0))
@@ -243,6 +248,7 @@ class StrategyApiService:
             local_snapshot_summary=snapshot_summary,
             min_coverage_ratio=min_coverage_ratio,
         )
+        production_contract["data_freshness"] = freshness["data_freshness"]
         scan_params = {
             **params,
             "sample_size": sample_size,
@@ -260,6 +266,7 @@ class StrategyApiService:
             "local_snapshot_summary": snapshot_summary,
             "local_coverage": coverage,
             "local_coverage_ratio": coverage_ratio,
+            "data_freshness": freshness["data_freshness"],
         }
         warnings = []
         if not snapshot_items:
@@ -276,6 +283,7 @@ class StrategyApiService:
                 "scan": None,
                 "warnings": warnings,
                 "data_policy": "local_snapshot_and_history_first",
+                **freshness,
             }
         if synced_symbols <= 0:
             warnings.append("no local historical K-line data; run market.sync before production trigger")
@@ -291,6 +299,49 @@ class StrategyApiService:
                 "scan": None,
                 "warnings": warnings,
                 "data_policy": "local_snapshot_and_history_first",
+                **freshness,
+            }
+        snapshot_max_age_seconds = freshness.get("snapshot_max_age_seconds")
+        snapshot_age_seconds = freshness.get("snapshot_age_seconds")
+        if snapshot_max_age_seconds and snapshot_age_seconds is not None and snapshot_age_seconds > snapshot_max_age_seconds:
+            warnings.append(
+                f"latest local snapshot is stale: age {snapshot_age_seconds}s exceeds allowed {snapshot_max_age_seconds}s"
+            )
+            return {
+                "tenant_id": tenant_id,
+                "strategy": self._strategy_contract(row, tenant_id),
+                "production_status": "blocked_stale_snapshot",
+                "skip_reason": "stale_snapshot",
+                "production_contract": production_contract,
+                "scan_params": scan_params,
+                "local_snapshot_summary": snapshot_summary,
+                "local_coverage": coverage,
+                "snapshot_sample": snapshot_items[:10],
+                "scan": None,
+                "warnings": warnings,
+                "data_policy": "local_snapshot_and_history_first",
+                **freshness,
+            }
+        daily_bar_max_lag_days = freshness.get("daily_bar_max_lag_days")
+        daily_bar_lag_days = freshness.get("daily_bar_lag_days")
+        if daily_bar_max_lag_days and daily_bar_lag_days is not None and daily_bar_lag_days > daily_bar_max_lag_days:
+            warnings.append(
+                f"latest local daily bar is stale: lag {daily_bar_lag_days}d exceeds allowed {daily_bar_max_lag_days}d"
+            )
+            return {
+                "tenant_id": tenant_id,
+                "strategy": self._strategy_contract(row, tenant_id),
+                "production_status": "blocked_stale_daily_bar",
+                "skip_reason": "stale_daily_bar",
+                "production_contract": production_contract,
+                "scan_params": scan_params,
+                "local_snapshot_summary": snapshot_summary,
+                "local_coverage": coverage,
+                "snapshot_sample": snapshot_items[:10],
+                "scan": None,
+                "warnings": warnings,
+                "data_policy": "local_snapshot_and_history_first",
+                **freshness,
             }
         if self._has_forbidden_sources(coverage, snapshot_summary):
             warnings.append("mock/fallback market data is forbidden for production signals")
@@ -306,6 +357,7 @@ class StrategyApiService:
                 "scan": None,
                 "warnings": warnings,
                 "data_policy": "local_snapshot_and_history_first",
+                **freshness,
             }
         limit_return_requirements = self._limit_up_return_requirements(target_security_type, bar_interval, min_coverage_ratio)
         if row.get("code") == "LIMIT_UP_RETURN":
@@ -325,6 +377,7 @@ class StrategyApiService:
                     "scan": None,
                     "warnings": warnings,
                     "data_policy": "local_snapshot_and_history_first",
+                    **freshness,
                 }
         if min_coverage_ratio > 0 and coverage_ratio < min_coverage_ratio:
             warnings.append(f"local historical K-line coverage ratio {coverage_ratio} is below required {min_coverage_ratio}")
@@ -340,6 +393,7 @@ class StrategyApiService:
                 "scan": None,
                 "warnings": warnings,
                 "data_policy": "local_snapshot_and_history_first",
+                **freshness,
             }
         if target_count and synced_symbols < target_count:
             warnings.append(f"local K-line coverage is partial for {target_security_type}/{bar_interval}: {synced_symbols}/{target_count}")
@@ -387,6 +441,7 @@ class StrategyApiService:
             "paper_trading": paper_trading,
             "warnings": warnings,
             "data_policy": "local_snapshot_and_history_first",
+            **freshness,
         }
 
     def workflow_contract(self) -> dict:
@@ -619,6 +674,76 @@ class StrategyApiService:
 
     def _has_forbidden_sources(self, *payloads: dict) -> bool:
         return bool(self._forbidden_sources(*payloads))
+
+    def _market_data_freshness(self, *, security_type: str, bar_interval: str, adjust: str) -> dict:
+        summary = market_data_repo.latest_market_data_freshness(
+            security_type=security_type,
+            interval=bar_interval,
+            adjust=adjust,
+        )
+        latest_snapshot_time = summary.get("latest_snapshot_time")
+        latest_trade_date = summary.get("latest_trade_date")
+        snapshot_dt = self._parse_datetime_value(latest_snapshot_time)
+        trade_date = self._parse_date_value(latest_trade_date)
+        now = datetime.now()
+        today = date.today()
+        snapshot_age_seconds = int((now - snapshot_dt).total_seconds()) if snapshot_dt else None
+        if snapshot_age_seconds is not None and snapshot_age_seconds < 0:
+            snapshot_age_seconds = 0
+        daily_bar_lag_days = (today - trade_date).days if trade_date else None
+        if daily_bar_lag_days is not None and daily_bar_lag_days < 0:
+            daily_bar_lag_days = 0
+        snapshot_max_age_seconds = self._positive_int_env("STRATEGY_SNAPSHOT_MAX_AGE_SECONDS")
+        daily_bar_max_lag_days = self._positive_int_env("STRATEGY_DAILY_BAR_MAX_LAG_DAYS")
+        return {
+            "data_freshness": {
+                **summary,
+                "latest_snapshot_time": latest_snapshot_time,
+                "snapshot_age_seconds": snapshot_age_seconds,
+                "snapshot_max_age_seconds": snapshot_max_age_seconds,
+                "latest_trade_date": latest_trade_date,
+                "daily_bar_lag_days": daily_bar_lag_days,
+                "daily_bar_max_lag_days": daily_bar_max_lag_days,
+            },
+            "latest_snapshot_time": latest_snapshot_time,
+            "snapshot_age_seconds": snapshot_age_seconds,
+            "snapshot_max_age_seconds": snapshot_max_age_seconds,
+            "latest_trade_date": latest_trade_date,
+            "daily_bar_lag_days": daily_bar_lag_days,
+            "daily_bar_max_lag_days": daily_bar_max_lag_days,
+        }
+
+    def _positive_int_env(self, name: str) -> int | None:
+        try:
+            value = int(str(os.getenv(name) or "").strip())
+        except ValueError:
+            return None
+        return value if value > 0 else None
+
+    def _parse_datetime_value(self, value: Any) -> datetime | None:
+        if value in (None, ""):
+            return None
+        if isinstance(value, datetime):
+            return value
+        text = str(value).strip()
+        for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(text[:19] if "H" in fmt else text[:10], fmt)
+            except ValueError:
+                continue
+        return None
+
+    def _parse_date_value(self, value: Any) -> date | None:
+        if value in (None, ""):
+            return None
+        if isinstance(value, date) and not isinstance(value, datetime):
+            return value
+        if isinstance(value, datetime):
+            return value.date()
+        try:
+            return datetime.strptime(str(value).strip()[:10], "%Y-%m-%d").date()
+        except ValueError:
+            return None
 
     def _paper_trading_gate(self, row: dict, params: dict[str, Any]) -> dict:
         if row.get("code") != "LIMIT_UP_RETURN":

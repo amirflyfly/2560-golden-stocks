@@ -114,6 +114,24 @@ def _run_market_snapshot_plan_task(task: dict) -> dict:
     )
 
 
+def _run_paper_position_snapshot_task(task: dict) -> dict:
+    from backend.application.sync_api_service import SyncApiService
+
+    return SyncApiService().enqueue_paper_position_snapshot_sync(
+        int(task.get("tenant_id") or 0),
+        task.get("payload") or {},
+    )
+
+
+def _run_paper_position_monitor_task(task: dict) -> dict:
+    from backend.application.sync_api_service import SyncApiService
+
+    return SyncApiService().monitor_paper_positions(
+        int(task.get("tenant_id") or 0),
+        task.get("payload") or {},
+    )
+
+
 def _run_market_auction_task(task: dict) -> dict:
     from backend.application.sync_api_service import SyncApiService
 
@@ -187,6 +205,7 @@ def _run_daily_review_task(task: dict) -> dict:
         channels=channels,
         user_id=int(payload["user_id"]) if payload.get("user_id") else None,
         source=payload.get("source") or "worker",
+        evaluate_exits=_bool_value(payload.get("evaluate_exits"), False),
     )
 
 
@@ -202,6 +221,8 @@ TASK_HANDLERS: dict[str, TaskHandler] = {
     "market.sync.plan": _run_market_sync_plan_task,
     "market.snapshot": _run_market_snapshot_task,
     "market.snapshot.plan": _run_market_snapshot_plan_task,
+    "paper.positions.snapshot": _run_paper_position_snapshot_task,
+    "paper.positions.monitor": _run_paper_position_monitor_task,
     "market.auction.sync": _run_market_auction_task,
     "market.indicators.precompute": _run_indicator_precompute_task,
     "market.qfq.repair": _run_qfq_repair_task,

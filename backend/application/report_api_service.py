@@ -5,7 +5,7 @@ from __future__ import annotations
 import csv
 import io
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from backend.application.external_push import ExternalPushService
@@ -94,7 +94,13 @@ class ReportApiService:
 
     def summary(self, tenant_id: int, period: str = "week") -> dict:
         normalized_period = period if period in {"week", "month"} else "week"
-        rows = picks_repo.list_picks("WHERE COALESCE(archived,0)=0", [], limit=1000, tenant_id=tenant_id)
+        start_date, end_date = self._period_window(normalized_period)
+        rows = picks_repo.list_picks(
+            "WHERE COALESCE(archived,0)=0 AND pick_date>=? AND pick_date<=?",
+            [start_date, end_date],
+            limit=1000,
+            tenant_id=tenant_id,
+        )
         groups: dict[str, dict] = {}
         total_return = 0.0
         return_count = 0
@@ -152,9 +158,11 @@ class ReportApiService:
         group_items = [self._finalize_group(group) for group in groups.values()]
         total = len(rows)
         attribution = self._finalize_attribution(attribution_buckets, total, total_return)
+        feedback = self._strategy_feedback(group_items)
         return {
             "tenant_id": tenant_id,
             "period": normalized_period,
+            "window": {"start_date": start_date, "end_date": end_date},
             "summary": {
                 "total_picks": total,
                 "reviewed_count": reviewed_count,
@@ -169,11 +177,12 @@ class ReportApiService:
             },
             "groups": sorted(group_items, key=lambda item: item["total"], reverse=True),
             "attribution": attribution,
+            "feedback": feedback,
             "drilldowns": {
-                "picks": {"page": "picks", "filters": {"from_report_period": normalized_period}},
-                "reviewed": {"page": "picks", "filters": {"status": "reviewed", "from_report_period": normalized_period}},
-                "deals": {"page": "picks", "filters": {"deal_status": "dealt", "from_report_period": normalized_period}},
-                "high_risk": {"page": "picks", "filters": {"risk_level": "high", "from_report_period": normalized_period}},
+                "picks": {"page": "picks", "filters": {"from_date": start_date, "to_date": end_date, "from_report_period": normalized_period}},
+                "reviewed": {"page": "picks", "filters": {"reviewed": "1", "from_date": start_date, "to_date": end_date, "from_report_period": normalized_period}},
+                "deals": {"page": "picks", "filters": {"deal_status": "dealt", "from_date": start_date, "to_date": end_date, "from_report_period": normalized_period}},
+                "high_risk": {"page": "picks", "filters": {"risk_level": "high", "from_date": start_date, "to_date": end_date, "from_report_period": normalized_period}},
                 "backtests": {"page": "strategies", "filters": {"from_report_period": normalized_period}},
             },
         }
@@ -260,30 +269,44 @@ class ReportApiService:
         channels: list[str] | None = None,
         user_id: int | None = None,
         source: str = "api",
+        evaluate_exits: bool = False,
     ) -> dict:
         normalized_date = self._normalize_trade_date(trade_date)
-        paper_summary = paper_trading_repo.summary(tenant_id, account_id)
+        from backend.application.paper_trading_service import PaperTradingService
+
+        paper_service = PaperTradingService()
+        resolved_account = paper_service.ensure_default_account(tenant_id, {"account_id": account_id} if account_id else {})
+        resolved_account_id = int(account_id or resolved_account.get("id") or 0) or None
+        mark_to_market = paper_service.mark_to_market(tenant_id, resolved_account_id)
+        exit_evaluation = (
+            paper_service.evaluate_exits(tenant_id, resolved_account_id, {"trade_date": normalized_date})
+            if evaluate_exits and resolved_account_id
+            else {"enabled": False, "orders": [], "skipped": [], "blocked": [], "reason": "not_requested"}
+        )
+        paper_summary = paper_trading_repo.summary(tenant_id, resolved_account_id)
         orders = self._filter_items_by_date(
-            paper_trading_repo.list_orders(tenant_id, account_id, limit=300),
+            paper_trading_repo.list_orders(tenant_id, resolved_account_id, limit=300),
             normalized_date,
             "created_at",
             "updated_at",
         )
         fills = self._filter_items_by_date(
-            paper_trading_repo.list_fills(tenant_id, account_id, limit=300),
+            paper_trading_repo.list_fills(tenant_id, resolved_account_id, limit=300),
             normalized_date,
             "filled_at",
             "created_at",
         )
-        positions = paper_trading_repo.list_positions(tenant_id, account_id, active_only=True)
+        positions = paper_trading_repo.list_positions(tenant_id, resolved_account_id, active_only=True)
+        signal_review_health = paper_trading_repo.signal_review_health(tenant_id)
         report_summary = self.summary(tenant_id, "week")
-        paper_payload = self._daily_paper_payload(paper_summary, orders, fills, positions)
+        paper_payload = self._daily_paper_payload(paper_summary, orders, fills, positions, exit_evaluation=exit_evaluation)
         attribution = report_summary.get("attribution") or {}
         message = self._daily_review_message(
             trade_date=normalized_date,
             paper=paper_payload,
             report_summary=report_summary.get("summary") or {},
             attribution=attribution,
+            signal_review=signal_review_health,
         )
         notification = {
             "title": f"{normalized_date} 每日交易复盘",
@@ -312,8 +335,11 @@ class ReportApiService:
             "schema_version": "daily-review/v1",
             "tenant_id": int(tenant_id or 0),
             "trade_date": normalized_date,
-            "account_id": account_id,
+            "account_id": resolved_account_id,
             "source": source,
+            "mark_to_market": mark_to_market,
+            "exit_evaluation": exit_evaluation,
+            "signal_review": signal_review_health,
             "paper_trading": paper_payload,
             "report_summary": report_summary,
             "attribution": attribution,
@@ -361,6 +387,14 @@ class ReportApiService:
         except (TypeError, ValueError) as exc:
             raise AppError("trade_date must be YYYY-MM-DD") from exc
 
+    def _period_window(self, period: str) -> tuple[str, str]:
+        today = date.today()
+        days = 30 if period == "month" else 7
+        baseline = date(2026, 5, 11)
+        if today < baseline:
+            today = baseline
+        return (today - timedelta(days=days - 1)).isoformat(), today.isoformat()
+
     def _filter_items_by_date(self, items: list[dict], trade_date: str, *date_fields: str) -> list[dict]:
         filtered = []
         for item in items:
@@ -368,10 +402,19 @@ class ReportApiService:
                 filtered.append(item)
         return filtered
 
-    def _daily_paper_payload(self, summary: dict, orders: list[dict], fills: list[dict], positions: list[dict]) -> dict:
+    def _daily_paper_payload(self, summary: dict, orders: list[dict], fills: list[dict], positions: list[dict], *, exit_evaluation: dict | None = None) -> dict:
         buy_orders = [item for item in orders if str(item.get("side") or "").upper() == "BUY"]
         sell_orders = [item for item in orders if str(item.get("side") or "").upper() == "SELL"]
         symbols = sorted({str(item.get("symbol") or "").strip() for item in [*orders, *fills] if str(item.get("symbol") or "").strip()})
+        exit_evaluation = exit_evaluation or {}
+        exit_summary = {
+            "enabled": bool(exit_evaluation.get("enabled")),
+            "status": "evaluated" if exit_evaluation.get("enabled") else "skipped",
+            "reason": exit_evaluation.get("reason") or "",
+            "orders": len(exit_evaluation.get("orders") or []),
+            "skipped": len(exit_evaluation.get("skipped") or []),
+            "blocked": len(exit_evaluation.get("blocked") or []),
+        }
         top_positions = sorted(
             positions,
             key=lambda item: float(item.get("market_value") or 0),
@@ -385,6 +428,8 @@ class ReportApiService:
             "sell_orders": len(sell_orders),
             "traded_symbols": symbols,
             "active_positions": len(positions),
+            "exit_evaluation": exit_evaluation,
+            "exit_summary": exit_summary,
             "top_positions": [
                 {
                     "symbol": item.get("symbol"),
@@ -399,8 +444,10 @@ class ReportApiService:
             "fills": fills[:50],
         }
 
-    def _daily_review_message(self, *, trade_date: str, paper: dict, report_summary: dict, attribution: dict) -> str:
+    def _daily_review_message(self, *, trade_date: str, paper: dict, report_summary: dict, attribution: dict, signal_review: dict | None = None) -> str:
         account = paper.get("summary") or {}
+        exit_evaluation = paper.get("exit_evaluation") or {}
+        signal_review = signal_review or {}
         highlights = attribution.get("highlights") or {}
         positive = self._format_attribution_items(highlights.get("top_positive_contributors") or [])
         negative = self._format_attribution_items(highlights.get("top_negative_contributors") or [])
@@ -418,6 +465,7 @@ class ReportApiService:
                 "### 当日交易",
                 f"- 委托: {paper.get('orders_count', 0)} 笔，成交: {paper.get('fills_count', 0)} 笔",
                 f"- 买入: {paper.get('buy_orders', 0)} 笔，卖出: {paper.get('sell_orders', 0)} 笔",
+                f"- 自动卖出评估: {paper.get('exit_summary', {}).get('status', 'skipped')}，订单 {paper.get('exit_summary', {}).get('orders', 0)} 笔，阻断 {paper.get('exit_summary', {}).get('blocked', 0)} 笔，跳过 {paper.get('exit_summary', {}).get('skipped', 0)} 笔",
                 f"- 交易标的: {symbols}",
                 f"- 当前持仓: {paper.get('active_positions', 0)} 只",
                 "",
@@ -427,6 +475,7 @@ class ReportApiService:
                 f"- 胜率: {self._ratio_pct(report_summary.get('win_rate'))}",
                 f"- 平均收益: {self._return_pct(report_summary.get('average_return_pct'))}",
                 f"- 高风险占比: {self._ratio_pct(report_summary.get('high_risk_rate'))}",
+                f"- 信号复盘链路完整率: {self._ratio_pct(signal_review.get('complete_rate'))}，未闭合 {signal_review.get('incomplete', 0)} 条",
                 "",
                 "### 归因",
                 f"- 正贡献: {positive}",
@@ -586,6 +635,7 @@ class ReportApiService:
             "review_rate": round(group["reviewed"] / total, 4) if total else 0,
             "deals": group["deals"],
             "wins": group["wins"],
+            "return_count": return_count,
             "win_rate": round(group["wins"] / return_count, 4) if return_count else 0,
             "average_return_pct": round(group["return_sum"] / return_count, 4) if return_count else 0,
             "high_risk": group["high_risk"],
@@ -593,9 +643,55 @@ class ReportApiService:
             "data_quality": self._finalize_quality_counts(group["quality_counts"], total),
             "drilldowns": {
                 "picks": {"page": "picks", "filters": {"strategy_code": group["strategy"]}},
-                "reviewed": {"page": "picks", "filters": {"strategy_code": group["strategy"], "status": "reviewed"}},
+                "reviewed": {"page": "picks", "filters": {"strategy_code": group["strategy"], "reviewed": "1"}},
                 "high_risk": {"page": "picks", "filters": {"strategy_code": group["strategy"], "risk_level": "high"}},
                 "backtests": {"page": "strategies", "filters": {"strategy_code": group["strategy"]}},
+            },
+        }
+
+    def _strategy_feedback(self, groups: list[dict]) -> dict:
+        items = []
+        for group in groups:
+            strategy = group.get("strategy") or "unknown"
+            total = int(group.get("total") or 0)
+            if total <= 0:
+                continue
+            review_rate = float(group.get("review_rate") or 0)
+            high_risk_rate = float(group.get("high_risk_rate") or 0)
+            win_rate = float(group.get("win_rate") or 0)
+            average_return = float(group.get("average_return_pct") or 0)
+            quality = group.get("data_quality") or {}
+            fallback_rate = float(quality.get("fallback_rate") or 0)
+            mock_rate = float(quality.get("mock_rate") or 0)
+            if review_rate < 0.6:
+                items.append(self._feedback_item(strategy, "review_gap", "medium", "先补复盘样本", f"复盘率 {review_rate:.0%}，样本尚不足以反哺策略。", group))
+            if fallback_rate + mock_rate > 0.3:
+                items.append(self._feedback_item(strategy, "data_quality", "high", "先修数据口径再调参", f"fallback/mock 占比 {(fallback_rate + mock_rate):.0%}，策略表现可能被行情质量污染。", group))
+            if high_risk_rate > 0.25:
+                items.append(self._feedback_item(strategy, "risk_control", "high", "收紧风险过滤", f"高风险占比 {high_risk_rate:.0%}，建议复查风险标签、涨跌停和停牌过滤。", group))
+            if group.get("return_count", 0) and win_rate < 0.4 and average_return <= 0:
+                items.append(self._feedback_item(strategy, "threshold_tuning", "medium", "回测阈值并降低开仓频率", f"胜率 {win_rate:.0%}，平均收益 {average_return:.2f}%。", group))
+        priority = {"high": 0, "medium": 1, "low": 2}
+        return {"schema_version": "strategy-feedback/v1", "items": sorted(items, key=lambda item: priority.get(item["severity"], 3))}
+
+    def _feedback_item(self, strategy: str, feedback_type: str, severity: str, action: str, reason: str, group: dict) -> dict:
+        return {
+            "strategy": strategy,
+            "type": feedback_type,
+            "severity": severity,
+            "action": action,
+            "reason": reason,
+            "metrics": {
+                "total": group.get("total", 0),
+                "review_rate": group.get("review_rate", 0),
+                "win_rate": group.get("win_rate", 0),
+                "average_return_pct": group.get("average_return_pct", 0),
+                "high_risk_rate": group.get("high_risk_rate", 0),
+                "data_quality": group.get("data_quality") or {},
+            },
+            "drilldowns": {
+                "picks": {"page": "picks", "filters": {"strategy_code": strategy}},
+                "backtests": {"page": "strategies", "filters": {"strategy_code": strategy}},
             },
         }
 
@@ -748,7 +844,9 @@ class ReportApiService:
     def _quality_bucket(self, row: dict) -> str:
         quality = str(row.get("data_quality") or "").strip().lower()
         source = str(row.get("market_data_source") or row.get("source_channel") or row.get("source") or "").strip().lower()
-        if row.get("fallback_used"):
+        fallback_value = row.get("fallback_used")
+        fallback_used = fallback_value if isinstance(fallback_value, bool) else str(fallback_value or "").strip().lower() in {"1", "true", "yes", "y", "on"}
+        if fallback_used:
             return "fallback"
         if quality == "fallback" or "fallback" in source:
             return "fallback"

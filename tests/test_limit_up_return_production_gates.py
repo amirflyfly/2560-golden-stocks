@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -45,12 +45,18 @@ def _seed_snapshot(symbol: str = "000001", *, source: str = "unit") -> None:
     )
 
 
-def _seed_bar(symbol: str = "000001", *, adjust: str = "qfq", source: str = "unit") -> None:
+def _seed_bar(
+    symbol: str = "000001",
+    *,
+    adjust: str = "qfq",
+    source: str = "unit",
+    trade_date: date = date(2026, 5, 4),
+) -> None:
     market_data_repo.upsert_daily_bars(
         [
             DailyBar(
                 symbol=symbol,
-                trade_date=date(2026, 5, 4),
+                trade_date=trade_date,
                 open=Decimal("9.5"),
                 high=Decimal("10.5"),
                 low=Decimal("9.4"),
@@ -101,6 +107,63 @@ def test_production_run_rejects_mock_or_fallback_local_sources(app_db):
 
     assert result["production_status"] == "blocked_mock_fallback_source"
     assert result["production_contract"]["mock_or_fallback_blocked"] is True
+
+
+def test_production_run_blocks_stale_snapshot_before_scan(app_db, monkeypatch):
+    monkeypatch.setenv("STRATEGY_SNAPSHOT_MAX_AGE_SECONDS", "60")
+    _seed_snapshot()
+    _seed_bar(adjust="qfq")
+
+    strategy = strategy_repo.get_strategy_by_code("2560")
+    assert strategy
+    result = StrategyApiService().run_deployed_strategy(
+        1,
+        int(strategy["id"]),
+        {"sample_size": 5, "bar_interval": "1d", "adjust": "qfq", "paper_trade": False},
+    )
+
+    assert result["production_status"] == "blocked_stale_snapshot"
+    assert result["skip_reason"] == "stale_snapshot"
+    assert result["latest_snapshot_time"] == "2026-05-05T09:30:00"
+    assert result["snapshot_age_seconds"] > result["snapshot_max_age_seconds"]
+    assert result["latest_trade_date"] == "2026-05-04"
+    assert result["scan"] is None
+
+
+def test_production_run_blocks_stale_daily_bar_before_scan(app_db, monkeypatch):
+    monkeypatch.setenv("STRATEGY_DAILY_BAR_MAX_LAG_DAYS", "1")
+    market_data_repo.upsert_quote_snapshots(
+        [
+            QuoteSnapshot(
+                symbol="000001",
+                trade_time=datetime.now(),
+                last_price=Decimal("10"),
+                open=Decimal("10"),
+                high=Decimal("10.5"),
+                low=Decimal("9.8"),
+                prev_close=Decimal("9.5"),
+                source="unit",
+            )
+        ]
+    )
+    stale_trade_date = date.today() - timedelta(days=3)
+    _seed_bar(adjust="qfq", trade_date=stale_trade_date)
+
+    strategy = strategy_repo.get_strategy_by_code("2560")
+    assert strategy
+    result = StrategyApiService().run_deployed_strategy(
+        1,
+        int(strategy["id"]),
+        {"sample_size": 5, "bar_interval": "1d", "adjust": "qfq", "paper_trade": False},
+    )
+
+    assert result["production_status"] == "blocked_stale_daily_bar"
+    assert result["skip_reason"] == "stale_daily_bar"
+    assert result["snapshot_age_seconds"] is not None
+    assert result["daily_bar_lag_days"] == 3
+    assert result["daily_bar_lag_days"] > result["daily_bar_max_lag_days"]
+    assert result["latest_trade_date"] == stale_trade_date.isoformat()
+    assert result["scan"] is None
 
 
 def test_limit_up_return_requires_oos_backtest_before_production_paper(app_db, monkeypatch):

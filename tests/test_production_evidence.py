@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from scripts.production_evidence import EXPECTED_ALEMBIC_REVISION, REPOSITORY_BACKEND_KEYS, evidence_template, validate_evidence
+from scripts.production_evidence import EXPECTED_ALEMBIC_REVISION, REPOSITORY_BACKEND_KEYS, evidence_template, readiness_sample, runtime_evidence_bundle, validate_evidence
 
 
 def _passing_evidence() -> dict:
@@ -57,6 +57,8 @@ def _passing_evidence() -> dict:
         "task_execution_mode": "worker",
         "repository_backends": {key: "mysql" for key in REPOSITORY_BACKEND_KEYS},
         "tasks_stale": 0,
+        "signal_review_complete_rate": 1,
+        "signal_review_incomplete": 0,
     }
     evidence["soak"].update(
         {
@@ -116,6 +118,18 @@ def test_production_evidence_rejects_stale_tasks_during_soak():
     assert "sqlite-retirement:delete-write-path-approved" in failed
 
 
+def test_production_evidence_rejects_incomplete_signal_review_links():
+    evidence = _passing_evidence()
+    evidence["soak"]["readiness_samples"][1]["signal_review_complete_rate"] = 0.99
+    evidence["soak"]["readiness_samples"][1]["signal_review_incomplete"] = 1
+
+    result = validate_evidence(evidence)
+    failed = {item["name"] for item in result["checks"] if not item["ok"]}
+
+    assert result["ok"] is False
+    assert "soak:readiness-all-ok" in failed
+
+
 def test_production_evidence_core_gate_does_not_require_sqlite_retirement():
     evidence = _passing_evidence()
     evidence["sqlite_retirement"].update(
@@ -156,8 +170,51 @@ def test_production_evidence_template_can_be_serialized(tmp_path):
     assert loaded["schema_version"] == "production-evidence/v1"
     assert loaded["migration"]["alembic_revision"] == EXPECTED_ALEMBIC_REVISION
     assert "TRADING_REPOSITORY_BACKEND" in loaded["soak"]["readiness_samples"][0]["repository_backends"]
+    assert loaded["soak"]["readiness_samples"][0]["signal_review_complete_rate"] == 1
     assert "backup" in loaded
     assert "release" in loaded
     assert "security" in loaded
     assert "regression" in loaded
     assert "soak" in loaded
+
+
+def test_readiness_sample_maps_runtime_readiness_to_evidence_contract():
+    sample = readiness_sample(
+        {
+            "ready": True,
+            "database": {"dialect": "mysql", "repository_backends": {key: "mysql" for key in REPOSITORY_BACKEND_KEYS}},
+            "cache": {"backend": "redis"},
+            "task_queue": {"backend": "redis", "execution_mode": "worker"},
+            "tasks": {"stale": 0},
+            "signal_review": {"complete_rate": 1, "incomplete": 0},
+        },
+        sampled_at="2026-05-12T10:00:00",
+    )
+
+    assert sample["at"] == "2026-05-12T10:00:00"
+    assert sample["database_dialect"] == "mysql"
+    assert sample["task_execution_mode"] == "worker"
+    assert sample["signal_review_complete_rate"] == 1
+    assert sample["signal_review_incomplete"] == 0
+    assert sample["repository_backends"]["TRADING_REPOSITORY_BACKEND"] == "mysql"
+
+
+def test_runtime_evidence_bundle_embeds_readiness_sample_without_claiming_manual_gates():
+    bundle = runtime_evidence_bundle(
+        {
+            "ready": True,
+            "database": {"dialect": "mysql", "repository_backends": {key: "mysql" for key in REPOSITORY_BACKEND_KEYS}},
+            "cache": {"backend": "redis"},
+            "task_queue": {"backend": "redis", "execution_mode": "worker"},
+            "tasks": {"stale": 0},
+            "signal_review": {"complete_rate": 1, "incomplete": 0},
+        },
+        collected_at="2026-05-12T10:30:00",
+    )
+
+    assert bundle["schema_version"] == "production-evidence/v1"
+    assert bundle["release"]["runtime_readiness_exported"] is True
+    assert bundle["release"]["deploy_preflight_ok"] is False
+    assert bundle["soak"]["readiness_samples"][0]["at"] == "2026-05-12T10:30:00"
+    assert bundle["soak"]["readiness_samples"][0]["ready"] is True
+    assert bundle["soak"]["errors"] == []

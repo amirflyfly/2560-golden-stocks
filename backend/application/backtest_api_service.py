@@ -9,6 +9,7 @@ from decimal import Decimal
 from typing import Any
 
 from backend.application.audit_log_service import audit_log_service
+from backend.application.data_quality_gate_service import DataQualityGateService
 from backend.core.errors import AppError, NotFoundError
 from backend.services.strategy_pool_service import get_strategy_backtest, run_backtest
 from backend.repositories import market_data_repo
@@ -20,6 +21,9 @@ BAR_INTERVALS = {"1d", "15m", "30m", "5m", "1h", "1m"}
 
 class BacktestApiService:
     """Builds validated, API-friendly strategy backtest responses."""
+
+    def __init__(self) -> None:
+        self.quality_gate = DataQualityGateService()
 
     @contextmanager
     def _local_market_data_only(self):
@@ -661,6 +665,16 @@ class BacktestApiService:
                 "trading_calendar_source": benchmark["source"] if benchmark["source"] != "synthetic" else "strategy_sample",
                 "missing_bar_ratio": benchmark.get("missing_bar_ratio"),
                 "mock_or_fallback": benchmark["fallback_used"] or benchmark["data_quality"] == "mock",
+                "quality_gate": self.quality_gate.decision(
+                    "backtest",
+                    {
+                        "data_quality": benchmark["data_quality"],
+                        "market_data_source": benchmark["source"],
+                        "fallback_used": benchmark["fallback_used"],
+                    },
+                    enforce=False,
+                    allow_degraded=True,
+                ),
             },
             "portfolio_curve": portfolio_curve,
             "risk_attribution": risk_attribution,

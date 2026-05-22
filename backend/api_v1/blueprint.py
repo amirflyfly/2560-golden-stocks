@@ -57,7 +57,7 @@ def health_check():
 
 @api_v1_bp.get("/readiness")
 def readiness_check():
-    data = monitoring_service.readiness()
+    data = monitoring_service.public_readiness()
     if data["ready"]:
         return success(data)
     return error("not ready", code=503, status_code=503, data=data)

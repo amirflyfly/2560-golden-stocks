@@ -229,6 +229,30 @@ def test_task_queue_records_retry_and_failure_metadata():
     assert any(event["status"] == "retrying" for event in stored["events"])
 
 
+def test_task_queue_failed_event_shows_error_summary():
+    from backend.infrastructure.tasks import queue
+
+    original_executor = queue._executor
+
+    class ImmediateExecutor:
+        def submit(self, runner):
+            runner()
+            return None
+
+    def failing_task():
+        raise RuntimeError("provider disconnected")
+
+    queue._executor = ImmediateExecutor()
+    try:
+        task = queue.enqueue_task("stage13.failed_event", failing_task, tenant_id=1, payload={}, max_retries=0)
+        stored = queue.get_task(task["id"])
+    finally:
+        queue._executor = original_executor
+
+    assert stored["status"] == "failed"
+    assert stored["events"][-1]["message"] == "任务失败：provider disconnected"
+
+
 def test_mark_stale_tasks_marks_expired_running_task():
     from backend.infrastructure.tasks import queue
 
@@ -425,3 +449,24 @@ def test_scan_sync_and_task_cancel_are_audited(client):
     audit = admin.get("/api/v1/admin/audit-logs?limit=20", headers=tenant_headers(admin))
     actions = {item["action"] for item in audit.get_json()["data"]["items"]}
     assert {"scan.create", "market.sync.create", "task.cancel"}.issubset(actions)
+
+
+def test_market_sync_write_endpoints_reject_invalid_parameters(client):
+    admin = login_as(client, "stage12_sync_validation", role="admin")
+    headers = tenant_headers(admin, include_csrf=True)
+
+    reversed_dates = admin.post(
+        "/api/v1/market-data/sync",
+        json={"symbols": ["000001"], "start_date": "2026-05-10", "end_date": "2026-05-01"},
+        headers=headers,
+    )
+    bad_batch_size = admin.post(
+        "/api/v1/market-data/snapshots/sync",
+        json={"symbols": ["all"], "batch_size": "many"},
+        headers=headers,
+    )
+
+    assert reversed_dates.status_code == 400
+    assert "start_date" in reversed_dates.get_json()["message"]
+    assert bad_batch_size.status_code == 400
+    assert "batch_size" in bad_batch_size.get_json()["message"]

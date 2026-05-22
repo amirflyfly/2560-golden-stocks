@@ -383,6 +383,45 @@ def ensure_schema():
         )
 
         cur.execute(
+            """CREATE TABLE IF NOT EXISTS scan_tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tenant_id INTEGER NOT NULL DEFAULT 1,
+                strategy_id INTEGER NOT NULL,
+                task_no TEXT NOT NULL UNIQUE,
+                status TEXT NOT NULL DEFAULT 'pending',
+                params_json TEXT DEFAULT '{}',
+                started_at TEXT DEFAULT NULL,
+                finished_at TEXT DEFAULT NULL,
+                error_message TEXT DEFAULT '',
+                created_by INTEGER DEFAULT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )"""
+        )
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_scan_tasks_tenant ON scan_tasks(tenant_id)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_scan_tasks_strategy ON scan_tasks(strategy_id)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_scan_tasks_status ON scan_tasks(status)')
+        cur.execute(
+            """CREATE TABLE IF NOT EXISTS scan_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tenant_id INTEGER NOT NULL DEFAULT 1,
+                scan_task_id INTEGER NOT NULL,
+                strategy_id INTEGER NOT NULL,
+                symbol TEXT NOT NULL,
+                stock_name TEXT DEFAULT '',
+                trade_date TEXT NOT NULL,
+                score REAL DEFAULT NULL,
+                signals_json TEXT DEFAULT '{}',
+                reason TEXT DEFAULT '',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )"""
+        )
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_scan_results_tenant ON scan_results(tenant_id)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_scan_results_task ON scan_results(scan_task_id)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_scan_results_strategy ON scan_results(strategy_id)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_scan_results_symbol ON scan_results(symbol)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_scan_results_trade_date ON scan_results(trade_date)')
+
+        cur.execute(
             """CREATE TABLE IF NOT EXISTS stocks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 symbol TEXT NOT NULL UNIQUE,
@@ -867,6 +906,31 @@ def ensure_schema():
         cur.execute('CREATE INDEX IF NOT EXISTS idx_paper_fills_symbol ON paper_fills(symbol)')
         cur.execute('CREATE INDEX IF NOT EXISTS idx_paper_fills_security_type ON paper_fills(security_type)')
         cur.execute('CREATE INDEX IF NOT EXISTS idx_paper_fills_bar_interval ON paper_fills(bar_interval)')
+
+        cur.execute(
+            """CREATE TABLE IF NOT EXISTS signal_review_links (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tenant_id INTEGER NOT NULL DEFAULT 1,
+                source_signal_hash TEXT NOT NULL,
+                trade_signal_id INTEGER DEFAULT NULL,
+                pick_id INTEGER DEFAULT NULL,
+                buy_order_id INTEGER DEFAULT NULL,
+                sell_order_id INTEGER DEFAULT NULL,
+                buy_fill_id INTEGER DEFAULT NULL,
+                sell_fill_id INTEGER DEFAULT NULL,
+                status TEXT NOT NULL DEFAULT 'open',
+                opened_at TEXT DEFAULT NULL,
+                closed_at TEXT DEFAULT NULL,
+                realized_return_pct REAL DEFAULT NULL,
+                metadata_json TEXT DEFAULT '{}',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(tenant_id, source_signal_hash)
+            )"""
+        )
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_signal_review_links_signal ON signal_review_links(trade_signal_id)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_signal_review_links_pick ON signal_review_links(pick_id)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_signal_review_links_status ON signal_review_links(status)')
 
         conn.commit()
     finally:

@@ -39,6 +39,7 @@ data/*.sqlite
 data/cache/
 data/e2e/
 data/backup_hmac_key.txt
+frontend/data/
 logs/*.log
 logs/*.log.*
 *.log
@@ -54,6 +55,7 @@ backups/*
 .cache/
 .vite/
 frontend/.vite/
+.workbuddy/
 .aionrs/
 .claude/
 .gemini/

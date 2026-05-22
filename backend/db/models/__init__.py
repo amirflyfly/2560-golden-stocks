@@ -17,7 +17,7 @@ from .tenant import (
     UserSession,
     UserTenant,
 )
-from .trading import PaperAccount, PaperFill, PaperOrder, PaperPosition, TradeSignal
+from .trading import PaperAccount, PaperFill, PaperOrder, PaperPosition, SignalReviewLink, TradeSignal
 
 __all__ = [
     "AuditLog",
@@ -43,6 +43,7 @@ __all__ = [
     "SavedFilter",
     "ScanResult",
     "ScanTask",
+    "SignalReviewLink",
     "Stock",
     "StockAuctionSnapshot",
     "StockDailyBar",

@@ -10,7 +10,7 @@ import time
 from datetime import datetime
 
 from backend.infrastructure.tasks.handlers import get_task_handler
-from backend.infrastructure.tasks.queue import dequeue_task_id, enqueue_task, get_task, mark_stale_tasks, run_queued_task, update_task
+from backend.infrastructure.tasks.queue import dequeue_task_id, enqueue_task, get_task, list_tasks, mark_stale_tasks, run_queued_task, update_task
 
 _STOP = False
 
@@ -72,6 +72,69 @@ def _csv_list_env(name: str, default: str = "") -> list[str]:
 
 def _bool_env(name: str, default: str = "0") -> bool:
     return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _strategy_code_alias(value: str | None) -> str:
+    text = str(value or "").strip()
+    aliases = {
+        "25-60": "2560",
+        "25_60": "2560",
+        "25/60": "2560",
+        "2560": "2560",
+        "涨停回马枪": "LIMIT_UP_RETURN",
+        "limit_up_return": "LIMIT_UP_RETURN",
+        "LIMIT_UP_RETURN": "LIMIT_UP_RETURN",
+    }
+    return aliases.get(text, aliases.get(text.lower(), text))
+
+
+def _strategy_code_filter(codes: list[str] | str | None) -> set[str] | None:
+    if codes is None:
+        return None
+    items = _csv_list_env("", codes) if isinstance(codes, str) else codes
+    if not items or any(str(item).strip().lower() == "all" for item in items):
+        return None
+    return {_strategy_code_alias(item) for item in items if str(item).strip()}
+
+
+def _parse_daily_times(value: str | list[str] | None) -> list[tuple[int, int, str]]:
+    items = _csv_list_env("", value or "") if isinstance(value, str) else (value or [])
+    parsed: list[tuple[int, int, str]] = []
+    for item in items:
+        text = str(item or "").strip()
+        if not text:
+            continue
+        parts = text.split(":")
+        if len(parts) != 2:
+            continue
+        try:
+            hour = int(parts[0])
+            minute = int(parts[1])
+        except ValueError:
+            continue
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            parsed.append((hour, minute, f"{hour:02d}:{minute:02d}"))
+    return parsed
+
+
+def _due_daily_time_buckets(now: float, daily_times: list[tuple[int, int, str]], grace_seconds: int) -> list[tuple[str, str]]:
+    current = datetime.fromtimestamp(now)
+    due = []
+    grace = max(1, int(grace_seconds or 1))
+    for hour, minute, label in daily_times:
+        scheduled_at = current.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        delay_seconds = (current - scheduled_at).total_seconds()
+        if 0 <= delay_seconds < grace:
+            due.append((f"{scheduled_at.date().isoformat()}T{label}", label))
+    return due
+
+
+def _scheduled_task_exists(idempotency_key: str) -> bool:
+    return any(task.get("idempotency_key") == idempotency_key for task in list_tasks(limit=200, name="strategy.production_run"))
+
+
+def _scheduled_scan_exists(idempotency_key: str) -> bool:
+    return any(task.get("idempotency_key") == idempotency_key for task in list_tasks(limit=200, name="scan.run"))
 
 
 def _enqueue_market_sync(now: float, interval_seconds: int) -> dict:
@@ -173,6 +236,64 @@ def _enqueue_market_snapshot(now: float, interval_seconds: int) -> dict:
     )
 
 
+def _enqueue_paper_position_snapshot(now: float, interval_seconds: int) -> dict:
+    bucket = int(now // max(1, interval_seconds))
+    tenant_id = int(os.getenv("WORKER_TENANT_ID", "1") or 1)
+    account_id = os.getenv("PAPER_POSITION_SNAPSHOT_ACCOUNT_ID", "").strip()
+    max_symbols = int(os.getenv("PAPER_POSITION_SNAPSHOT_MAX_SYMBOLS", "200") or 200)
+    batch_size = int(os.getenv("PAPER_POSITION_SNAPSHOT_BATCH_SIZE", "100") or 100)
+    security_type = os.getenv("PAPER_POSITION_SNAPSHOT_SECURITY_TYPE", os.getenv("MARKET_SNAPSHOT_SECURITY_TYPE", "")).strip().lower()
+    payload = {
+        "account_id": int(account_id) if account_id else None,
+        "max_symbols": max_symbols,
+        "batch_size": batch_size,
+        "security_type": security_type,
+        "source": "worker-paper-position-scheduler",
+        "scheduled_bucket": bucket,
+        "skip_reason": "",
+    }
+    return enqueue_task(
+        "paper.positions.snapshot",
+        lambda: {"scheduled": True},
+        tenant_id=tenant_id,
+        payload=payload,
+        idempotency_key=f"paper.positions.snapshot:{tenant_id}:{account_id}:{bucket}:{max_symbols}:{batch_size}:{security_type}",
+        max_retries=1,
+        priority=True,
+    )
+
+
+def _enqueue_paper_position_monitor(now: float, interval_seconds: int) -> dict:
+    bucket = int(now // max(1, interval_seconds))
+    tenant_id = int(os.getenv("WORKER_TENANT_ID", "1") or 1)
+    account_id = os.getenv("PAPER_POSITION_MONITOR_ACCOUNT_ID", os.getenv("PAPER_POSITION_SNAPSHOT_ACCOUNT_ID", "")).strip()
+    max_symbols = int(os.getenv("PAPER_POSITION_MONITOR_MAX_SYMBOLS", os.getenv("PAPER_POSITION_SNAPSHOT_MAX_SYMBOLS", "200")) or 200)
+    batch_size = int(os.getenv("PAPER_POSITION_MONITOR_BATCH_SIZE", "100") or 100)
+    security_type = os.getenv("PAPER_POSITION_MONITOR_SECURITY_TYPE", os.getenv("PAPER_POSITION_SNAPSHOT_SECURITY_TYPE", "")).strip().lower()
+    sync_snapshots = _bool_env("PAPER_POSITION_MONITOR_SYNC_SNAPSHOTS", "1")
+    evaluate_exits = _bool_env("PAPER_POSITION_MONITOR_EVALUATE_EXITS", "1")
+    payload = {
+        "account_id": int(account_id) if account_id else None,
+        "max_symbols": max_symbols,
+        "batch_size": batch_size,
+        "security_type": security_type,
+        "sync_snapshots": sync_snapshots,
+        "evaluate_exits": evaluate_exits,
+        "source": "worker-paper-position-monitor",
+        "scheduled_bucket": bucket,
+        "skip_reason": "",
+    }
+    return enqueue_task(
+        "paper.positions.monitor",
+        lambda: {"scheduled": True},
+        tenant_id=tenant_id,
+        payload=payload,
+        idempotency_key=f"paper.positions.monitor:{tenant_id}:{account_id}:{bucket}:{max_symbols}:{batch_size}:{security_type}:{sync_snapshots}:{evaluate_exits}",
+        max_retries=1,
+        priority=True,
+    )
+
+
 def _enqueue_indicator_precompute(now: float, interval_seconds: int) -> dict:
     bucket = int(now // max(1, interval_seconds))
     tenant_id = int(os.getenv("WORKER_TENANT_ID", "1") or 1)
@@ -226,16 +347,75 @@ def _enqueue_qfq_repair(now: float, interval_seconds: int) -> dict:
     )
 
 
-def _enqueue_strategy_runs(now: float, interval_seconds: int) -> dict:
+def _enqueue_strategy_scans(
+    now: float,
+    *,
+    strategy_codes: list[str] | str,
+    source: str = "worker-scan-scheduler",
+    scheduled_bucket: str | int | None = None,
+    skip_existing: bool = False,
+) -> dict:
+    bucket = scheduled_bucket if scheduled_bucket is not None else datetime.fromtimestamp(now).date().isoformat()
+    tenant_id = int(os.getenv("WORKER_TENANT_ID", "1") or 1)
+    scan_limit = int(os.getenv("STRATEGY_SCAN_DAILY_SCAN_LIMIT", os.getenv("STRATEGY_RUN_SCAN_LIMIT", "6000")) or 6000)
+    codes = _strategy_code_filter(strategy_codes) or set()
+    tasks = []
+    for strategy_code in sorted(codes):
+        idempotency_key = f"scan.run.daily:{bucket}:{tenant_id}:{strategy_code}:{scan_limit}"
+        if skip_existing and _scheduled_scan_exists(idempotency_key):
+            tasks.append({"id": None, "strategy_code": strategy_code, "status": "already_scheduled"})
+            continue
+        params = {
+            "full_universe": True,
+            "local_only": True,
+            "scan_limit": scan_limit,
+            "sample_size": min(20, scan_limit),
+            "source": source,
+            "scheduled_bucket": bucket,
+            "disable_market_sample_fallback": True,
+        }
+        task = enqueue_task(
+            "scan.run",
+            lambda: {"scheduled": True},
+            tenant_id=tenant_id,
+            payload={
+                "strategy_code": strategy_code,
+                "strategy_code_internal": strategy_code,
+                "params": params,
+            },
+            idempotency_key=idempotency_key,
+            max_retries=1,
+        )
+        tasks.append({"id": task["id"], "strategy_code": strategy_code, "status": task["status"]})
+    return {"scheduled_scans": len(tasks), "tasks": tasks, "bucket": bucket, "source": source}
+
+
+def _enqueue_strategy_runs(
+    now: float,
+    interval_seconds: int,
+    *,
+    strategy_codes: list[str] | str | None = None,
+    source: str = "worker-scheduler",
+    scheduled_bucket: str | int | None = None,
+    skip_existing: bool = False,
+) -> dict:
     from backend.repositories import strategy_repo
 
-    bucket = int(now // max(1, interval_seconds))
+    bucket = scheduled_bucket if scheduled_bucket is not None else int(now // max(1, interval_seconds))
     tenant_id = int(os.getenv("WORKER_TENANT_ID", "1") or 1)
     scan_limit = int(os.getenv("STRATEGY_RUN_SCAN_LIMIT", "6000") or 6000)
     min_coverage_ratio = float(os.getenv("STRATEGY_RUN_MIN_COVERAGE_RATIO", "0") or 0)
+    allowed_codes = _strategy_code_filter(strategy_codes)
     tasks = []
     for strategy in strategy_repo.list_strategies(active_only=True):
         if strategy.get("lifecycle_status") != "deployed" or not strategy.get("enabled"):
+            continue
+        strategy_code = _strategy_code_alias(strategy.get("code"))
+        if allowed_codes is not None and strategy_code not in allowed_codes:
+            continue
+        idempotency_key = f"strategy.production_run:{bucket}:{tenant_id}:{strategy.get('id')}:{scan_limit}"
+        if skip_existing and _scheduled_task_exists(idempotency_key):
+            tasks.append({"id": None, "strategy_id": strategy.get("id"), "strategy_code": strategy.get("code"), "status": "already_scheduled"})
             continue
         payload = {
             "strategy_id": strategy.get("id"),
@@ -245,7 +425,7 @@ def _enqueue_strategy_runs(now: float, interval_seconds: int) -> dict:
                 "local_only": True,
                 "scan_limit": scan_limit,
                 "min_coverage_ratio": min_coverage_ratio,
-                "source": "worker-scheduler",
+                "source": source,
                 "scheduled_bucket": bucket,
             },
         }
@@ -254,11 +434,11 @@ def _enqueue_strategy_runs(now: float, interval_seconds: int) -> dict:
             lambda: {"scheduled": True},
             tenant_id=tenant_id,
             payload=payload,
-            idempotency_key=f"strategy.production_run:{bucket}:{tenant_id}:{strategy.get('id')}:{scan_limit}",
+            idempotency_key=idempotency_key,
             max_retries=1,
         )
         tasks.append({"id": task["id"], "strategy_id": strategy.get("id"), "strategy_code": strategy.get("code"), "status": task["status"]})
-    return {"scheduled_strategies": len(tasks), "tasks": tasks, "bucket": bucket}
+    return {"scheduled_strategies": len(tasks), "tasks": tasks, "bucket": bucket, "source": source}
 
 
 def _enqueue_daily_review(now: float, interval_seconds: int) -> dict:
@@ -270,12 +450,14 @@ def _enqueue_daily_review(now: float, interval_seconds: int) -> dict:
     user_id = os.getenv("DAILY_REVIEW_USER_ID", "").strip()
     channels = _csv_list_env("DAILY_REVIEW_CHANNELS", "")
     push = _bool_env("DAILY_REVIEW_PUSH", "0")
+    evaluate_exits = _bool_env("DAILY_REVIEW_EVALUATE_EXITS", "1")
     trade_date = os.getenv("DAILY_REVIEW_TRADE_DATE", "").strip() or date.today().isoformat()
     payload = {
         "trade_date": trade_date,
         "account_id": int(account_id) if account_id else None,
         "user_id": int(user_id) if user_id else None,
         "push": push,
+        "evaluate_exits": evaluate_exits,
         "channels": channels,
         "source": "worker-scheduler",
         "scheduled_bucket": bucket,
@@ -285,7 +467,7 @@ def _enqueue_daily_review(now: float, interval_seconds: int) -> dict:
         lambda: {"scheduled": True},
         tenant_id=tenant_id,
         payload=payload,
-        idempotency_key=f"reports.daily_review:{tenant_id}:{trade_date}:{bucket}:{account_id}:{user_id}:{push}:{','.join(channels)}",
+        idempotency_key=f"reports.daily_review:{tenant_id}:{trade_date}:{bucket}:{account_id}:{user_id}:{push}:{evaluate_exits}:{','.join(channels)}",
         max_retries=1,
     )
 
@@ -297,9 +479,17 @@ def run_worker(
     alert_interval_seconds: int = 0,
     market_sync_interval_seconds: int = 0,
     market_snapshot_interval_seconds: int = 0,
+    paper_position_snapshot_interval_seconds: int = 0,
+    paper_position_monitor_interval_seconds: int = 0,
     indicator_precompute_interval_seconds: int = 0,
     qfq_repair_interval_seconds: int = 0,
     strategy_run_interval_seconds: int = 0,
+    strategy_run_daily_times: str = "",
+    strategy_run_daily_strategies: str = "",
+    strategy_run_daily_grace_seconds: int = 900,
+    strategy_scan_daily_times: str = "",
+    strategy_scan_daily_strategies: str = "",
+    strategy_scan_daily_grace_seconds: int = 900,
     daily_review_interval_seconds: int = 0,
     bootstrap_on_start: bool = False,
 ) -> int:
@@ -312,13 +502,50 @@ def run_worker(
     next_alert_eval_at = time.time() if alert_interval_seconds > 0 and not once else None
     next_market_sync_at = time.time() if market_sync_interval_seconds > 0 and not once else None
     next_market_snapshot_at = time.time() if market_snapshot_interval_seconds > 0 and not once else None
+    next_paper_position_snapshot_at = time.time() if paper_position_snapshot_interval_seconds > 0 and not once else None
+    next_paper_position_monitor_at = time.time() if paper_position_monitor_interval_seconds > 0 and not once else None
     next_indicator_precompute_at = time.time() if indicator_precompute_interval_seconds > 0 and not once else None
-    next_qfq_repair_at = time.time() if qfq_repair_interval_seconds > 0 and not once else None
+    next_qfq_repair_at = time.time() + max(1, qfq_repair_interval_seconds) if qfq_repair_interval_seconds > 0 and not once else None
     next_strategy_run_at = time.time() if strategy_run_interval_seconds > 0 and not once else None
+    daily_strategy_times = _parse_daily_times(strategy_run_daily_times) if not once else []
+    daily_strategy_buckets: set[str] = set()
+    daily_scan_times = _parse_daily_times(strategy_scan_daily_times) if not once else []
+    daily_scan_buckets: set[str] = set()
     next_daily_review_at = time.time() if daily_review_interval_seconds > 0 and not once else None
     while not _STOP:
         mark_stale_tasks()
         now = time.time()
+        if daily_scan_times:
+            today = datetime.fromtimestamp(now).date().isoformat()
+            daily_scan_buckets = {bucket for bucket in daily_scan_buckets if bucket.startswith(today)}
+            for bucket, label in _due_daily_time_buckets(now, daily_scan_times, strategy_scan_daily_grace_seconds):
+                if bucket in daily_scan_buckets:
+                    continue
+                scheduled = _enqueue_strategy_scans(
+                    now,
+                    strategy_codes=strategy_scan_daily_strategies,
+                    source="worker-daily-scan-scheduler",
+                    scheduled_bucket=bucket,
+                    skip_existing=True,
+                )
+                print(json.dumps({"scheduled": "scan.run.daily", "scheduled_time": label, **scheduled}, ensure_ascii=False), flush=True)
+                daily_scan_buckets.add(bucket)
+        if daily_strategy_times:
+            today = datetime.fromtimestamp(now).date().isoformat()
+            daily_strategy_buckets = {bucket for bucket in daily_strategy_buckets if bucket.startswith(today)}
+            for bucket, label in _due_daily_time_buckets(now, daily_strategy_times, strategy_run_daily_grace_seconds):
+                if bucket in daily_strategy_buckets:
+                    continue
+                scheduled = _enqueue_strategy_runs(
+                    now,
+                    86400,
+                    strategy_codes=strategy_run_daily_strategies,
+                    source="worker-daily-scheduler",
+                    scheduled_bucket=bucket,
+                    skip_existing=True,
+                )
+                print(json.dumps({"scheduled": "strategy.production_run.daily", "scheduled_time": label, **scheduled}, ensure_ascii=False), flush=True)
+                daily_strategy_buckets.add(bucket)
         if next_alert_eval_at is not None and now >= next_alert_eval_at:
             _enqueue_alert_evaluation(now, alert_interval_seconds)
             next_alert_eval_at = now + max(1, alert_interval_seconds)
@@ -328,6 +555,14 @@ def run_worker(
         if next_market_snapshot_at is not None and now >= next_market_snapshot_at:
             _enqueue_market_snapshot(now, market_snapshot_interval_seconds)
             next_market_snapshot_at = now + max(1, market_snapshot_interval_seconds)
+        if next_paper_position_snapshot_at is not None and now >= next_paper_position_snapshot_at:
+            paper_snapshot_task = _enqueue_paper_position_snapshot(now, paper_position_snapshot_interval_seconds)
+            print(json.dumps({"scheduled": "paper.positions.snapshot", "task_id": paper_snapshot_task.get("id"), "status": paper_snapshot_task.get("status")}, ensure_ascii=False), flush=True)
+            next_paper_position_snapshot_at = now + max(1, paper_position_snapshot_interval_seconds)
+        if next_paper_position_monitor_at is not None and now >= next_paper_position_monitor_at:
+            paper_monitor_task = _enqueue_paper_position_monitor(now, paper_position_monitor_interval_seconds)
+            print(json.dumps({"scheduled": "paper.positions.monitor", "task_id": paper_monitor_task.get("id"), "status": paper_monitor_task.get("status")}, ensure_ascii=False), flush=True)
+            next_paper_position_monitor_at = now + max(1, paper_position_monitor_interval_seconds)
         if next_indicator_precompute_at is not None and now >= next_indicator_precompute_at:
             _enqueue_indicator_precompute(now, indicator_precompute_interval_seconds)
             next_indicator_precompute_at = now + max(1, indicator_precompute_interval_seconds)
@@ -377,10 +612,54 @@ def main() -> int:
         help="Schedule market.snapshot quote tasks at this interval; 0 disables periodic snapshot sync.",
     )
     parser.add_argument(
+        "--paper-position-snapshot-interval-seconds",
+        type=int,
+        default=int(os.getenv("PAPER_POSITION_SNAPSHOT_INTERVAL_SECONDS", "0") or 0),
+        help="Schedule quote snapshots for active paper positions at this interval; 0 disables it.",
+    )
+    parser.add_argument(
+        "--paper-position-monitor-interval-seconds",
+        type=int,
+        default=int(os.getenv("PAPER_POSITION_MONITOR_INTERVAL_SECONDS", "0") or 0),
+        help="Schedule active paper position monitor tasks at this interval; 0 disables it.",
+    )
+    parser.add_argument(
         "--strategy-run-interval-seconds",
         type=int,
         default=int(os.getenv("STRATEGY_RUN_INTERVAL_SECONDS", "0") or 0),
         help="Schedule production runs for deployed strategies at this interval; 0 disables continuous strategy runs.",
+    )
+    parser.add_argument(
+        "--strategy-run-daily-times",
+        default=os.getenv("STRATEGY_RUN_DAILY_TIMES", ""),
+        help="Comma-separated local wall-clock times such as 14:45 for daily strategy production runs.",
+    )
+    parser.add_argument(
+        "--strategy-run-daily-strategies",
+        default=os.getenv("STRATEGY_RUN_DAILY_STRATEGIES", ""),
+        help="Comma-separated strategy codes for daily production runs; empty/all means all deployed strategies.",
+    )
+    parser.add_argument(
+        "--strategy-run-daily-grace-seconds",
+        type=int,
+        default=int(os.getenv("STRATEGY_RUN_DAILY_GRACE_SECONDS", "900") or 900),
+        help="How long after a daily scheduled time the worker may still enqueue the daily strategy run.",
+    )
+    parser.add_argument(
+        "--strategy-scan-daily-times",
+        default=os.getenv("STRATEGY_SCAN_DAILY_TIMES", ""),
+        help="Comma-separated local wall-clock times such as 14:45 for daily scan.run stock selection.",
+    )
+    parser.add_argument(
+        "--strategy-scan-daily-strategies",
+        default=os.getenv("STRATEGY_SCAN_DAILY_STRATEGIES", ""),
+        help="Comma-separated strategy codes for daily scan.run stock selection.",
+    )
+    parser.add_argument(
+        "--strategy-scan-daily-grace-seconds",
+        type=int,
+        default=int(os.getenv("STRATEGY_SCAN_DAILY_GRACE_SECONDS", "900") or 900),
+        help="How long after a daily scan time the worker may still enqueue the scan.",
     )
     parser.add_argument(
         "--indicator-precompute-interval-seconds",
@@ -414,9 +693,17 @@ def main() -> int:
         alert_interval_seconds=args.alert_interval_seconds,
         market_sync_interval_seconds=args.market_sync_interval_seconds,
         market_snapshot_interval_seconds=args.market_snapshot_interval_seconds,
+        paper_position_snapshot_interval_seconds=args.paper_position_snapshot_interval_seconds,
+        paper_position_monitor_interval_seconds=args.paper_position_monitor_interval_seconds,
         indicator_precompute_interval_seconds=args.indicator_precompute_interval_seconds,
         qfq_repair_interval_seconds=args.qfq_repair_interval_seconds,
         strategy_run_interval_seconds=args.strategy_run_interval_seconds,
+        strategy_run_daily_times=args.strategy_run_daily_times,
+        strategy_run_daily_strategies=args.strategy_run_daily_strategies,
+        strategy_run_daily_grace_seconds=args.strategy_run_daily_grace_seconds,
+        strategy_scan_daily_times=args.strategy_scan_daily_times,
+        strategy_scan_daily_strategies=args.strategy_scan_daily_strategies,
+        strategy_scan_daily_grace_seconds=args.strategy_scan_daily_grace_seconds,
         daily_review_interval_seconds=args.daily_review_interval_seconds,
         bootstrap_on_start=args.bootstrap_on_start,
     )

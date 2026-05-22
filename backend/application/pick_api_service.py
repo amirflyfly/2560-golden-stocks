@@ -54,6 +54,8 @@ class PickApiService:
         if status and status != "all":
             where.append("COALESCE(review_status,'accepted')=?")
             args.append(status)
+        elif str(filters.get("reviewed") or "").strip().lower() in {"1", "true", "yes"}:
+            where.append("COALESCE(review_status,'accepted') IN ('validated','verified','rejected','reviewed','done')")
 
         strategy_code = (filters.get("strategy_code") or filters.get("strategy") or "").strip()
         if strategy_code and strategy_code != "all":
@@ -69,6 +71,22 @@ class PickApiService:
         if source and source != "all":
             where.append("source=?")
             args.append(source)
+
+        deal_status = (filters.get("deal_status") or "").strip()
+        if deal_status and deal_status != "all":
+            if deal_status == "dealt":
+                where.append("COALESCE(deal_status,'pending') IN ('dealt','filled','done','closed','已成交')")
+            else:
+                where.append("COALESCE(deal_status,'pending')=?")
+                args.append(deal_status)
+
+        data_quality = (filters.get("data_quality") or "").strip()
+        if data_quality and data_quality != "all":
+            if data_quality == "unknown":
+                where.append("COALESCE(data_quality,'')=''")
+            else:
+                where.append("data_quality=?")
+                args.append(data_quality)
 
         symbol = (filters.get("symbol") or filters.get("code") or "").strip()
         if symbol:

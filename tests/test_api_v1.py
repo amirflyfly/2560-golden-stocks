@@ -685,7 +685,17 @@ def test_readiness_includes_task_health_summary(client):
     assert response.status_code in {200, 503}
     assert data["checks"]["tasks"] is True
     assert data["tasks"]["stale"] >= 1
-    assert data["tasks"]["by_failure_category"]["stale"] >= 1
+    assert data["detail"] == "internal readiness details require admin access"
+    assert "database" not in data
+
+    authed = login_as(client, "admin_internal_readiness", role="admin")
+    internal = authed.get("/api/v1/monitoring/readiness", headers=tenant_headers(authed))
+    internal_data = internal.get_json()["data"]
+
+    assert internal.status_code == 200
+    assert internal_data["tasks"]["by_failure_category"]["stale"] >= 1
+    assert "database" in internal_data
+    assert "repository_backends" in internal_data
 
 
 def test_monitoring_uses_sqlite_health_for_local_sqlite_repositories(client):
@@ -698,6 +708,8 @@ def test_monitoring_uses_sqlite_health_for_local_sqlite_repositories(client):
     assert data["database"]["ok"] is True
     assert data["database"]["backend"] == "sqlite"
     assert set(data["database"]["repository_backends"].values()) == {"sqlite"}
+    assert data["signal_review"]["schema_version"] == "signal-review-health/v1"
+    assert data["signal_review"]["complete_rate"] == 1
 
 
 
@@ -753,10 +765,12 @@ def test_scan_results_expose_market_data_quality_on_items(client):
     assert data["data"]["items"][0]["data_quality"] == "fallback"
     assert data["data"]["items"][0]["explanation"]["schema_version"] == "scan-explanation/v2"
     assert data["data"]["items"][0]["explanation"]["risk_level"] == "medium"
+    assert data["data"]["items"][0]["explanation"]["quality_gate"]["quality_reason"] == "degraded_market_data"
 
 
 def test_scan_results_use_registered_strategy_before_market_sample(client, monkeypatch):
     from backend.application import scan_api_service
+    from backend.repositories import scan_repo
 
     class FakeStrategy:
         code = "2560"
@@ -791,6 +805,18 @@ def test_scan_results_use_registered_strategy_before_market_sample(client, monke
     assert data["strategy_runner"] == "registry"
     assert data["items"][0]["symbol"] == "000888"
     assert data["items"][0]["explanation"]["strategy_code"] == "2560"
+    persisted = scan_repo.get_scan_bundle(1, scan_id)
+    assert persisted["task"]["task_no"] == scan_id
+    assert persisted["items"][0]["signals"]["symbol"] == "000888"
+
+    monkeypatch.setattr(scan_api_service, "get_task", lambda task_id: None)
+    persisted_response = authed.get(f"/api/v1/scans/{scan_id}/results", headers=tenant_headers(authed))
+    persisted_data = persisted_response.get_json()["data"]
+
+    assert persisted_response.status_code == 200
+    assert persisted_data["persistent"] is True
+    assert persisted_data["strategy_runner"] == "registry"
+    assert persisted_data["items"][0]["symbol"] == "000888"
 
 
 def test_scan_market_sample_carries_security_type_and_bar_interval(monkeypatch):
@@ -825,6 +851,9 @@ def test_scan_market_sample_carries_security_type_and_bar_interval(monkeypatch):
     assert result["market_data"]["sample_symbols"][0]["symbol"] == "123001"
     assert result["market_data"]["sample_symbols"][0]["security_type"] == "convertible_bond"
     assert result["market_data"]["sample_symbols"][0]["bar_interval"] == "30m"
+    assert result["market_data"]["sample_symbols"][0]["strategy_runner"] == "market_sample"
+    assert result["market_data"]["sample_symbols"][0]["executable_signal"] is False
+    assert result["market_data"]["sample_symbols"][0]["quality_gate"]["status"] == "allowed"
 
 
 def test_scan_can_disable_market_sample_fallback(monkeypatch):
@@ -1229,6 +1258,7 @@ def test_report_summary_export_supports_csv_and_json(client):
 def test_report_summary_distinguishes_market_data_quality(client):
     authed = login_as(client, "editor_report_quality")
 
+    trade_date = date.today().isoformat()
     for payload in [
         {"symbol": "000001", "stock_name": "Primary", "source": "manual", "data_quality": "primary", "market_data_source": "akshare"},
         {"symbol": "000002", "stock_name": "Fallback", "source": "scan", "data_quality": "primary", "market_data_source": "akshare", "fallback_used": True},
@@ -1236,7 +1266,7 @@ def test_report_summary_distinguishes_market_data_quality(client):
     ]:
         response = authed.post(
             "/api/v1/picks",
-            json={**payload, "trade_date": "2026-05-04", "strategy_code": "2560"},
+            json={**payload, "trade_date": trade_date, "strategy_code": "2560"},
             headers=tenant_headers(authed, include_csrf=True),
         )
         assert response.status_code == 201
@@ -1257,6 +1287,8 @@ def test_report_summary_distinguishes_market_data_quality(client):
     assert data["attribution"]["schema_version"] == "report-attribution/v1"
     assert data["attribution"]["dimensions"]["strategy"][0]["key"] == "2560"
     assert data["attribution"]["dimensions"]["strategy"][0]["total"] == 3
+    assert data["feedback"]["schema_version"] == "strategy-feedback/v1"
+    assert any(item["type"] == "data_quality" and item["strategy"] == "2560" for item in data["feedback"]["items"])
     quality_keys = {item["key"] for item in data["attribution"]["dimensions"]["data_quality"]}
     assert {"primary", "fallback"} <= quality_keys
     assert data["attribution"]["dimensions"]["source"][0]["drilldown"]["page"] == "picks"
@@ -1342,9 +1374,46 @@ def test_market_sync_persists_local_bars_and_exposes_coverage(client):
     assert state_data["items"][0]["coverage_end_date"] == "2026-05-04"
 
 
+def test_market_sync_task_events_show_symbol_level_live_log(client, monkeypatch):
+    from backend.api_v1.routers import sync as sync_router
+    from backend.infrastructure.market_data.fallback_provider import FallbackMarketDataProvider
+    from backend.infrastructure.tasks.queue import get_task
+    from backend.repositories import market_data_repo, paper_trading_repo
+
+    class ChineseNameProvider(TestMarketProvider):
+        def get_stock_list(self):
+            return [StockInfo("000001", "平安银行", "SZ")]
+
+    monkeypatch.setattr(sync_router.service, "market_data_provider", FallbackMarketDataProvider([ChineseNameProvider()]))
+    market_data_repo.upsert_stocks([{"symbol": "000001", "name": "000001", "exchange": "SZ", "security_type": "stock"}])
+
+    admin = login_as(client, "admin_market_sync_log", role="admin")
+    response = admin.post(
+        "/api/v1/market-data/sync",
+        json={"symbols": ["000001"], "start_date": "2026-05-01", "end_date": "2026-05-04", "adjust": "qfq"},
+        headers=tenant_headers(admin, include_csrf=True),
+    )
+    task_id = response.get_json()["data"]["id"]
+    task = {}
+    import time
+
+    for _ in range(60):
+        task = get_task(task_id) or {}
+        if any("同步成功" in (event.get("message") or "") for event in task.get("events") or []):
+            break
+        time.sleep(0.05)
+    messages = [event.get("message", "") for event in task.get("events") or []]
+
+    assert response.status_code == 202
+    assert any("数据源 akshare" in message for message in messages), messages
+    assert any("000001 平安银行 开始同步" in message for message in messages), messages
+    assert any("000001 平安银行 同步成功" in message and "本次获取" in message for message in messages), messages
+    assert any("行情同步完成" in message and "本次写入/更新" in message for message in messages), messages
+
+
 def test_market_sync_keeps_adjust_variants_separate(client):
     from backend.application.sync_api_service import SyncApiService
-    from backend.repositories import market_data_repo
+    from backend.repositories import market_data_repo, paper_trading_repo
 
     service = SyncApiService(TestMarketProvider())
     service._sync_market_data(["000001"], "2026-05-01", "2026-05-04", "qfq")
@@ -1359,6 +1428,23 @@ def test_market_sync_keeps_adjust_variants_separate(client):
     assert {bar["adjust"] for bar in qfq_bars} == {"qfq"}
     assert {bar["adjust"] for bar in hfq_bars} == {"hfq"}
     assert {"qfq", "hfq"}.issubset(set(coverage["items"][0]["adjusts"]))
+
+
+def test_market_sync_passes_none_adjust_to_provider_without_empty_string(client):
+    from backend.application.sync_api_service import SyncApiService
+
+    class RecordingProvider(TestMarketProvider):
+        def __init__(self):
+            self.adjusts = []
+
+        def get_daily_bars(self, symbol, start_date, end_date, adjust="qfq", interval="1d"):
+            self.adjusts.append(adjust)
+            return super().get_daily_bars(symbol, start_date, end_date, adjust=adjust, interval=interval)
+
+    provider = RecordingProvider()
+    SyncApiService(provider)._sync_market_data(["000001"], "2026-05-01", "2026-05-04", "none")
+
+    assert provider.adjusts == ["none"]
 
 
 def test_market_snapshot_sync_persists_and_exposes_latest_quotes(client):
@@ -1506,7 +1592,7 @@ def test_paper_trading_service_creates_order_fill_and_position(client):
 
     from backend.application.paper_trading_service import PaperTradingService
     from backend.infrastructure.market_data.provider import QuoteSnapshot
-    from backend.repositories import market_data_repo
+    from backend.repositories import market_data_repo, paper_trading_repo
 
     market_data_repo.upsert_quote_snapshots(
         [
@@ -1531,7 +1617,7 @@ def test_paper_trading_service_creates_order_fill_and_position(client):
                         "symbol": "000001",
                         "trade_date": "2026-05-05",
                         "signal": "缩量回踩",
-                        "signal_type": "WATCH",
+                        "signal_type": "BUY",
                         "signal_subtype": "volume_lock_shrink",
                         "volume_phase": "lock_shrink",
                         "score": 88,
@@ -1560,6 +1646,7 @@ def test_paper_trading_service_creates_order_fill_and_position(client):
     positions = authed.get("/api/v1/trading/paper/positions", headers=tenant_headers(authed)).get_json()["data"]
     orders = authed.get("/api/v1/trading/paper/orders", headers=tenant_headers(authed)).get_json()["data"]
     signals = authed.get("/api/v1/trading/signals", headers=tenant_headers(authed)).get_json()["data"]
+    links = authed.get("/api/v1/trading/signal-review-links", headers=tenant_headers(authed)).get_json()["data"]
 
     assert positions["items"][0]["symbol"] == "000001"
     assert positions["items"][0]["quantity"] > 0
@@ -1569,6 +1656,280 @@ def test_paper_trading_service_creates_order_fill_and_position(client):
     assert signals["items"][0]["payload"]["signal_subtype"] == "volume_lock_shrink"
     assert signals["items"][0]["payload"]["volume_phase"] == "lock_shrink"
     assert signals["items"][0]["payload"]["ma60"] == 9.8
+    link = paper_trading_repo.get_signal_review_link(1, signals["items"][0]["source_hash"])
+    assert link["trade_signal_id"] == signals["items"][0]["id"]
+    assert link["pick_id"]
+    assert link["buy_order_id"] == orders["items"][0]["id"]
+    assert links["items"][0]["source_signal_hash"] == signals["items"][0]["source_hash"]
+    assert links["items"][0]["pick_id"] == link["pick_id"]
+    assert links["health"]["schema_version"] == "signal-review-health/v1"
+    assert links["health"]["status"] == "ok"
+    assert links["health"]["complete_rate"] == 1
+
+    market_data_repo.upsert_quote_snapshots(
+        [
+            QuoteSnapshot(
+                symbol="000001",
+                trade_time=datetime(2026, 5, 11, 10, 30),
+                last_price=Decimal("12.50"),
+                open=Decimal("12"),
+                high=Decimal("12.8"),
+                low=Decimal("11.9"),
+                source="unit",
+            )
+        ]
+    )
+    mark_response = authed.post(
+        "/api/v1/trading/paper/mark-to-market",
+        json={},
+        headers=tenant_headers(authed, include_csrf=True),
+    )
+    mark_payload = mark_response.get_json()["data"]
+    assert mark_response.status_code == 200
+    assert mark_payload["schema_version"] == "paper-mark-to-market/v1"
+    assert mark_payload["updated"] == 1
+    assert mark_payload["items"][0]["position"]["market_price"] == 12.5
+
+    admin = login_as(client, "admin_paper_reset", role="admin")
+    reset_response = admin.post(
+        f"/api/v1/trading/paper/accounts/{positions['items'][0]['account_id']}/reset",
+        json={},
+        headers=tenant_headers(admin, include_csrf=True),
+    )
+    reset_signals = paper_trading_repo.list_trade_signals(1, limit=1)
+    reset_links = paper_trading_repo.list_signal_review_links(1, limit=10)
+    assert reset_response.status_code == 200
+    assert reset_signals[0]["status"] == "reset"
+    assert reset_links == []
+
+
+def test_paper_position_monitor_endpoint_runs_closed_loop(client, monkeypatch):
+    from backend.api_v1.routers import trading as trading_router
+
+    calls = []
+
+    class FakeSyncApiService:
+        def monitor_paper_positions(self, tenant_id, payload):
+            calls.append((tenant_id, payload))
+            return {
+                "schema_version": "paper-position-monitor/v1",
+                "status": "completed",
+                "tenant_id": tenant_id,
+                "account_id": payload.get("account_id"),
+                "position_count": 1,
+                "symbol_count": 1,
+                "snapshot_sync": {"snapshot_count": 1, "persisted_snapshots": 1, "source": "unit"},
+                "accounts": [{"account_id": payload.get("account_id"), "mark_to_market": {"updated": 1}, "exits": {"orders": 1}}],
+                "exit_summary": {"orders": 1, "skipped": 0, "blocked": 0},
+                "updated_at": "2026-05-12T10:00:00",
+            }
+
+    monkeypatch.setattr(trading_router, "SyncApiService", FakeSyncApiService)
+
+    authed = login_as(client, "editor_paper_monitor")
+    response = authed.post(
+        "/api/v1/trading/paper/monitor-positions",
+        json={"sync_snapshots": True, "evaluate_exits": True},
+        headers=tenant_headers(authed, include_csrf=True),
+    )
+    data = response.get_json()["data"]
+
+    assert response.status_code == 200
+    assert data["schema_version"] == "paper-position-monitor/v1"
+    assert data["status"] == "completed"
+    assert data["snapshot_sync"]["persisted_snapshots"] == 1
+    assert data["exit_summary"]["orders"] == 1
+    assert calls[0][0] == 1
+    assert calls[0][1]["account_id"]
+    assert calls[0][1]["sync_snapshots"] is True
+    assert calls[0][1]["evaluate_exits"] is True
+
+
+def test_paper_complete_loop_endpoint_runs_strategy_buy_and_position_monitor(client, monkeypatch):
+    from backend.api_v1.routers import trading as trading_router
+
+    strategy_calls = []
+    monitor_calls = []
+
+    class FakeStrategyApiService:
+        def run_deployed_strategy(self, tenant_id, strategy_id, params):
+            strategy_calls.append((tenant_id, strategy_id, params))
+            return {
+                "production_status": "completed",
+                "scan": {"matched_count": 2},
+                "paper_trading": {
+                    "orders": [{"id": 1}, {"id": 2}],
+                    "skipped": [{"symbol": "000002", "reason": "position_exists"}],
+                    "blocked": [],
+                    "exits": {"orders": [{"id": 9}]},
+                },
+                "warnings": [],
+            }
+
+    class FakeSyncApiService:
+        def monitor_paper_positions(self, tenant_id, payload):
+            monitor_calls.append((tenant_id, payload))
+            return {
+                "schema_version": "paper-position-monitor/v1",
+                "status": "completed",
+                "tenant_id": tenant_id,
+                "account_id": payload.get("account_id"),
+                "position_count": 2,
+                "symbol_count": 2,
+                "snapshot_sync": {"snapshot_count": 2, "persisted_snapshots": 2, "source": "unit"},
+                "accounts": [{"account_id": payload.get("account_id"), "mark_to_market": {"updated": 2}, "exits": {"orders": 1}}],
+                "exit_summary": {"orders": 1, "skipped": 0, "blocked": 0},
+                "updated_at": "2026-05-12T10:00:00",
+            }
+
+    monkeypatch.setattr(trading_router, "StrategyApiService", FakeStrategyApiService)
+    monkeypatch.setattr(trading_router, "SyncApiService", FakeSyncApiService)
+    monkeypatch.setattr(
+        trading_router.strategy_repo,
+        "list_strategies",
+        lambda active_only=True: [
+            {"id": 11, "code": "2560", "name": "2560", "enabled": True, "lifecycle_status": "deployed", "is_active": 1},
+            {"id": 12, "code": "DISABLED", "name": "disabled", "enabled": False, "lifecycle_status": "deployed", "is_active": 1},
+        ],
+    )
+
+    authed = login_as(client, "editor_paper_complete_loop")
+    response = authed.post(
+        "/api/v1/trading/paper/complete-loop",
+        json={"sync_snapshots": True, "evaluate_exits": True},
+        headers=tenant_headers(authed, include_csrf=True),
+    )
+    data = response.get_json()["data"]
+
+    assert response.status_code == 200
+    assert data["schema_version"] == "paper-complete-loop/v1"
+    assert data["status"] == "completed"
+    assert data["strategy_summary"]["executed"] == 1
+    assert data["strategy_summary"]["buy_orders"] == 2
+    assert data["strategy_summary"]["pre_buy_exit_orders"] == 1
+    assert data["position_monitor"]["exit_summary"]["orders"] == 1
+    assert strategy_calls[0][0] == 1
+    assert strategy_calls[0][1] == 11
+    assert strategy_calls[0][2]["paper_trade"] is True
+    assert strategy_calls[0][2]["paper_account_id"]
+    assert monitor_calls[0][1]["sync_snapshots"] is True
+    assert monitor_calls[0][1]["evaluate_exits"] is True
+
+
+def test_paper_signal_api_creates_closed_loop_from_scan_candidate(client):
+    from datetime import datetime
+    from decimal import Decimal
+
+    from backend.infrastructure.market_data.provider import QuoteSnapshot
+    from backend.repositories import market_data_repo, paper_trading_repo
+
+    market_data_repo.upsert_quote_snapshots(
+        [
+            QuoteSnapshot(
+                symbol="000003",
+                trade_time=datetime(2026, 5, 5, 9, 35),
+                last_price=Decimal("8"),
+                open=Decimal("8"),
+                high=Decimal("8.2"),
+                low=Decimal("7.9"),
+                source="unit",
+            )
+        ]
+    )
+    authed = login_as(client, "editor_paper_signal_api")
+    response = authed.post(
+        "/api/v1/trading/paper/apply-signal",
+        json={
+            "strategy_code": "2560",
+            "candidate": {
+                "symbol": "000003",
+                "stock_name": "测试股份",
+                "trade_date": "2026-05-05",
+                "signal": "缩量回踩",
+                "signal_type": "BUY",
+                "signal_subtype": "volume_lock_shrink",
+                "score": 86,
+                "total_score": 86,
+                "security_type": "stock",
+                "bar_interval": "1d",
+            },
+            "params": {"cash_per_trade": 8000, "min_signal_score": 0},
+            "source_context": {"scan_id": "scan-api-test", "scan_result_index": 0, "scan_params": {"strategy_code": "2560"}},
+        },
+        headers=tenant_headers(authed, include_csrf=True),
+    )
+    data = response.get_json()["data"]
+
+    assert response.status_code == 200
+    assert data["orders"][0]["symbol"] == "000003"
+    assert data["orders"][0]["side"] == "BUY"
+    signals = authed.get("/api/v1/trading/signals", headers=tenant_headers(authed)).get_json()["data"]["items"]
+    signal = next(item for item in signals if item["symbol"] == "000003")
+    assert signal["payload"]["source_context"]["scan_id"] == "scan-api-test"
+    link = paper_trading_repo.get_signal_review_link(1, signal["source_hash"])
+    assert link["trade_signal_id"] == signal["id"]
+    assert link["pick_id"]
+    assert link["buy_order_id"] == data["orders"][0]["id"]
+    assert link["metadata"]["source_context"]["scan_id"] == "scan-api-test"
+
+
+def test_paper_signal_api_blocks_mock_market_data_when_quality_gate_enabled(client):
+    authed = login_as(client, "editor_paper_signal_quality")
+    response = authed.post(
+        "/api/v1/trading/paper/apply-signal",
+        json={
+            "strategy_code": "2560",
+            "candidate": {
+                "symbol": "000004",
+                "stock_name": "Mock 股份",
+                "trade_date": "2026-05-05",
+                "signal": "缩量回踩",
+                "signal_type": "BUY",
+                "signal_subtype": "volume_lock_shrink",
+                "score": 90,
+                "total_score": 90,
+                "data_quality": "mock",
+                "market_data_source": "mock",
+            },
+            "params": {"cash_per_trade": 8000, "min_signal_score": 0, "enforce_market_data_quality_gate": True},
+        },
+        headers=tenant_headers(authed, include_csrf=True),
+    )
+    data = response.get_json()["data"]
+
+    assert response.status_code == 200
+    assert data["orders"] == []
+    assert data["blocked"][0]["reason"] == "mock_market_data"
+
+
+def test_paper_signal_api_blocks_non_executable_scan_sample(client):
+    authed = login_as(client, "editor_paper_signal_non_exec")
+    response = authed.post(
+        "/api/v1/trading/paper/apply-signal",
+        json={
+            "strategy_code": "2560",
+            "candidate": {
+                "symbol": "000005",
+                "stock_name": "样本股份",
+                "trade_date": "2026-05-05",
+                "signal": "行情样本",
+                "signal_type": "WATCH",
+                "strategy_runner": "market_sample",
+                "executable_signal": False,
+                "score": 90,
+                "total_score": 90,
+                "data_quality": "primary",
+                "market_data_source": "unit",
+            },
+            "params": {"cash_per_trade": 8000, "min_signal_score": 0},
+        },
+        headers=tenant_headers(authed, include_csrf=True),
+    )
+    data = response.get_json()["data"]
+
+    assert response.status_code == 200
+    assert data["orders"] == []
+    assert data["blocked"][0]["reason"] == "market_sample_not_executable"
 
 
 def test_paper_trading_persists_convertible_bond_interval_and_lot_size(client):
@@ -1634,7 +1995,7 @@ def test_paper_trading_generates_technical_exit_from_local_ma60(client, monkeypa
     from backend.application import paper_trading_service
     from backend.application.paper_trading_service import PaperTradingService
     from backend.infrastructure.market_data.provider import DailyBar, QuoteSnapshot
-    from backend.repositories import market_data_repo
+    from backend.repositories import market_data_repo, paper_trading_repo
 
     class FixedDate(date):
         @classmethod
@@ -1715,6 +2076,11 @@ def test_paper_trading_generates_technical_exit_from_local_ma60(client, monkeypa
     assert exit_result["exits"]["orders"][0]["side"] == "SELL"
     assert exit_result["exits"]["orders"][0]["reason"] == "ma60_breakdown"
     assert exit_result["summary"]["active_positions"] == 0
+    signals = paper_trading_repo.list_trade_signals(1, limit=1)
+    link = paper_trading_repo.get_signal_review_link(1, signals[0]["source_hash"])
+    assert signals[0]["status"] == "closed"
+    assert link["status"] == "closed"
+    assert link["sell_order_id"] == exit_result["exits"]["orders"][0]["id"]
 
 
 def test_strategy_production_run_blocks_without_realtime_snapshot(client):
@@ -2105,6 +2471,7 @@ def test_strategy_backtest_api_returns_structured_summary_and_audit(client, monk
     assert data["data"]["summary"]["data_contract"]["benchmark_source"] == "synthetic"
     assert data["data"]["summary"]["data_contract"]["adjust"] == "qfq"
     assert data["data"]["summary"]["data_contract"]["mock_or_fallback"] is True
+    assert data["data"]["summary"]["data_contract"]["quality_gate"]["quality_reason"] == "degraded_market_data"
     assert data["data"]["summary"]["portfolio_curve"][0]["excess_return_pct"] == 0
     assert data["data"]["summary"]["risk_attribution"]["schema_version"] == "risk-attribution/v1"
     assert data["data"]["summary"]["experiment"]["params"]["benchmark_code"] == "000300"
@@ -2160,6 +2527,7 @@ def test_strategy_backtest_uses_synthetic_benchmark_when_local_missing(client, m
     assert data_contract["backtest_data_policy"] == "local_only_no_external_provider"
     assert data_contract["external_provider_disabled"] is True
     assert data_contract["mock_or_fallback"] is True
+    assert data_contract["quality_gate"]["quality_reason"] == "degraded_market_data"
     assert benchmark["total_return"] == 0.0
     assert benchmark["curve"][-1]["return_pct"] == 0.0
 

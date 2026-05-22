@@ -64,6 +64,20 @@ function stockName(item) {
   return item?.name || item?.stock_name || '-';
 }
 
+function isExecutablePaperSignal(item) {
+  if (item?.executable_signal === false) return false;
+  if (item?.executable_signal === true) return true;
+  if (String(item?.strategy_runner || '').toLowerCase() === 'market_sample') return false;
+  const signalType = String(item?.signal_type || item?.side || '').toUpperCase();
+  return !signalType || signalType === 'BUY';
+}
+
+function paperSignalDisabledReason(item, fallbackReason) {
+  if (fallbackReason) return fallbackReason;
+  if (!isExecutablePaperSignal(item)) return item?.execution_block_reason || '当前行不是可执行买入信号';
+  return '';
+}
+
 function securityTypeLabel(value) {
   const key = String(value || '').trim();
   return SECURITY_TYPE_LABELS[key] || key || '-';
@@ -374,6 +388,64 @@ export function ScansPage({ onNavigate, authz, pagePayload = {} }) {
     }
   }
 
+  async function applyPaperSignal(item, index = 0) {
+    if (!mayWrite) {
+      setError(disabledReason);
+      return;
+    }
+    if (!isExecutablePaperSignal(item)) {
+      setError(paperSignalDisabledReason(item, ''));
+      return;
+    }
+    const code = stockCode(item);
+    if (!code || code === '-') return;
+    setAddingSymbol(code);
+    setError('');
+    try {
+      const result = await api.applyPaperSignal({
+        strategy_code: task?.strategy_code || form.strategy_code,
+        scan_id: taskId,
+        scan_task_id: task?.id || task?.task_id || taskId,
+        scan_result_index: index,
+        scan_params: scanParams,
+        explanation: getExplanation(item),
+        candidate: {
+          ...item,
+          symbol: code,
+          stock_name: stockName(item),
+          security_type: item.security_type || activeSecurityType,
+          bar_interval: item.bar_interval || item.interval || activeBarInterval,
+          data_quality: item.data_quality || results?.market_data?.data_quality || task?.market_data?.data_quality || '',
+          market_data_source: item.market_data_source || results?.market_data?.actual_provider || task?.market_data?.actual_provider || '',
+          fallback_used: Boolean(item.fallback_used ?? results?.market_data?.fallback_used ?? task?.market_data?.fallback_used),
+        },
+        market_data: results?.market_data || task?.market_data || {},
+        source_context: {
+          scan_id: taskId,
+          scan_task_id: task?.id || task?.task_id || taskId,
+          scan_result_index: index,
+          scan_params: scanParams,
+          explanation: getExplanation(item),
+        },
+        params: {
+          security_type: item.security_type || activeSecurityType,
+          bar_interval: item.bar_interval || item.interval || activeBarInterval,
+          min_signal_score: 0,
+          allow_degraded_market_data: false,
+          enforce_market_data_quality_gate: true,
+        },
+      });
+      const orderCount = result.orders?.length || 0;
+      const blockedCount = result.blocked?.length || 0;
+      const skippedCount = result.skipped?.length || 0;
+      setMessage(`${code} 模拟执行完成：订单 ${orderCount}，阻断 ${blockedCount}，跳过 ${skippedCount}。`);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setAddingSymbol('');
+    }
+  }
+
   async function saveCurrentView() {
     const createdAt = new Date().toLocaleString('zh-CN', { hour12: false });
     const name = viewName.trim() || `扫描视图 ${createdAt}`;
@@ -672,6 +744,7 @@ export function ScansPage({ onNavigate, authz, pagePayload = {} }) {
               <select className="scan-select" value={form.strategy_code} onChange={(event) => setForm({ ...form, strategy_code: event.target.value })}>
                 <option value="2560">2560 战法</option>
                 <option value="first_limit_up">首板涨停</option>
+                <option value="limit_up_return">涨停回马枪</option>
               </select>
             </label>
             <label className="form-field">
@@ -805,10 +878,13 @@ export function ScansPage({ onNavigate, authz, pagePayload = {} }) {
             { label: '入选理由', render: (item) => (getExplanation(item).reasons || []).slice(0, 2).join('；') || '-' },
             {
               label: '操作',
-              render: (item) => (
+              render: (item, index) => (
                 <div className="row-actions">
                   <button type="button" className="btn-secondary" onClick={() => addToPicks(item)} disabled={addingSymbol === stockCode(item) || !mayWrite} title={disabledReason}>
                     {addingSymbol === stockCode(item) ? '加入中' : '加入池'}
+                  </button>
+                  <button type="button" className="btn-secondary" onClick={() => applyPaperSignal(item, index)} disabled={addingSymbol === stockCode(item) || !mayWrite || !isExecutablePaperSignal(item)} title={paperSignalDisabledReason(item, disabledReason)}>
+                    模拟买入
                   </button>
                   <button type="button" className="btn-secondary" onClick={() => onNavigate?.('kline', { symbol: stockCode(item), security_type: item.security_type || activeSecurityType, interval: item.bar_interval || item.interval || activeBarInterval })}>K 线</button>
                   <button type="button" className="btn-secondary" onClick={() => onNavigate?.('strategies', { strategy_code: task?.strategy_code || form.strategy_code })}>回测</button>

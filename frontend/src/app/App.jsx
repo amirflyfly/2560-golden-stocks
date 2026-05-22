@@ -31,48 +31,48 @@ const pages = {
 };
 
 const pageMeta = {
-  trading: { title: '模拟交易', subtitle: '查看策略命中后的纸上订单、成交、持仓和账户权益。' },
-  dashboard: { title: '今日工作台', subtitle: '集中查看扫描、候选、行情源和任务健康状态。' },
+  dashboard: { title: '今日行动指挥台', subtitle: '判断今日是否可扫描、可复盘、可回测、可上线，并查看阻断原因。' },
   discovery: { title: '市场发现', subtitle: '扫描前先看市场宽度、强势样本、活跃标的和行情质量。' },
-  strategies: { title: '策略管理', subtitle: '查看策略能力、运行回测并沉淀验证结果。' },
+  strategies: { title: '策略管理 / 回测验证', subtitle: '查看策略能力、运行回测并沉淀验证结果。' },
   scans: { title: '策略扫描', subtitle: '创建扫描任务，解释候选原因，并把标的加入选股池。' },
   kline: { title: '股票 K 线', subtitle: '查看个股走势、均线和复盘线索。' },
   picks: { title: '选股池', subtitle: '管理候选标的、观察状态和复盘结论。' },
   reports: { title: '研究报表', subtitle: '归档研究结论、策略表现和数据质量。' },
-  monitoring: { title: '生产监控', subtitle: '检查服务、任务和日志健康状态。' },
+  trading: { title: '模拟验证', subtitle: '验证策略命中后的模拟订单、成交、持仓和账户权益，不代表真实成交。' },
   sync: { title: '数据中心', subtitle: '管理本地行情仓、同步任务和每只股票的数据覆盖。' },
-  admin: { title: '后台管理', subtitle: '管理用户、角色、租户和审计记录。' },
+  monitoring: { title: '生产监控', subtitle: '检查服务、任务、日志健康状态和上线门禁。' },
+  admin: { title: '后台管理', subtitle: '管理用户、角色、租户、审计记录和上线检查入口。' },
 };
 
 const navGroups = [
   {
-    title: 'Trading',
+    title: '今日',
     items: [
-      ['trading', '模拟交易', 'nav-trading'],
+      ['dashboard', '今日行动指挥台', 'nav-dashboard'],
     ],
   },
   {
-    title: '工作区',
+    title: '发现与研究',
     items: [
-      ['dashboard', '首页看板', 'nav-dashboard'],
       ['discovery', '市场发现', 'nav-discovery'],
-      ['strategies', '策略管理', 'nav-strategies'],
       ['scans', '策略扫描', 'nav-scans'],
-    ],
-  },
-  {
-    title: '研究',
-    items: [
-      ['kline', '股票 K 线', 'nav-kline'],
       ['picks', '选股池', 'nav-picks'],
-      ['reports', '研究报表', 'nav-reports'],
+      ['kline', '股票 K 线', 'nav-kline'],
     ],
   },
   {
-    title: '运维',
+    title: '验证与报表',
     items: [
-      ['monitoring', '生产监控', 'nav-monitoring'],
+      ['strategies', '策略管理 / 回测验证', 'nav-strategies'],
+      ['reports', '研究报表', 'nav-reports'],
+      ['trading', '模拟验证', 'nav-trading'],
+    ],
+  },
+  {
+    title: '系统',
+    items: [
       ['sync', '数据中心', 'nav-sync'],
+      ['monitoring', '生产监控', 'nav-monitoring'],
       ['admin', '后台管理', 'nav-admin'],
     ],
   },

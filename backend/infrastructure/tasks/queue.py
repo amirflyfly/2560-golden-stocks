@@ -14,7 +14,7 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from backend.core.config import get_settings
-from backend.infrastructure.cache.redis_client import get_json, pop_value, push_value, set_json, set_json_if_absent
+from backend.infrastructure.cache.redis_client import get_json, pop_value, push_priority_value, push_value, set_json, set_json_if_absent
 
 TaskCallable = Callable[..., dict]
 
@@ -22,6 +22,7 @@ _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="strategy-task"
 _TASK_INDEX_KEY = "tasks:index"
 _TASK_QUEUE_KEY = "tasks:queue"
 _TASK_TTL_SECONDS = 86400
+_TASK_EVENT_LIMIT = 1000
 _STALE_AFTER_SECONDS = 900
 _TERMINAL_STATUSES = {"completed", "failed", "cancelled", "stale"}
 _CURRENT_TASK_ID: ContextVar[str | None] = ContextVar("current_task_id", default=None)
@@ -63,7 +64,7 @@ def append_task_event(task_id: str | None, message: str, *, status: str | None =
     if detail:
         event["detail"] = detail
     events = [*(task.get("events") or []), event]
-    task["events"] = events[-100:]
+    task["events"] = events[-_TASK_EVENT_LIMIT:]
     task["heartbeat_at"] = _now()
     if progress is not None:
         result = task.get("result") if isinstance(task.get("result"), dict) else {}
@@ -134,6 +135,7 @@ def _execute_task_unlocked(task_id: str, func: TaskCallable, *args: Any, **kwarg
                 latest.setdefault("events", []).append(_event("cancelled", "cancelled while running"))
                 current = latest
             else:
+                current = latest
                 current.update(
                     {
                         "status": "completed",
@@ -154,6 +156,7 @@ def _execute_task_unlocked(task_id: str, func: TaskCallable, *args: Any, **kwarg
                 current.update({"finished_at": current.get("finished_at") or _now(), "duration_seconds": _duration_seconds(current)})
                 current.setdefault("events", []).append(_event("cancelled", "cancelled while failing"))
                 break
+            current = latest
             category = _failure_category(exc)
             retry_count = int(current.get("retry_count") or 0)
             max_retry_count = int(current.get("max_retries") or 0)
@@ -185,7 +188,8 @@ def _execute_task_unlocked(task_id: str, func: TaskCallable, *args: Any, **kwarg
                 }
             )
             current["duration_seconds"] = _duration_seconds(current)
-            current.setdefault("events", []).append(_event("failed", category))
+            error_summary = str(exc).strip()[:300] or category
+            current.setdefault("events", []).append(_event("failed", f"任务失败：{error_summary}"))
             break
     save_task(current)
     return current
@@ -312,6 +316,7 @@ def enqueue_task(
     payload: dict | None = None,
     idempotency_key: str | None = None,
     max_retries: int = 0,
+    priority: bool = False,
     **kwargs: Any,
 ) -> dict:
     normalized_payload = payload or {}
@@ -330,6 +335,7 @@ def enqueue_task(
         "idempotency_key": normalized_idempotency_key,
         "queue_backend": settings.task_queue_backend,
         "execution_mode": settings.task_execution_mode,
+        "priority": bool(priority),
         "retry_count": 0,
         "max_retries": max(0, int(max_retries or 0)),
         "failure_category": None,
@@ -358,7 +364,10 @@ def enqueue_task(
     save_task(task)
 
     if settings.task_execution_mode == "worker":
-        push_value(_TASK_QUEUE_KEY, task["id"])
+        if priority:
+            push_priority_value(_TASK_QUEUE_KEY, task["id"])
+        else:
+            push_value(_TASK_QUEUE_KEY, task["id"])
         return task
 
     if os.getenv("PYTEST_CURRENT_TEST") and name in {

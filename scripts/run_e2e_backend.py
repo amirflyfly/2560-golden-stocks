@@ -12,6 +12,17 @@ os.environ.setdefault('SESSION_COOKIE_SAMESITE', 'Lax')
 os.environ['CACHE_BACKEND'] = os.getenv('E2E_CACHE_BACKEND', 'memory')
 os.environ['TASK_QUEUE_BACKEND'] = os.getenv('E2E_TASK_QUEUE_BACKEND', 'memory')
 os.environ['TASK_EXECUTION_MODE'] = os.getenv('E2E_TASK_EXECUTION_MODE', 'threadpool')
+for name in (
+    'PICKS_REPOSITORY_BACKEND',
+    'AUTH_REPOSITORY_BACKEND',
+    'AUDIT_REPOSITORY_BACKEND',
+    'SETTINGS_REPOSITORY_BACKEND',
+    'LOGS_REPOSITORY_BACKEND',
+    'STRATEGY_POOL_REPOSITORY_BACKEND',
+    'STRATEGY_REPOSITORY_BACKEND',
+    'TRADING_REPOSITORY_BACKEND',
+):
+    os.environ[name] = os.getenv(f'E2E_{name}', 'sqlite')
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 E2E_DATA_DIR = BASE_DIR / 'data' / 'e2e'

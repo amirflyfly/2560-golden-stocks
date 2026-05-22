@@ -8,10 +8,11 @@ from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
+from sqlalchemy.dialects.mysql import insert as mysql_insert
 
 from backend.core.config import get_settings
-from backend.db.models import PaperAccount, PaperFill, PaperOrder, PaperPosition, TradeSignal
+from backend.db.models import PaperAccount, PaperFill, PaperOrder, PaperPosition, SignalReviewLink, TradeSignal
 from backend.db.session import session_scope
 from backend.infrastructure.market_data.utils import infer_security_type, normalize_bar_interval
 from backend.repositories.db import execute as sqlite_execute
@@ -117,23 +118,29 @@ def ensure_default_account(
         return _account_item(row)
 
     with session_scope() as session:
-        row = session.execute(
-            select(PaperAccount).where(PaperAccount.tenant_id == int(tenant_id or 0), PaperAccount.name == name)
-        ).scalar_one_or_none()
-        if row is None:
-            row = PaperAccount(
-                tenant_id=int(tenant_id or 0),
-                name=name,
-                mode="paper",
-                broker_type="paper",
-                status="active",
-                currency="CNY",
-                initial_cash=initial,
-                cash=initial,
-                config_json={},
+        tenant_key = int(tenant_id or 0)
+        stmt = mysql_insert(PaperAccount).values(
+            {
+                "tenant_id": tenant_key,
+                "name": name,
+                "mode": "paper",
+                "broker_type": "paper",
+                "status": "active",
+                "currency": "CNY",
+                "initial_cash": initial,
+                "cash": initial,
+                "config_json": {},
+            }
+        )
+        session.execute(
+            stmt.on_duplicate_key_update(
+                status=stmt.inserted.status,
+                updated_at=func.now(),
             )
-            session.add(row)
-            session.flush()
+        )
+        row = session.execute(
+            select(PaperAccount).where(PaperAccount.tenant_id == tenant_key, PaperAccount.name == name)
+        ).scalar_one()
         return _account_item(_public_account(row))
 
 
@@ -176,6 +183,38 @@ def list_positions(tenant_id: int, account_id: int | None = None, *, active_only
         return [_position_item(_public_position(row)) for row in rows]
 
 
+def list_active_position_symbols(tenant_id: int, account_id: int | None = None, *, limit: int = 0) -> list[str]:
+    safe_limit = max(0, int(limit or 0))
+    if _repo_backend() == "sqlite":
+        where = ["tenant_id=?", "quantity>0", "COALESCE(symbol, '')<>''"]
+        params: list[Any] = [int(tenant_id or 0)]
+        if account_id:
+            where.append("account_id=?")
+            params.append(int(account_id))
+        sql = f"SELECT DISTINCT symbol FROM paper_positions WHERE {' AND '.join(where)} ORDER BY symbol ASC"
+        if safe_limit:
+            sql = f"{sql} LIMIT ?"
+            params.append(safe_limit)
+        return [str(row.get("symbol") or "").strip() for row in sqlite_q(sql, tuple(params)) if str(row.get("symbol") or "").strip()]
+
+    with session_scope() as session:
+        query = (
+            select(PaperPosition.symbol)
+            .where(
+                PaperPosition.tenant_id == int(tenant_id or 0),
+                PaperPosition.quantity > 0,
+                PaperPosition.symbol != "",
+            )
+            .distinct()
+            .order_by(PaperPosition.symbol.asc())
+        )
+        if account_id:
+            query = query.where(PaperPosition.account_id == int(account_id))
+        if safe_limit:
+            query = query.limit(safe_limit)
+        return [str(symbol or "").strip() for symbol in session.execute(query).scalars().all() if str(symbol or "").strip()]
+
+
 def get_position(tenant_id: int, account_id: int, symbol: str) -> dict | None:
     normalized_symbol = str(symbol or "").strip()
     if _repo_backend() == "sqlite":
@@ -204,6 +243,17 @@ def order_exists(tenant_id: int, idempotency_key: str) -> bool:
             select(PaperOrder.id).where(PaperOrder.tenant_id == int(tenant_id or 0), PaperOrder.idempotency_key == idempotency_key)
         ).first()
         return bool(found)
+
+
+def get_order(order_id: int) -> dict | None:
+    if not order_id:
+        return None
+    if _repo_backend() == "sqlite":
+        row = sqlite_q1("SELECT * FROM paper_orders WHERE id=?", (int(order_id),))
+        return _order_item(row) if row else None
+    with session_scope() as session:
+        row = session.get(PaperOrder, int(order_id))
+        return _order_item(_public_order(row)) if row else None
 
 
 def upsert_trade_signal(
@@ -267,7 +317,15 @@ def upsert_trade_signal(
             ],
         )
         row = sqlite_q1("SELECT * FROM trade_signals WHERE tenant_id=? AND source_hash=?", (int(tenant_id or 0), source_hash)) or {}
-        return _signal_item(row)
+        item = _signal_item(row)
+        upsert_signal_review_link(
+            int(tenant_id or 0),
+            source_hash,
+            trade_signal_id=item.get("id"),
+            status="open",
+            metadata={"strategy_code": strategy_code, "symbol": normalized_symbol, "signal_type": normalized_type},
+        )
+        return item
 
     with session_scope() as session:
         row = session.execute(
@@ -290,7 +348,244 @@ def upsert_trade_signal(
         row.status = row.status or "open"
         row.payload_json = payload or {}
         session.flush()
-        return _signal_item(_public_signal(row))
+        item = _signal_item(_public_signal(row))
+        _upsert_signal_review_link_in_session(
+            session,
+            int(tenant_id or 0),
+            source_hash,
+            trade_signal_id=item.get("id"),
+            status="open",
+            metadata={"strategy_code": strategy_code, "symbol": normalized_symbol, "signal_type": normalized_type},
+        )
+        return item
+
+
+def upsert_signal_review_link(
+    tenant_id: int,
+    source_signal_hash: str,
+    *,
+    trade_signal_id: int | None = None,
+    pick_id: int | None = None,
+    buy_order_id: int | None = None,
+    sell_order_id: int | None = None,
+    buy_fill_id: int | None = None,
+    sell_fill_id: int | None = None,
+    status: str | None = None,
+    opened_at: Any | None = None,
+    closed_at: Any | None = None,
+    realized_return_pct: Any | None = None,
+    metadata: dict | None = None,
+) -> dict | None:
+    source_hash = str(source_signal_hash or "").strip()
+    if not source_hash:
+        return None
+    if _repo_backend() == "sqlite":
+        existing = sqlite_q1(
+            "SELECT * FROM signal_review_links WHERE tenant_id=? AND source_signal_hash=?",
+            (int(tenant_id or 0), source_hash),
+        )
+        merged_metadata = _json_value(existing.get("metadata_json")) if existing else {}
+        if metadata:
+            merged_metadata.update(metadata)
+        if existing:
+            sqlite_execute(
+                """UPDATE signal_review_links
+                SET trade_signal_id=COALESCE(?, trade_signal_id),
+                    pick_id=COALESCE(?, pick_id),
+                    buy_order_id=COALESCE(?, buy_order_id),
+                    sell_order_id=COALESCE(?, sell_order_id),
+                    buy_fill_id=COALESCE(?, buy_fill_id),
+                    sell_fill_id=COALESCE(?, sell_fill_id),
+                    status=COALESCE(?, status),
+                    opened_at=COALESCE(?, opened_at),
+                    closed_at=COALESCE(?, closed_at),
+                    realized_return_pct=COALESCE(?, realized_return_pct),
+                    metadata_json=?,
+                    updated_at=CURRENT_TIMESTAMP
+                WHERE tenant_id=? AND source_signal_hash=?""",
+                (
+                    trade_signal_id,
+                    pick_id,
+                    buy_order_id,
+                    sell_order_id,
+                    buy_fill_id,
+                    sell_fill_id,
+                    status,
+                    _dt(opened_at),
+                    _dt(closed_at),
+                    _float(realized_return_pct) if realized_return_pct is not None else None,
+                    _json_text(merged_metadata),
+                    int(tenant_id or 0),
+                    source_hash,
+                ),
+            )
+        else:
+            sqlite_execute(
+                """INSERT INTO signal_review_links
+                (tenant_id, source_signal_hash, trade_signal_id, pick_id, buy_order_id, sell_order_id,
+                 buy_fill_id, sell_fill_id, status, opened_at, closed_at, realized_return_pct,
+                 metadata_json, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)""",
+                (
+                    int(tenant_id or 0),
+                    source_hash,
+                    trade_signal_id,
+                    pick_id,
+                    buy_order_id,
+                    sell_order_id,
+                    buy_fill_id,
+                    sell_fill_id,
+                    status or "open",
+                    _dt(opened_at),
+                    _dt(closed_at),
+                    _float(realized_return_pct) if realized_return_pct is not None else None,
+                    _json_text(merged_metadata),
+                ),
+            )
+        row = sqlite_q1(
+            "SELECT * FROM signal_review_links WHERE tenant_id=? AND source_signal_hash=?",
+            (int(tenant_id or 0), source_hash),
+        )
+        _sync_trade_signal_status_sqlite(int(tenant_id or 0), source_hash, status)
+        return _link_item(row) if row else None
+
+    with session_scope() as session:
+        row = _upsert_signal_review_link_in_session(
+            session,
+            int(tenant_id or 0),
+            source_hash,
+            trade_signal_id=trade_signal_id,
+            pick_id=pick_id,
+            buy_order_id=buy_order_id,
+            sell_order_id=sell_order_id,
+            buy_fill_id=buy_fill_id,
+            sell_fill_id=sell_fill_id,
+            status=status,
+            opened_at=opened_at,
+            closed_at=closed_at,
+            realized_return_pct=realized_return_pct,
+            metadata=metadata,
+        )
+        _sync_trade_signal_status_in_session(session, int(tenant_id or 0), source_hash, status)
+        session.flush()
+        return _link_item(_public_link(row))
+
+
+def get_signal_review_link(tenant_id: int, source_signal_hash: str) -> dict | None:
+    source_hash = str(source_signal_hash or "").strip()
+    if not source_hash:
+        return None
+    if _repo_backend() == "sqlite":
+        row = sqlite_q1(
+            "SELECT * FROM signal_review_links WHERE tenant_id=? AND source_signal_hash=?",
+            (int(tenant_id or 0), source_hash),
+        )
+        return _link_item(row) if row else None
+    with session_scope() as session:
+        row = session.execute(
+            select(SignalReviewLink).where(
+                SignalReviewLink.tenant_id == int(tenant_id or 0),
+                SignalReviewLink.source_signal_hash == source_hash,
+            )
+        ).scalar_one_or_none()
+        return _link_item(_public_link(row)) if row else None
+
+
+def get_open_signal_review_link_for_symbol(tenant_id: int, account_id: int, symbol: str) -> dict | None:
+    normalized_symbol = str(symbol or "").strip()
+    if not normalized_symbol:
+        return None
+    if _repo_backend() == "sqlite":
+        row = sqlite_q1(
+            """SELECT l.* FROM signal_review_links l
+            JOIN paper_orders o ON o.id=l.buy_order_id
+            WHERE l.tenant_id=? AND o.account_id=? AND o.symbol=? AND COALESCE(l.status,'open')='open'
+            ORDER BY l.id DESC LIMIT 1""",
+            (int(tenant_id or 0), int(account_id), normalized_symbol),
+        )
+        return _link_item(row) if row else None
+
+    with session_scope() as session:
+        row = session.execute(
+            select(SignalReviewLink)
+            .join(PaperOrder, PaperOrder.id == SignalReviewLink.buy_order_id)
+            .where(
+                SignalReviewLink.tenant_id == int(tenant_id or 0),
+                PaperOrder.account_id == int(account_id),
+                PaperOrder.symbol == normalized_symbol,
+                SignalReviewLink.status == "open",
+            )
+            .order_by(SignalReviewLink.id.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        return _link_item(_public_link(row)) if row else None
+
+
+def list_signal_review_links(tenant_id: int, *, limit: int = 100) -> list[dict]:
+    safe_limit = max(1, min(int(limit or 100), 500))
+    if _repo_backend() == "sqlite":
+        rows = sqlite_q(
+            "SELECT * FROM signal_review_links WHERE tenant_id=? ORDER BY id DESC LIMIT ?",
+            (int(tenant_id or 0), safe_limit),
+        )
+        return [_link_item(row) for row in rows]
+    with session_scope() as session:
+        rows = session.execute(
+            select(SignalReviewLink)
+            .where(SignalReviewLink.tenant_id == int(tenant_id or 0))
+            .order_by(SignalReviewLink.id.desc())
+            .limit(safe_limit)
+        ).scalars().all()
+        return [_link_item(_public_link(row)) for row in rows]
+
+
+def signal_review_health(tenant_id: int) -> dict:
+    links = list_signal_review_links(tenant_id, limit=500)
+    missing = {
+        "trade_signal": 0,
+        "pick": 0,
+        "buy_order": 0,
+        "buy_fill": 0,
+        "closed_without_sell_order": 0,
+        "closed_without_sell_fill": 0,
+    }
+    open_count = 0
+    closed_count = 0
+    reset_count = 0
+    for item in links:
+        status = str(item.get("status") or "open").lower()
+        if status == "closed":
+            closed_count += 1
+        elif status == "reset":
+            reset_count += 1
+        else:
+            open_count += 1
+        if not item.get("trade_signal_id"):
+            missing["trade_signal"] += 1
+        if not item.get("pick_id"):
+            missing["pick"] += 1
+        if not item.get("buy_order_id"):
+            missing["buy_order"] += 1
+        if not item.get("buy_fill_id"):
+            missing["buy_fill"] += 1
+        if status == "closed" and not item.get("sell_order_id"):
+            missing["closed_without_sell_order"] += 1
+        if status == "closed" and not item.get("sell_fill_id"):
+            missing["closed_without_sell_fill"] += 1
+    total = len(links)
+    incomplete = sum(1 for item in links if not _link_complete(item))
+    return {
+        "schema_version": "signal-review-health/v1",
+        "tenant_id": int(tenant_id or 0),
+        "total": total,
+        "open": open_count,
+        "closed": closed_count,
+        "reset": reset_count,
+        "incomplete": incomplete,
+        "complete_rate": round((total - incomplete) / total, 4) if total else 1,
+        "missing": missing,
+        "status": "ok" if incomplete == 0 else "degraded",
+    }
 
 
 def list_trade_signals(tenant_id: int, *, limit: int = 100) -> list[dict]:
@@ -373,17 +668,31 @@ def create_filled_order(
             ],
         )
         order = get_order_by_idempotency(tenant_id, idempotency_key)
+        fill = None
         sqlite_execute_many(
             """INSERT INTO paper_fills
             (tenant_id, account_id, order_id, symbol, security_type, bar_interval, side, quantity, price, amount, fee, filled_at, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)""",
             [(int(tenant_id or 0), int(account_id), int(order["id"]), normalized_symbol, normalized_security_type, normalized_bar_interval, normalized_side, qty, _float(fill_price), _float(amount), _float(fee), filled_at.isoformat(timespec="seconds"))],
         )
+        fill = sqlite_q1(
+            "SELECT * FROM paper_fills WHERE tenant_id=? AND order_id=? ORDER BY id DESC LIMIT 1",
+            (int(tenant_id or 0), int(order["id"])),
+        )
         sqlite_execute(
             "UPDATE paper_accounts SET cash=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
             (_float(cash + signed_cash), int(account_id)),
         )
         _apply_position_fill_sqlite(int(tenant_id or 0), int(account_id), normalized_symbol, normalized_side, qty, fill_price, filled_at, security_type=normalized_security_type, bar_interval=normalized_bar_interval)
+        if source_signal_hash:
+            _update_link_for_order(
+                int(tenant_id or 0),
+                source_signal_hash,
+                side=normalized_side,
+                order_id=order.get("id"),
+                fill_id=(fill or {}).get("id"),
+                filled_at=filled_at,
+            )
         return {"created": True, "order": get_order_by_idempotency(tenant_id, idempotency_key)}
 
     with session_scope() as session:
@@ -415,8 +724,7 @@ def create_filled_order(
         )
         session.add(order)
         session.flush()
-        session.add(
-            PaperFill(
+        fill = PaperFill(
                 tenant_id=int(tenant_id or 0),
                 account_id=int(account_id),
                 order_id=order.id,
@@ -430,10 +738,23 @@ def create_filled_order(
                 fee=fee,
                 filled_at=filled_at,
             )
-        )
+        session.add(fill)
         account.cash = account.cash + signed_cash
         _apply_position_fill_mysql(session, int(tenant_id or 0), int(account_id), normalized_symbol, normalized_side, qty, fill_price, filled_at, security_type=normalized_security_type, bar_interval=normalized_bar_interval)
         session.flush()
+        if source_signal_hash:
+            _upsert_signal_review_link_in_session(
+                session,
+                int(tenant_id or 0),
+                source_signal_hash,
+                buy_order_id=order.id if normalized_side == "BUY" else None,
+                sell_order_id=order.id if normalized_side == "SELL" else None,
+                buy_fill_id=fill.id if normalized_side == "BUY" else None,
+                sell_fill_id=fill.id if normalized_side == "SELL" else None,
+                status="open" if normalized_side == "BUY" else "closed",
+                opened_at=filled_at if normalized_side == "BUY" else None,
+                closed_at=filled_at if normalized_side == "SELL" else None,
+            )
         return {"created": True, "order": _order_item(_public_order(order))}
 
 
@@ -516,18 +837,130 @@ def summary(tenant_id: int, account_id: int | None = None) -> dict:
     }
 
 
+def update_position_market_price(tenant_id: int, account_id: int, symbol: str, market_price: Any) -> dict | None:
+    price = _decimal(market_price)
+    if price <= 0:
+        return None
+    if _repo_backend() == "sqlite":
+        row = get_position(tenant_id, account_id, symbol)
+        if not row:
+            return None
+        quantity = int(row.get("quantity") or 0)
+        avg_cost = _decimal(row.get("avg_cost"))
+        market_value = price * Decimal(quantity)
+        unrealized = (price - avg_cost) * Decimal(quantity) if quantity > 0 else Decimal("0")
+        sqlite_execute(
+            """UPDATE paper_positions
+            SET market_price=?, market_value=?, unrealized_pnl=?, updated_at=CURRENT_TIMESTAMP
+            WHERE tenant_id=? AND account_id=? AND symbol=?""",
+            (_float(price), _float(market_value), _float(unrealized), int(tenant_id or 0), int(account_id), str(symbol or "").strip()),
+        )
+        updated = get_position(tenant_id, account_id, symbol)
+        return _position_item(updated) if updated else None
+    with session_scope() as session:
+        row = session.execute(
+            select(PaperPosition).where(
+                PaperPosition.tenant_id == int(tenant_id or 0),
+                PaperPosition.account_id == int(account_id),
+                PaperPosition.symbol == str(symbol or "").strip(),
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            return None
+        row.market_price = price
+        row.market_value = price * Decimal(row.quantity or 0)
+        row.unrealized_pnl = (price - row.avg_cost) * Decimal(row.quantity or 0) if row.quantity > 0 else Decimal("0")
+        session.flush()
+        return _position_item(_public_position(row))
+
+
 def reset_account(tenant_id: int, account_id: int) -> int:
     account = get_account(account_id)
     if not account or int(account.get("tenant_id") or 0) != int(tenant_id or 0):
         return 0
     initial_cash = _decimal(account.get("initial_cash"), Decimal("1000000"))
     if _repo_backend() == "sqlite":
+        sqlite_execute(
+            """UPDATE trade_signals
+            SET status='reset', updated_at=CURRENT_TIMESTAMP
+            WHERE tenant_id=? AND source_hash IN (
+                SELECT source_signal_hash FROM signal_review_links
+                WHERE tenant_id=? AND (
+                    buy_order_id IN (SELECT id FROM paper_orders WHERE tenant_id=? AND account_id=?)
+                    OR sell_order_id IN (SELECT id FROM paper_orders WHERE tenant_id=? AND account_id=?)
+                    OR buy_fill_id IN (SELECT id FROM paper_fills WHERE tenant_id=? AND account_id=?)
+                    OR sell_fill_id IN (SELECT id FROM paper_fills WHERE tenant_id=? AND account_id=?)
+                )
+            )""",
+            (
+                int(tenant_id or 0),
+                int(tenant_id or 0),
+                int(tenant_id or 0),
+                int(account_id),
+                int(tenant_id or 0),
+                int(account_id),
+                int(tenant_id or 0),
+                int(account_id),
+                int(tenant_id or 0),
+                int(account_id),
+            ),
+        )
+        sqlite_execute(
+            """DELETE FROM signal_review_links
+            WHERE tenant_id=? AND (
+                buy_order_id IN (SELECT id FROM paper_orders WHERE tenant_id=? AND account_id=?)
+                OR sell_order_id IN (SELECT id FROM paper_orders WHERE tenant_id=? AND account_id=?)
+                OR buy_fill_id IN (SELECT id FROM paper_fills WHERE tenant_id=? AND account_id=?)
+                OR sell_fill_id IN (SELECT id FROM paper_fills WHERE tenant_id=? AND account_id=?)
+            )""",
+            (
+                int(tenant_id or 0),
+                int(tenant_id or 0),
+                int(account_id),
+                int(tenant_id or 0),
+                int(account_id),
+                int(tenant_id or 0),
+                int(account_id),
+                int(tenant_id or 0),
+                int(account_id),
+            ),
+        )
         sqlite_execute("DELETE FROM paper_fills WHERE tenant_id=? AND account_id=?", (int(tenant_id or 0), int(account_id)))
         sqlite_execute("DELETE FROM paper_orders WHERE tenant_id=? AND account_id=?", (int(tenant_id or 0), int(account_id)))
         sqlite_execute("DELETE FROM paper_positions WHERE tenant_id=? AND account_id=?", (int(tenant_id or 0), int(account_id)))
         sqlite_execute("UPDATE paper_accounts SET cash=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", (_float(initial_cash), int(account_id)))
         return 1
     with session_scope() as session:
+        order_ids = select(PaperOrder.id).where(PaperOrder.tenant_id == int(tenant_id or 0), PaperOrder.account_id == int(account_id))
+        fill_ids = select(PaperFill.id).where(PaperFill.tenant_id == int(tenant_id or 0), PaperFill.account_id == int(account_id))
+        linked_hashes = session.execute(
+            select(SignalReviewLink.source_signal_hash).where(
+                SignalReviewLink.tenant_id == int(tenant_id or 0),
+                (
+                    SignalReviewLink.buy_order_id.in_(order_ids)
+                    | SignalReviewLink.sell_order_id.in_(order_ids)
+                    | SignalReviewLink.buy_fill_id.in_(fill_ids)
+                    | SignalReviewLink.sell_fill_id.in_(fill_ids)
+                ),
+            )
+        ).scalars().all()
+        if linked_hashes:
+            session.execute(
+                update(TradeSignal)
+                .where(TradeSignal.tenant_id == int(tenant_id or 0), TradeSignal.source_hash.in_(linked_hashes))
+                .values(status="reset")
+            )
+        session.execute(
+            delete(SignalReviewLink).where(
+                SignalReviewLink.tenant_id == int(tenant_id or 0),
+                (
+                    SignalReviewLink.buy_order_id.in_(order_ids)
+                    | SignalReviewLink.sell_order_id.in_(order_ids)
+                    | SignalReviewLink.buy_fill_id.in_(fill_ids)
+                    | SignalReviewLink.sell_fill_id.in_(fill_ids)
+                ),
+            )
+        )
         session.execute(delete(PaperFill).where(PaperFill.tenant_id == int(tenant_id or 0), PaperFill.account_id == int(account_id)))
         session.execute(delete(PaperOrder).where(PaperOrder.tenant_id == int(tenant_id or 0), PaperOrder.account_id == int(account_id)))
         session.execute(delete(PaperPosition).where(PaperPosition.tenant_id == int(tenant_id or 0), PaperPosition.account_id == int(account_id)))
@@ -535,6 +968,101 @@ def reset_account(tenant_id: int, account_id: int) -> int:
         if row:
             row.cash = initial_cash
     return 1
+
+
+def _update_link_for_order(tenant_id: int, source_signal_hash: str, *, side: str, order_id: int | None, fill_id: int | None, filled_at: Any) -> None:
+    normalized_side = str(side or "").upper()
+    upsert_signal_review_link(
+        tenant_id,
+        source_signal_hash,
+        buy_order_id=order_id if normalized_side == "BUY" else None,
+        sell_order_id=order_id if normalized_side == "SELL" else None,
+        buy_fill_id=fill_id if normalized_side == "BUY" else None,
+        sell_fill_id=fill_id if normalized_side == "SELL" else None,
+        status="open" if normalized_side == "BUY" else "closed",
+        opened_at=filled_at if normalized_side == "BUY" else None,
+        closed_at=filled_at if normalized_side == "SELL" else None,
+    )
+
+
+def _sync_trade_signal_status_sqlite(tenant_id: int, source_signal_hash: str, status: str | None) -> None:
+    normalized_status = str(status or "").strip().lower()
+    if normalized_status not in {"open", "closed", "cancelled", "reset"}:
+        return
+    sqlite_execute(
+        "UPDATE trade_signals SET status=?, updated_at=CURRENT_TIMESTAMP WHERE tenant_id=? AND source_hash=?",
+        (normalized_status, int(tenant_id or 0), str(source_signal_hash or "").strip()),
+    )
+
+
+def _sync_trade_signal_status_in_session(session, tenant_id: int, source_signal_hash: str, status: str | None) -> None:
+    normalized_status = str(status or "").strip().lower()
+    if normalized_status not in {"open", "closed", "cancelled", "reset"}:
+        return
+    row = session.execute(
+        select(TradeSignal).where(
+            TradeSignal.tenant_id == int(tenant_id or 0),
+            TradeSignal.source_hash == str(source_signal_hash or "").strip(),
+        )
+    ).scalar_one_or_none()
+    if row is not None:
+        row.status = normalized_status
+
+
+def _upsert_signal_review_link_in_session(
+    session,
+    tenant_id: int,
+    source_signal_hash: str,
+    *,
+    trade_signal_id: int | None = None,
+    pick_id: int | None = None,
+    buy_order_id: int | None = None,
+    sell_order_id: int | None = None,
+    buy_fill_id: int | None = None,
+    sell_fill_id: int | None = None,
+    status: str | None = None,
+    opened_at: Any | None = None,
+    closed_at: Any | None = None,
+    realized_return_pct: Any | None = None,
+    metadata: dict | None = None,
+) -> SignalReviewLink:
+    row = session.execute(
+        select(SignalReviewLink).where(
+            SignalReviewLink.tenant_id == int(tenant_id or 0),
+            SignalReviewLink.source_signal_hash == source_signal_hash,
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        row = SignalReviewLink(
+            tenant_id=int(tenant_id or 0),
+            source_signal_hash=source_signal_hash,
+            status=status or "open",
+            metadata_json={},
+        )
+        session.add(row)
+    for attr, value in (
+        ("trade_signal_id", trade_signal_id),
+        ("pick_id", pick_id),
+        ("buy_order_id", buy_order_id),
+        ("sell_order_id", sell_order_id),
+        ("buy_fill_id", buy_fill_id),
+        ("sell_fill_id", sell_fill_id),
+    ):
+        if value is not None:
+            setattr(row, attr, value)
+    if status:
+        row.status = status
+    if opened_at is not None:
+        row.opened_at = _parse_dt(opened_at)
+    if closed_at is not None:
+        row.closed_at = _parse_dt(closed_at)
+    if realized_return_pct is not None:
+        row.realized_return_pct = _decimal(realized_return_pct)
+    if metadata:
+        merged = dict(row.metadata_json or {})
+        merged.update(metadata)
+        row.metadata_json = merged
+    return row
 
 
 def _apply_position_fill_sqlite(
@@ -760,6 +1288,36 @@ def _fill_item(row: dict) -> dict:
     }
 
 
+def _link_item(row: dict) -> dict:
+    return {
+        "id": row.get("id"),
+        "tenant_id": int(row.get("tenant_id") or 0),
+        "source_signal_hash": row.get("source_signal_hash") or "",
+        "trade_signal_id": row.get("trade_signal_id"),
+        "pick_id": row.get("pick_id"),
+        "buy_order_id": row.get("buy_order_id"),
+        "sell_order_id": row.get("sell_order_id"),
+        "buy_fill_id": row.get("buy_fill_id"),
+        "sell_fill_id": row.get("sell_fill_id"),
+        "status": row.get("status") or "open",
+        "opened_at": _dt(row.get("opened_at")),
+        "closed_at": _dt(row.get("closed_at")),
+        "realized_return_pct": _float(row.get("realized_return_pct")) if row.get("realized_return_pct") is not None else None,
+        "metadata": _json_value(row.get("metadata_json")),
+        "created_at": _dt(row.get("created_at")),
+        "updated_at": _dt(row.get("updated_at")),
+    }
+
+
+def _link_complete(item: dict) -> bool:
+    status = str(item.get("status") or "open").lower()
+    if not item.get("trade_signal_id") or not item.get("pick_id") or not item.get("buy_order_id") or not item.get("buy_fill_id"):
+        return False
+    if status == "closed" and (not item.get("sell_order_id") or not item.get("sell_fill_id")):
+        return False
+    return True
+
+
 def _public_signal(row: TradeSignal) -> dict:
     return {
         "id": row.id,
@@ -862,6 +1420,27 @@ def _public_fill(row: PaperFill) -> dict:
         "amount": row.amount,
         "fee": row.fee,
         "filled_at": row.filled_at,
+        "created_at": row.created_at,
+        "updated_at": row.updated_at,
+    }
+
+
+def _public_link(row: SignalReviewLink) -> dict:
+    return {
+        "id": row.id,
+        "tenant_id": row.tenant_id,
+        "source_signal_hash": row.source_signal_hash,
+        "trade_signal_id": row.trade_signal_id,
+        "pick_id": row.pick_id,
+        "buy_order_id": row.buy_order_id,
+        "sell_order_id": row.sell_order_id,
+        "buy_fill_id": row.buy_fill_id,
+        "sell_fill_id": row.sell_fill_id,
+        "status": row.status,
+        "opened_at": row.opened_at,
+        "closed_at": row.closed_at,
+        "realized_return_pct": row.realized_return_pct,
+        "metadata_json": row.metadata_json or {},
         "created_at": row.created_at,
         "updated_at": row.updated_at,
     }

@@ -59,6 +59,7 @@ export function ReportsPage({ onNavigate, authz }) {
   const [dailyReview, setDailyReview] = useState(null);
   const [reviewDate, setReviewDate] = useState(todayIso());
   const [reviewPush, setReviewPush] = useState(false);
+  const [reviewEvaluateExits, setReviewEvaluateExits] = useState(true);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(true);
@@ -119,6 +120,7 @@ export function ReportsPage({ onNavigate, authz }) {
       const result = await api.dailyReview({
         trade_date: reviewDate,
         push: reviewPush,
+        evaluate_exits: reviewEvaluateExits,
         channels: reviewPush ? ['external'] : [],
       });
       setDailyReview(result);
@@ -154,6 +156,8 @@ export function ReportsPage({ onNavigate, authz }) {
   const totals = summary?.summary || {};
   const quality = totals.data_quality || {};
   const groups = summary?.groups || [];
+  const feedbackItems = summary?.feedback?.items || [];
+  const dailyExitSummary = dailyReview?.paper_trading?.exit_summary || {};
 
   return (
     <main className="page" data-testid="reports-page">
@@ -183,6 +187,10 @@ export function ReportsPage({ onNavigate, authz }) {
             <label className="checkbox-field">
               <input type="checkbox" checked={reviewPush} onChange={(event) => setReviewPush(event.target.checked)} disabled={!mayWrite} />
               推送
+            </label>
+            <label className="checkbox-field">
+              <input type="checkbox" checked={reviewEvaluateExits} onChange={(event) => setReviewEvaluateExits(event.target.checked)} disabled={!mayWrite} />
+              先评估卖出
             </label>
             <button
               type="button"
@@ -214,6 +222,9 @@ export function ReportsPage({ onNavigate, authz }) {
             <MetricCard label="账户权益" value={Number(dailyReview.paper_trading?.summary?.equity || 0).toFixed(2)} />
             <MetricCard label="当前持仓" value={dailyReview.paper_trading?.active_positions ?? 0} />
             <MetricCard label="当日标的" value={(dailyReview.paper_trading?.traded_symbols || []).length} />
+            <MetricCard label="卖出评估" value={dailyExitSummary.status || 'skipped'} />
+            <MetricCard label="卖出订单" value={dailyExitSummary.orders ?? 0} />
+            <MetricCard label="阻断/跳过" value={`${dailyExitSummary.blocked ?? 0}/${dailyExitSummary.skipped ?? 0}`} danger={(dailyExitSummary.blocked || 0) > 0} />
             <MetricCard label="推送状态" value={dailyReview.push?.status || 'skipped'} />
           </div>
           <pre className="code-block daily-review-message" data-testid="daily-review-message">{dailyReview.message}</pre>
@@ -230,6 +241,30 @@ export function ReportsPage({ onNavigate, authz }) {
         <MetricCard label="真实行情占比" value={percent(quality.primary_rate)} />
         <MetricCard label="Fallback/Mock" value={`${quality.fallback || 0}/${quality.mock || 0}`} danger={(quality.fallback || 0) + (quality.mock || 0) > 0} />
       </section>
+
+      <SectionCard title="策略反馈建议" subtitle="仅生成待确认建议，不自动修改策略参数。">
+        <DataTable
+          className="compact-table"
+          columns={[
+            { label: '策略', render: (item) => <strong>{item.strategy}</strong> },
+            { label: '级别', render: (item) => <span className={`status-badge ${item.severity === 'high' ? 'danger' : 'warning'}`}>{item.severity}</span> },
+            { label: '建议', render: (item) => item.action },
+            { label: '原因', render: (item) => item.reason },
+            {
+              label: '操作',
+              render: (item) => (
+                <div className="row-actions">
+                  <button type="button" className="btn-secondary" onClick={() => onNavigate?.('picks', item.drilldowns?.picks?.filters || { strategy_code: item.strategy })}>候选</button>
+                  <button type="button" className="btn-secondary" onClick={() => onNavigate?.('strategies', item.drilldowns?.backtests?.filters || { strategy_code: item.strategy })}>回测</button>
+                </div>
+              ),
+            },
+          ]}
+          rows={feedbackItems}
+          getKey={(item, index) => `${item.strategy}-${item.type}-${index}`}
+          emptyText="暂无策略反馈建议。"
+        />
+      </SectionCard>
 
       <SectionCard title="策略表现">
         <DataTable

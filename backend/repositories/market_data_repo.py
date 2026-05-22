@@ -10,6 +10,7 @@ from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import and_, case, func, or_, select
+from sqlalchemy.dialects.mysql import insert as mysql_insert
 
 from backend.core.config import get_settings
 from backend.db.models.market import LimitRuleCalendar, MarketSyncRun, MarketSyncRunItem, MarketSyncState, Stock, StockAuctionSnapshot, StockDailyBar, StockPriceSnapshot
@@ -217,41 +218,43 @@ def upsert_stocks(items: list[StockInfo | dict]) -> int:
             ],
         )
 
-    count = 0
+    rows = [
+        {
+            "symbol": item["symbol"],
+            "exchange": item["exchange"],
+            "name": item["name"],
+            "market": item["market"],
+            "security_type": item["security_type"],
+            "listing_date": _parse_date(item.get("listing_date")),
+            "status": item["status"],
+            "is_st": bool(item.get("is_st")),
+            "board_type": item.get("board_type"),
+            "limit_rule_profile": item.get("limit_rule_profile") or {},
+            "is_suspended": bool(item.get("is_suspended")),
+            "is_delisting": bool(item.get("is_delisting")),
+        }
+        for item in stocks
+    ]
     with session_scope() as session:
-        for item in stocks:
-            model = session.execute(select(Stock).where(Stock.symbol == item["symbol"])).scalar_one_or_none()
-            if model is None:
-                session.add(
-                    Stock(
-                        symbol=item["symbol"],
-                        exchange=item["exchange"],
-                        name=item["name"],
-                        market=item["market"],
-                        security_type=item["security_type"],
-                        listing_date=_parse_date(item.get("listing_date")),
-                        status=item["status"],
-                        is_st=bool(item.get("is_st")),
-                        board_type=item.get("board_type"),
-                        limit_rule_profile=item.get("limit_rule_profile") or {},
-                        is_suspended=bool(item.get("is_suspended")),
-                        is_delisting=bool(item.get("is_delisting")),
-                    )
-                )
-            else:
-                model.exchange = item["exchange"]
-                model.name = item["name"]
-                model.market = item["market"]
-                model.security_type = item["security_type"]
-                model.listing_date = _parse_date(item.get("listing_date"))
-                model.status = item["status"]
-                model.is_st = bool(item.get("is_st"))
-                model.board_type = item.get("board_type")
-                model.limit_rule_profile = item.get("limit_rule_profile") or model.limit_rule_profile or {}
-                model.is_suspended = bool(item.get("is_suspended"))
-                model.is_delisting = bool(item.get("is_delisting"))
-            count += 1
-    return count
+        stmt = mysql_insert(Stock).values(rows)
+        inserted = stmt.inserted
+        session.execute(
+            stmt.on_duplicate_key_update(
+                exchange=inserted.exchange,
+                name=inserted.name,
+                market=inserted.market,
+                security_type=inserted.security_type,
+                listing_date=inserted.listing_date,
+                status=inserted.status,
+                is_st=inserted.is_st,
+                board_type=inserted.board_type,
+                limit_rule_profile=inserted.limit_rule_profile,
+                is_suspended=inserted.is_suspended,
+                is_delisting=inserted.is_delisting,
+                updated_at=func.now(),
+            )
+        )
+    return len(rows)
 
 
 def upsert_daily_bars(bars: list[DailyBar], *, adjust: str = "qfq") -> int:
@@ -425,43 +428,43 @@ def upsert_quote_snapshots(items: list[QuoteSnapshot | dict]) -> int:
             ],
         )
 
-    count = 0
+    rows = [
+        {
+            "symbol": item["symbol"],
+            "trade_time": _parse_datetime(item["trade_time"]),
+            "last_price": _decimal_value(item["last_price"]),
+            "open": _decimal_value(item["open"]),
+            "high": _decimal_value(item["high"]),
+            "low": _decimal_value(item["low"]),
+            "prev_close": _decimal_value(item["prev_close"]),
+            "volume": _int_value(item["volume"]),
+            "amount": _decimal_value(item["amount"]),
+            "bid_price": _decimal_value(item["bid_price"]),
+            "ask_price": _decimal_value(item["ask_price"]),
+            "source": item["source"],
+        }
+        for item in snapshots
+    ]
     with session_scope() as session:
-        for item in snapshots:
-            model = session.execute(
-                select(StockPriceSnapshot).where(StockPriceSnapshot.symbol == item["symbol"])
-            ).scalar_one_or_none()
-            if model is None:
-                session.add(
-                    StockPriceSnapshot(
-                        symbol=item["symbol"],
-                        trade_time=_parse_datetime(item["trade_time"]),
-                        last_price=_decimal_value(item["last_price"]),
-                        open=_decimal_value(item["open"]),
-                        high=_decimal_value(item["high"]),
-                        low=_decimal_value(item["low"]),
-                        prev_close=_decimal_value(item["prev_close"]),
-                        volume=_int_value(item["volume"]),
-                        amount=_decimal_value(item["amount"]),
-                        bid_price=_decimal_value(item["bid_price"]),
-                        ask_price=_decimal_value(item["ask_price"]),
-                        source=item["source"],
-                    )
-                )
-            else:
-                model.trade_time = _parse_datetime(item["trade_time"])
-                model.last_price = _decimal_value(item["last_price"])
-                model.open = _decimal_value(item["open"])
-                model.high = _decimal_value(item["high"])
-                model.low = _decimal_value(item["low"])
-                model.prev_close = _decimal_value(item["prev_close"])
-                model.volume = _int_value(item["volume"])
-                model.amount = _decimal_value(item["amount"])
-                model.bid_price = _decimal_value(item["bid_price"])
-                model.ask_price = _decimal_value(item["ask_price"])
-                model.source = item["source"]
-            count += 1
-    return count
+        stmt = mysql_insert(StockPriceSnapshot).values(rows)
+        inserted = stmt.inserted
+        session.execute(
+            stmt.on_duplicate_key_update(
+                trade_time=inserted.trade_time,
+                last_price=inserted.last_price,
+                open=inserted.open,
+                high=inserted.high,
+                low=inserted.low,
+                prev_close=inserted.prev_close,
+                volume=inserted.volume,
+                amount=inserted.amount,
+                bid_price=inserted.bid_price,
+                ask_price=inserted.ask_price,
+                source=inserted.source,
+                updated_at=func.now(),
+            )
+        )
+    return len(rows)
 
 
 def _auction_payload(item: AuctionSnapshot | dict) -> dict:
@@ -1105,6 +1108,79 @@ def snapshot_summary(source: str | None = None, *, security_type: str | None = N
             "target_security_count": target_security_count,
             "coverage_ratio": coverage_ratio,
             "local_snapshot_coverage_ratio": coverage_ratio,
+        }
+
+
+def latest_market_data_freshness(
+    *,
+    security_type: str | None = None,
+    interval: str | None = "1d",
+    adjust: str | None = None,
+) -> dict:
+    normalized_security_type = str(security_type or "").strip().lower() or None
+    normalized_interval = normalize_bar_interval(interval) if interval else None
+    normalized_adjust = _normalized_adjust(adjust) if adjust is not None else None
+    if _repo_backend() == "sqlite":
+        stock_join = "LEFT JOIN stocks s ON s.symbol=p.symbol"
+        snapshot_where = ["1=1"]
+        snapshot_params: list[Any] = []
+        if normalized_security_type:
+            snapshot_where.append("s.security_type=?")
+            snapshot_params.append(normalized_security_type)
+        snapshot = sqlite_q1(
+            f"""SELECT MAX(p.trade_time) AS latest_snapshot_time
+            FROM stock_price_snapshots p
+            {stock_join}
+            WHERE {' AND '.join(snapshot_where)}""",
+            tuple(snapshot_params),
+        ) or {}
+        bar_where = ["1=1"]
+        bar_params: list[Any] = []
+        if normalized_interval:
+            bar_where.append("b.interval=?")
+            bar_params.append(normalized_interval)
+        if normalized_adjust:
+            bar_where.append("(b.adjust=? OR b.adjust='' OR b.adjust IS NULL)")
+            bar_params.append(normalized_adjust)
+        if normalized_security_type:
+            bar_where.append("s.security_type=?")
+            bar_params.append(normalized_security_type)
+        bar = sqlite_q1(
+            f"""SELECT MAX(b.trade_date) AS latest_trade_date
+            FROM stock_daily_bars b
+            LEFT JOIN stocks s ON s.symbol=b.symbol
+            WHERE {' AND '.join(bar_where)}""",
+            tuple(bar_params),
+        ) or {}
+        return {
+            "backend": _repo_backend(),
+            "security_type": normalized_security_type or "",
+            "interval": normalized_interval or "",
+            "adjust": normalized_adjust or "",
+            "latest_snapshot_time": snapshot.get("latest_snapshot_time"),
+            "latest_trade_date": bar.get("latest_trade_date"),
+        }
+
+    with session_scope() as session:
+        snapshot_query = select(func.max(StockPriceSnapshot.trade_time)).select_from(StockPriceSnapshot).outerjoin(Stock, Stock.symbol == StockPriceSnapshot.symbol)
+        if normalized_security_type:
+            snapshot_query = snapshot_query.where(Stock.security_type == normalized_security_type)
+        bar_query = select(func.max(StockDailyBar.trade_date)).select_from(StockDailyBar).outerjoin(Stock, Stock.symbol == StockDailyBar.symbol)
+        if normalized_interval:
+            bar_query = bar_query.where(StockDailyBar.interval == normalized_interval)
+        if normalized_adjust:
+            bar_query = bar_query.where(StockDailyBar.adjust == normalized_adjust)
+        if normalized_security_type:
+            bar_query = bar_query.where(Stock.security_type == normalized_security_type)
+        latest_snapshot_time = session.execute(snapshot_query).scalar_one_or_none()
+        latest_trade_date = session.execute(bar_query).scalar_one_or_none()
+        return {
+            "backend": _repo_backend(),
+            "security_type": normalized_security_type or "",
+            "interval": normalized_interval or "",
+            "adjust": normalized_adjust or "",
+            "latest_snapshot_time": _dt_text(latest_snapshot_time),
+            "latest_trade_date": _date_text(latest_trade_date) if latest_trade_date else None,
         }
 
 

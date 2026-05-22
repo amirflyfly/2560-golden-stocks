@@ -40,8 +40,8 @@ def enqueue_market_data_bootstrap():
         **payload,
         "symbols": payload.get("symbols") or "all",
         "incremental": False,
-        "bootstrap_days": int(payload.get("bootstrap_days") or 180),
-        "batch_size": int(payload.get("batch_size") or 200),
+        "bootstrap_days": payload.get("bootstrap_days") or 180,
+        "batch_size": payload.get("batch_size") or 200,
     }
     task = service.enqueue_market_data_sync(context.tenant_id, payload)
     audit_log_service.record(

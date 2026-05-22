@@ -5,7 +5,7 @@ from __future__ import annotations
 from logging.config import fileConfig
 
 from alembic import context
-from sqlalchemy import engine_from_config, pool
+from sqlalchemy import engine_from_config, pool, text
 
 from backend.core.config import get_settings
 from backend.db.base import Base
@@ -20,6 +20,15 @@ settings = get_settings()
 config.set_main_option("sqlalchemy.url", settings.database_url)
 
 target_metadata = Base.metadata
+
+
+def ensure_version_table_capacity(connection) -> None:
+    """Alembic's default version column is too short for this repo's revision ids."""
+    dialect_name = connection.dialect.name
+    if dialect_name not in {"mysql", "mariadb"}:
+        return
+    connection.execute(text("CREATE TABLE IF NOT EXISTS alembic_version (version_num VARCHAR(191) NOT NULL PRIMARY KEY)"))
+    connection.execute(text("ALTER TABLE alembic_version MODIFY version_num VARCHAR(191) NOT NULL"))
 
 
 def run_migrations_offline() -> None:
@@ -43,10 +52,13 @@ def run_migrations_online() -> None:
     )
 
     with connectable.connect() as connection:
+        ensure_version_table_capacity(connection)
         context.configure(connection=connection, target_metadata=target_metadata)
 
         with context.begin_transaction():
             context.run_migrations()
+        if connection.dialect.name in {"mysql", "mariadb"}:
+            connection.commit()
 
 
 if context.is_offline_mode():
